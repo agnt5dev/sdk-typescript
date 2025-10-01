@@ -1,0 +1,11 @@
+node_modules/
+dist/
+native/target/
+wasm/target/
+wasm-pkg/
+*.node
+*.wasm
+*.log
+.DS_Store
+*.tsbuildinfo
+coverage/

@@ -1,0 +1,70 @@
+{
+  "name": "@agnt5/sdk",
+  "version": "0.1.0",
+  "description": "AGNT5 TypeScript SDK - Durable AI workflows and agents",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "workerd": "./dist/wasm/index.js",
+      "edge-light": "./dist/wasm/index.js",
+      "worker": "./dist/wasm/index.js",
+      "deno": "./dist/native/index.js",
+      "bun": "./dist/native/index.js",
+      "node": "./dist/native/index.js",
+      "default": "./dist/native/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "native/*.node",
+    "wasm/*.wasm",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run build:napi && npm run build:ts",
+    "build:full": "npm run build:napi && npm run build:wasm && npm run build:ts",
+    "build:napi": "napi build --platform --release --manifest-path native/Cargo.toml",
+    "build:wasm": "wasm-pack build --target bundler --out-dir ../wasm-pkg ./wasm",
+    "build:ts": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@napi-rs/cli": "^3.0.0",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
+  },
+  "napi": {
+    "binaryName": "agnt5-sdk-native",
+    "targets": [
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ]
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agnt5/agnt5.git",
+    "directory": "sdk/sdk-typescript"
+  },
+  "keywords": [
+    "agnt5",
+    "ai",
+    "agents",
+    "workflows",
+    "durable",
+    "orchestration",
+    "typescript"
+  ],
+  "author": "AGNT5 Team",
+  "license": "MIT"
+}

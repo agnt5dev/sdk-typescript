@@ -1,0 +1,32 @@
+[package]
+name = "agnt5-sdk-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# WASM bindings
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+# Link to sdk-core (with wasm features - will be added later)
+agnt5-sdk-core = { path = "../../sdk-core", default-features = false }
+
+# Async for WASM
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+# Better panic messages
+console_error_panic_hook = "0.1"
+
+[profile.release]
+opt-level = "z"     # Optimize for size
+lto = true          # Link-time optimization
+codegen-units = 1   # Better optimization
