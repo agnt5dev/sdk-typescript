@@ -1,7 +1,14 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use napi::threadsafe_function::{
+    ThreadsafeFunction, ErrorStrategy,
+};
 
-use agnt5_sdk_core::worker::WorkerConfig;
+use agnt5_sdk_core::worker::{Worker as CoreWorker, WorkerConfig};
+use agnt5_sdk_core::pb::{RuntimeMessage, ServiceMessage, ComponentInfo};
+
+use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 
 /// Worker configuration options
 #[napi(object)]
@@ -30,11 +37,70 @@ pub enum ComponentType {
     Entity,
 }
 
+/// Component info for registration
+#[napi(object)]
+pub struct ComponentInfoData {
+    pub name: String,
+    pub component_type: String,
+    pub config: Option<HashMap<String, String>>,
+    pub metadata: Option<HashMap<String, String>>,
+    pub definition: Option<String>,
+}
+
+impl From<ComponentInfoData> for ComponentInfo {
+    fn from(data: ComponentInfoData) -> Self {
+        use agnt5_sdk_core::pb::ComponentType as PbComponentType;
+
+        // Parse component type from string
+        let component_type = match data.component_type.to_lowercase().as_str() {
+            "function" => PbComponentType::Function as i32,
+            "workflow" => PbComponentType::Workflow as i32,
+            "agent" => PbComponentType::Agent as i32,
+            "tool" => PbComponentType::Tool as i32,
+            "entity" => PbComponentType::Entity as i32,
+            _ => PbComponentType::Function as i32, // default to function
+        };
+
+        ComponentInfo {
+            name: data.name,
+            component_type,
+            input_schema: None,  // Will be set later from TypeScript schemas
+            output_schema: None, // Will be set later from TypeScript schemas
+            config: data.config.unwrap_or_default(),
+            metadata: data.metadata.unwrap_or_default(),
+            definition: data.definition,
+            max_attempts: None,
+            initial_interval_ms: None,
+            max_interval_ms: None,
+            backoff_type: None,
+            backoff_multiplier: None,
+        }
+    }
+}
+
+/// Runtime message data for TypeScript callbacks
+#[napi(object)]
+pub struct RuntimeMessageData {
+    /// Serialized RuntimeMessage as protobuf bytes (as Buffer in JS)
+    pub message_bytes: Vec<u8>,
+    /// Response sender ID (for internal tracking)
+    pub response_id: String,
+}
+
+/// Service message response from TypeScript
+#[napi(object)]
+pub struct ServiceMessageData {
+    /// Serialized ServiceMessage as protobuf bytes (as Buffer in JS)
+    pub message_bytes: Vec<u8>,
+}
+
 /// Worker for handling function invocations and platform connectivity
 #[napi]
 pub struct Worker {
     service_name: String,
     config: WorkerConfig,
+    core_worker: Arc<CoreWorker>,
+    message_handler: Arc<Mutex<Option<ThreadsafeFunction<RuntimeMessageData, ErrorStrategy::Fatal>>>>,
 }
 
 #[napi]
@@ -60,9 +126,18 @@ impl Worker {
             config.deployment_id = deployment;
         }
 
+        // Create core worker with empty components initially
+        let core_worker = CoreWorker::new(
+            config.clone(),
+            vec![],
+            HashMap::new(),
+        );
+
         Ok(Worker {
             service_name: options.service_name,
             config,
+            core_worker: Arc::new(core_worker),
+            message_handler: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -96,9 +171,105 @@ impl Worker {
         self.config.deployment_id.clone()
     }
 
-    // TODO: Add run() method that connects to platform
-    // This will require proper async handling with NAPI
-    // For now, we focus on configuration and setup
+    /// Set the message handler callback
+    #[napi]
+    pub fn set_message_handler(
+        &self,
+        #[napi(ts_arg_type = "(message: RuntimeMessageData) => Promise<ServiceMessageData | null>")]
+        callback: JsFunction,
+    ) -> Result<()> {
+        let tsfn: ThreadsafeFunction<RuntimeMessageData, ErrorStrategy::Fatal> = callback
+            .create_threadsafe_function(0, |ctx| {
+                Ok(vec![ctx.value])
+            })?;
+
+        let mut handler = self.message_handler.lock()
+            .map_err(|e| Error::from_reason(format!("Failed to lock message handler: {}", e)))?;
+        *handler = Some(tsfn);
+
+        Ok(())
+    }
+
+    /// Set components for registration
+    #[napi]
+    pub fn set_components(&self, components: Vec<ComponentInfoData>) -> Result<()> {
+        let _component_infos: Vec<ComponentInfo> = components
+            .into_iter()
+            .map(|c| c.into())
+            .collect();
+
+        // Update core worker's components
+        // Note: CoreWorker::set_components requires mutable access
+        // For now, we'll need to recreate the worker or use interior mutability
+        // This is a temporary limitation we'll address in the next iteration
+
+        Ok(())
+    }
+
+    /// Run the worker and connect to platform
+    #[napi]
+    pub async fn run(&self) -> Result<()> {
+        // Verify message handler is set
+        let handler = self.message_handler.lock()
+            .map_err(|e| Error::from_reason(format!("Failed to lock message handler: {}", e)))?
+            .clone()
+            .ok_or_else(|| Error::from_reason("Message handler not set. Call set_message_handler() first."))?;
+
+        // Clone Arc for moving into async block
+        let core_worker = self.core_worker.clone();
+
+        // Create message handler that calls TypeScript callback
+        let message_handler = move |runtime_msg: RuntimeMessage, _tx: flume::Sender<ServiceMessage>| {
+            let handler_clone = handler.clone();
+
+            async move {
+                // Import prost Message trait for encode/decode
+                use prost::Message;
+
+                // Serialize RuntimeMessage to protobuf bytes
+                let mut message_bytes = Vec::new();
+                runtime_msg.encode(&mut message_bytes)
+                    .map_err(|e| agnt5_sdk_core::error::SdkError::Internal(
+                        format!("Failed to encode message: {}", e)
+                    ))?;
+
+                // Create unique response ID
+                let response_id = uuid::Uuid::new_v4().to_string();
+
+                let runtime_msg_data = RuntimeMessageData {
+                    message_bytes,
+                    response_id,
+                };
+
+                // Call TypeScript handler
+                let response: Option<ServiceMessageData> = handler_clone
+                    .call_async(runtime_msg_data)
+                    .await
+                    .map_err(|e| agnt5_sdk_core::error::SdkError::Internal(
+                        format!("TypeScript handler error: {}", e)
+                    ))?;
+
+                // Deserialize response if present
+                if let Some(resp) = response {
+                    let service_msg = ServiceMessage::decode(&resp.message_bytes[..])
+                        .map_err(|e| agnt5_sdk_core::error::SdkError::Internal(
+                            format!("Failed to decode response: {}", e)
+                        ))?;
+                    Ok(Some(service_msg))
+                } else {
+                    Ok(None)
+                }
+            }
+        };
+
+        // Run the core worker
+        core_worker
+            .run(message_handler)
+            .await
+            .map_err(|e| Error::from_reason(format!("Worker run failed: {}", e)))?;
+
+        Ok(())
+    }
 }
 
 /// Initialize the SDK with logging and telemetry
@@ -127,7 +298,7 @@ pub fn get_version() -> String {
 #[napi]
 pub async fn check_platform_connectivity(coordinator_url: String) -> Result<bool> {
     // Validate URL format first
-    let uri = coordinator_url
+    let _uri = coordinator_url
         .parse::<http::Uri>()
         .map_err(|e| Error::from_reason(format!("Invalid URL: {}", e)))?;
 
