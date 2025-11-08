@@ -78,20 +78,30 @@ impl From<ComponentInfoData> for ComponentInfo {
     }
 }
 
-/// Runtime message data for TypeScript callbacks
+/// Runtime message data for TypeScript callbacks (simplified)
 #[napi(object)]
 pub struct RuntimeMessageData {
-    /// Serialized RuntimeMessage as protobuf bytes (as Buffer in JS)
-    pub message_bytes: Vec<u8>,
-    /// Response sender ID (for internal tracking)
-    pub response_id: String,
+    /// Invocation ID
+    pub invocation_id: String,
+    /// Component name to execute
+    pub component_name: String,
+    /// Component type
+    pub component_type: String,
+    /// Input data as JSON string
+    pub input_json: String,
+    /// Request metadata
+    pub metadata: HashMap<String, String>,
 }
 
-/// Service message response from TypeScript
+/// Service message response from TypeScript (simplified)
 #[napi(object)]
 pub struct ServiceMessageData {
-    /// Serialized ServiceMessage as protobuf bytes (as Buffer in JS)
-    pub message_bytes: Vec<u8>,
+    /// Invocation ID (must match request)
+    pub invocation_id: String,
+    /// Output data as JSON string
+    pub output_json: Option<String>,
+    /// Error message if execution failed
+    pub error: Option<String>,
 }
 
 /// Worker for handling function invocations and platform connectivity
@@ -223,22 +233,39 @@ impl Worker {
             let handler_clone = handler.clone();
 
             async move {
-                // Import prost Message trait for encode/decode
-                use prost::Message;
+                use agnt5_sdk_core::pb::{runtime_message, service_message, ExecuteComponentResponse};
 
-                // Serialize RuntimeMessage to protobuf bytes
-                let mut message_bytes = Vec::new();
-                runtime_msg.encode(&mut message_bytes)
-                    .map_err(|e| agnt5_sdk_core::error::SdkError::Internal(
-                        format!("Failed to encode message: {}", e)
-                    ))?;
+                // Extract ExecuteComponentRequest from RuntimeMessage
+                let execute_request = match runtime_msg.message_data {
+                    Some(runtime_message::MessageData::ExecuteComponent(req)) => req,
+                    _ => {
+                        return Err(agnt5_sdk_core::error::SdkError::Internal(
+                            "Expected ExecuteComponentRequest".to_string()
+                        ));
+                    }
+                };
 
-                // Create unique response ID
-                let response_id = uuid::Uuid::new_v4().to_string();
+                // Convert component type to string
+                let component_type_str = match execute_request.component_type {
+                    1 => "function",
+                    2 => "workflow",
+                    3 => "agent",
+                    4 => "tool",
+                    5 => "entity",
+                    _ => "unknown",
+                }.to_string();
 
+                // Convert input_data bytes to JSON string
+                let input_json = String::from_utf8(execute_request.input_data.clone())
+                    .unwrap_or_else(|_| "{}".to_string());
+
+                // Create simplified RuntimeMessageData for TypeScript
                 let runtime_msg_data = RuntimeMessageData {
-                    message_bytes,
-                    response_id,
+                    invocation_id: execute_request.invocation_id.clone(),
+                    component_name: execute_request.component_name.clone(),
+                    component_type: component_type_str,
+                    input_json,
+                    metadata: execute_request.metadata.clone(),
                 };
 
                 // Call TypeScript handler
@@ -249,12 +276,45 @@ impl Worker {
                         format!("TypeScript handler error: {}", e)
                     ))?;
 
-                // Deserialize response if present
+                // Convert response to ServiceMessage
                 if let Some(resp) = response {
-                    let service_msg = ServiceMessage::decode(&resp.message_bytes[..])
-                        .map_err(|e| agnt5_sdk_core::error::SdkError::Internal(
-                            format!("Failed to decode response: {}", e)
-                        ))?;
+                    let execute_response = if let Some(err_msg) = resp.error {
+                        // Error response
+                        ExecuteComponentResponse {
+                            invocation_id: resp.invocation_id,
+                            success: false,
+                            result: None,
+                            error_message: err_msg,
+                            metadata: HashMap::new(),
+                            is_chunk: false,
+                            done: true,
+                            chunk_index: 0,
+                            attempt: 0,
+                        }
+                    } else {
+                        // Success response
+                        let output_bytes = resp.output_json
+                            .unwrap_or_else(|| "null".to_string())
+                            .into_bytes();
+
+                        ExecuteComponentResponse {
+                            invocation_id: resp.invocation_id,
+                            success: true,
+                            result: Some(agnt5_sdk_core::pb::execute_component_response::Result::OutputData(output_bytes)),
+                            error_message: String::new(),
+                            metadata: HashMap::new(),
+                            is_chunk: false,
+                            done: true,
+                            chunk_index: 0,
+                            attempt: 0,
+                        }
+                    };
+
+                    let service_msg = ServiceMessage {
+                        worker_id: String::new(), // Will be set by core worker
+                        message_type: Some(service_message::MessageType::FunctionResponse(execute_response)),
+                    };
+
                     Ok(Some(service_msg))
                 } else {
                     Ok(None)
