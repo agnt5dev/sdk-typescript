@@ -441,7 +441,7 @@ Following the Python SDK pattern:
 just sdk release-develop
 
 # 2. Start test-bench with dev-server
-just platform start-dev-server typescript
+just platform dev-server typescript
 
 # 3. Test changes
 npm test
