@@ -288,7 +288,7 @@ export class Worker {
       metadata: {},
     }));
 
-    this.nativeWorker.setComponents(components);
+    await this.nativeWorker.setComponents(components);
 
     // Set message handler
     this.nativeWorker.setMessageHandler(this.handleMessage.bind(this));

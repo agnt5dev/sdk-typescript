@@ -7,8 +7,9 @@ use napi::threadsafe_function::{
 use agnt5_sdk_core::worker::{Worker as CoreWorker, WorkerConfig};
 use agnt5_sdk_core::pb::{RuntimeMessage, ServiceMessage, ComponentInfo};
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::collections::HashMap;
+use tokio::sync::Mutex as TokioMutex;
 
 /// Worker configuration options
 #[napi(object)]
@@ -109,8 +110,8 @@ pub struct ServiceMessageData {
 pub struct Worker {
     service_name: String,
     config: WorkerConfig,
-    core_worker: Arc<CoreWorker>,
-    message_handler: Arc<Mutex<Option<ThreadsafeFunction<RuntimeMessageData, ErrorStrategy::Fatal>>>>,
+    core_worker: Arc<TokioMutex<CoreWorker>>,
+    message_handler: Arc<StdMutex<Option<ThreadsafeFunction<RuntimeMessageData, ErrorStrategy::Fatal>>>>,
 }
 
 #[napi]
@@ -146,8 +147,8 @@ impl Worker {
         Ok(Worker {
             service_name: options.service_name,
             config,
-            core_worker: Arc::new(core_worker),
-            message_handler: Arc::new(Mutex::new(None)),
+            core_worker: Arc::new(TokioMutex::new(core_worker)),
+            message_handler: Arc::new(StdMutex::new(None)),
         })
     }
 
@@ -202,16 +203,15 @@ impl Worker {
 
     /// Set components for registration
     #[napi]
-    pub fn set_components(&self, components: Vec<ComponentInfoData>) -> Result<()> {
-        let _component_infos: Vec<ComponentInfo> = components
+    pub async fn set_components(&self, components: Vec<ComponentInfoData>) -> Result<()> {
+        let component_infos: Vec<ComponentInfo> = components
             .into_iter()
             .map(|c| c.into())
             .collect();
 
         // Update core worker's components
-        // Note: CoreWorker::set_components requires mutable access
-        // For now, we'll need to recreate the worker or use interior mutability
-        // This is a temporary limitation we'll address in the next iteration
+        let mut worker = self.core_worker.lock().await;
+        worker.set_components(component_infos);
 
         Ok(())
     }
@@ -224,9 +224,6 @@ impl Worker {
             .map_err(|e| Error::from_reason(format!("Failed to lock message handler: {}", e)))?
             .clone()
             .ok_or_else(|| Error::from_reason("Message handler not set. Call set_message_handler() first."))?;
-
-        // Clone Arc for moving into async block
-        let core_worker = self.core_worker.clone();
 
         // Create message handler that calls TypeScript callback
         let message_handler = move |runtime_msg: RuntimeMessage, _tx: flume::Sender<ServiceMessage>| {
@@ -323,7 +320,10 @@ impl Worker {
         };
 
         // Run the core worker
-        core_worker
+        // Lock the worker for the duration of run()
+        let worker = self.core_worker.lock().await;
+
+        worker
             .run(message_handler)
             .await
             .map_err(|e| Error::from_reason(format!("Worker run failed: {}", e)))?;
