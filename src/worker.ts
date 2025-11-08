@@ -28,10 +28,12 @@ function loadNativeBindings() {
 
     // Try multiple paths to find the native module
     const possiblePaths = [
-      join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),  // From dist/src
-      join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),     // From src
-      join(__dirname, '../../native/agnt5-sdk-native.linux-x64.node'),     // Linux
-      join(__dirname, '../native/agnt5-sdk-native.linux-x64.node'),        // Linux
+      join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),      // From dist/src (macOS)
+      join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),         // From src (macOS)
+      join(__dirname, '../../native/agnt5-sdk-native.linux-x64-gnu.node'),     // From dist/src (Linux)
+      join(__dirname, '../native/agnt5-sdk-native.linux-x64-gnu.node'),        // From src (Linux)
+      join(__dirname, '../../native/agnt5-sdk-native.linux-x64.node'),         // From dist/src (Linux fallback)
+      join(__dirname, '../native/agnt5-sdk-native.linux-x64.node'),            // From src (Linux fallback)
     ];
 
     for (const nativePath of possiblePaths) {
