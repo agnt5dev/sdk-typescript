@@ -1,4 +1,5 @@
-import type { WorkerOptions } from './types.js';
+import type { WorkerOptions, Context } from './types.js';
+import { FunctionRegistry } from './function.js';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -27,8 +28,12 @@ function loadNativeBindings() {
 
     // Try multiple paths to find the native module
     const possiblePaths = [
-      join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),  // From dist/src
-      join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),     // From src
+      join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),      // From dist/src (macOS)
+      join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),         // From src (macOS)
+      join(__dirname, '../../native/agnt5-sdk-native.linux-x64-gnu.node'),     // From dist/src (Linux)
+      join(__dirname, '../native/agnt5-sdk-native.linux-x64-gnu.node'),        // From src (Linux)
+      join(__dirname, '../../native/agnt5-sdk-native.linux-x64.node'),         // From dist/src (Linux fallback)
+      join(__dirname, '../native/agnt5-sdk-native.linux-x64.node'),            // From src (Linux fallback)
     ];
 
     for (const nativePath of possiblePaths) {
@@ -63,6 +68,53 @@ export interface PlatformWorkerOptions extends WorkerOptions {
   tenantId?: string;
   /** Deployment ID */
   deploymentId?: string;
+}
+
+/**
+ * Simple context implementation
+ */
+class SimpleContext implements Context {
+  constructor(
+    public readonly invocationId: string,
+    public readonly runId: string,
+    public readonly attempt: number,
+    public readonly serviceName: string,
+    private state: Map<string, any> = new Map()
+  ) {}
+
+  get logger() {
+    return {
+      info: (message: string, meta?: Record<string, any>) => {
+        console.log(`[INFO] ${message}`, meta || {});
+      },
+      error: (message: string, meta?: Record<string, any>) => {
+        console.error(`[ERROR] ${message}`, meta || {});
+      },
+      warn: (message: string, meta?: Record<string, any>) => {
+        console.warn(`[WARN] ${message}`, meta || {});
+      },
+      debug: (message: string, meta?: Record<string, any>) => {
+        console.debug(`[DEBUG] ${message}`, meta || {});
+      },
+    };
+  }
+
+  get<T>(key: string, defaultValue?: T): T | undefined {
+    return this.state.has(key) ? this.state.get(key) : defaultValue;
+  }
+
+  set<T>(key: string, value: T): void {
+    this.state.set(key, value);
+  }
+
+  delete(key: string): void {
+    this.state.delete(key);
+  }
+
+  async step<T>(stepName: string, fn: () => T | Promise<T>): Promise<T> {
+    // TODO: Implement durable checkpointing
+    return await fn();
+  }
 }
 
 /**
@@ -158,6 +210,57 @@ export class Worker {
   }
 
   /**
+   * Handle incoming execution requests from the platform
+   */
+  private async handleMessage(message: {
+    invocationId: string;
+    componentName: string;
+    componentType: string;
+    inputJson: string;
+    metadata: Record<string, string>;
+  }): Promise<{ invocationId: string; outputJson?: string; error?: string } | null> {
+    try {
+      console.log(`📨 Received ${message.componentType} execution: ${message.componentName}`);
+
+      // Parse input data
+      const inputData = JSON.parse(message.inputJson);
+
+      // Create context
+      const ctx = new SimpleContext(
+        message.invocationId,
+        message.metadata.run_id || message.invocationId,
+        0, // attempt
+        this.serviceName
+      );
+
+      // Route to appropriate handler based on component type
+      if (message.componentType === 'function') {
+        const fn = FunctionRegistry.get(message.componentName);
+        if (!fn) {
+          throw new Error(`Function not found: ${message.componentName}`);
+        }
+
+        // Execute the function handler
+        const result = await fn.handler(ctx, ...inputData.args);
+
+        // Return success response
+        return {
+          invocationId: message.invocationId,
+          outputJson: JSON.stringify(result),
+        };
+      } else {
+        throw new Error(`Component type not yet supported: ${message.componentType}`);
+      }
+    } catch (error) {
+      console.error(`❌ Execution failed:`, error);
+      return {
+        invocationId: message.invocationId,
+        error: (error as Error).message,
+      };
+    }
+  }
+
+  /**
    * Start the worker and connect to platform
    */
   async run(): Promise<void> {
@@ -173,11 +276,28 @@ export class Worker {
    Runtime: ${getRuntime()}
 `);
 
-    // TODO: Implement actual worker.run() with message handling
-    // For now, just show configuration
-    console.log('✓ Worker initialized successfully');
-    console.log('⚠️  Worker.run() not yet implemented - platform connectivity coming soon');
-    console.log('   Current status: Configuration loaded, ready for platform integration');
+    // Get all registered components
+    const functions = FunctionRegistry.getAll();
+    console.log(`📦 Registered components: ${functions.length} function(s)`);
+
+    // Register components with native worker
+    const components = functions.map(([name, config]) => ({
+      name,
+      componentType: 'function',
+      config: {},
+      metadata: {},
+    }));
+
+    await this.nativeWorker.setComponents(components);
+
+    // Set message handler
+    this.nativeWorker.setMessageHandler(this.handleMessage.bind(this));
+
+    console.log('✓ Message handler configured');
+    console.log('🔗 Connecting to platform...\n');
+
+    // Run the worker (this will block until shutdown)
+    await this.nativeWorker.run();
   }
 }
 

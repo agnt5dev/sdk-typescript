@@ -12,6 +12,10 @@ export { Worker, getRuntime, checkPlatformConnectivity } from './worker.js';
 export type { PlatformWorkerOptions } from './worker.js';
 export { ContextImpl } from './context.js';
 
+// Client exports
+export { Client, RunError, EntityProxy } from './client.js';
+export type { ClientOptions, RunOptions, RunResponse } from './client.js';
+
 // Tool exports
 export { Tool, ToolRegistry, tool } from './tool.js';
 
