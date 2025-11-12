@@ -14,6 +14,9 @@ use tokio::sync::Mutex as TokioMutex;
 // For logging in Span implementation
 extern crate log;
 
+// Language model module
+mod lm;
+
 /// Worker configuration options
 #[napi(object)]
 pub struct WorkerOptions {

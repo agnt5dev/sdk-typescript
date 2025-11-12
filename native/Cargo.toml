@@ -36,5 +36,8 @@ flume = "0.11"
 # Logging
 log = "0.4"
 
+# Futures and streams
+futures-util = "0.3"
+
 [build-dependencies]
 napi-build = "2"
