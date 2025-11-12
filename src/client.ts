@@ -2,11 +2,23 @@
  * AGNT5 Client SDK for invoking components
  */
 
+import {
+  RunError,
+  ConnectionError,
+  TimeoutError,
+  ValidationError,
+  createErrorFromResponse,
+} from './errors.js';
+
 export interface ClientOptions {
   /** Gateway URL (default: http://localhost:34181) */
   gatewayUrl?: string;
   /** Request timeout in milliseconds (default: 30000) */
   timeout?: number;
+  /** Max retry attempts for transient failures (default: 3) */
+  maxRetries?: number;
+  /** Initial retry delay in milliseconds (default: 1000) */
+  retryDelayMs?: number;
 }
 
 export interface RunOptions {
@@ -16,6 +28,8 @@ export interface RunOptions {
   sessionId?: string;
   /** User ID for user-scoped memory */
   userId?: string;
+  /** Override max retries for this specific request */
+  maxRetries?: number;
 }
 
 export interface RunResponse {
@@ -26,21 +40,6 @@ export interface RunResponse {
   submittedAt?: number;
   startedAt?: number;
   completedAt?: number;
-}
-
-/**
- * Error thrown when a component run fails
- */
-export class RunError extends Error {
-  public readonly runId?: string;
-
-  constructor(message: string, runId?: string) {
-    super(message);
-    this.name = 'RunError';
-    this.runId = runId;
-    // Maintain proper stack trace for where error was thrown
-    Error.captureStackTrace?.(this, RunError);
-  }
 }
 
 /**
@@ -115,79 +114,97 @@ export class EntityProxy {
 export class Client {
   private readonly gatewayUrl: string;
   private readonly timeout: number;
+  private readonly maxRetries: number;
+  private readonly retryDelayMs: number;
 
   constructor(options: ClientOptions = {}) {
     this.gatewayUrl = (options.gatewayUrl || 'http://localhost:34181').replace(/\/$/, '');
     this.timeout = options.timeout || 30000;
+    this.maxRetries = options.maxRetries ?? 3;
+    this.retryDelayMs = options.retryDelayMs || 1000;
+  }
+
+  /**
+   * Helper to retry failed requests with exponential backoff
+   */
+  private async withRetry<T>(
+    operation: () => Promise<T>,
+    maxRetries?: number
+  ): Promise<T> {
+    const retries = maxRetries ?? this.maxRetries;
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error as Error;
+
+        // Don't retry on these errors
+        if (
+          error instanceof ValidationError ||
+          error instanceof RunError ||
+          error instanceof TimeoutError
+        ) {
+          throw error;
+        }
+
+        // Last attempt - throw error
+        if (attempt === retries) {
+          break;
+        }
+
+        // Calculate delay with exponential backoff
+        const delay = this.retryDelayMs * Math.pow(2, attempt);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+
+    throw lastError;
   }
 
   /**
    * Execute a component synchronously and wait for the result
    */
   async run(component: string, inputData: any = {}, options: RunOptions = {}): Promise<any> {
-    const componentType = options.componentType || 'function';
-    const url = `${this.gatewayUrl}/v1/run/${componentType}/${component}`;
+    return this.withRetry(async () => {
+      const componentType = options.componentType || 'function';
+      const url = `${this.gatewayUrl}/v1/run/${componentType}/${component}`;
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
 
-    if (options.sessionId) {
-      headers['X-Session-ID'] = options.sessionId;
-    }
-    if (options.userId) {
-      headers['X-User-ID'] = options.userId;
-    }
+      if (options.sessionId) {
+        headers['X-Session-ID'] = options.sessionId;
+      }
+      if (options.userId) {
+        headers['X-User-ID'] = options.userId;
+      }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(inputData),
-      signal: AbortSignal.timeout(this.timeout),
-    });
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(inputData),
+        signal: AbortSignal.timeout(this.timeout),
+      });
 
-    // Handle specific error cases
-    if (response.status === 404) {
-      const errorData = (await response.json().catch(() => ({}))) as any;
-      throw new RunError(
-        errorData.error || `Component '${component}' not found`,
-        errorData.runId
-      );
-    }
+      // Handle non-OK responses
+      if (!response.ok) {
+        const errorData = (await response.json().catch(() => ({}))) as any;
+        const message = errorData.error || `Component '${component}' execution failed`;
+        throw createErrorFromResponse(response.status, message, errorData.runId, url);
+      }
 
-    if (response.status === 503) {
-      const errorData = (await response.json().catch(() => ({}))) as any;
-      throw new RunError(
-        `Service unavailable: ${errorData.error || 'Unknown error'}`,
-        errorData.runId
-      );
-    }
+      const data = (await response.json()) as RunResponse;
 
-    if (response.status === 504) {
-      const errorData = (await response.json().catch(() => ({}))) as any;
-      throw new RunError('Execution timeout', errorData.runId);
-    }
+      // Check execution status
+      if (data.status === 'failed') {
+        throw new RunError(data.error || 'Unknown error', data.runId, 'failed');
+      }
 
-    if (response.status === 500) {
-      const errorData = (await response.json().catch(() => ({}))) as any;
-      throw new RunError(
-        errorData.error || 'Unknown error',
-        errorData.runId
-      );
-    }
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: Request failed`);
-    }
-
-    const data = (await response.json()) as RunResponse;
-
-    // Check execution status
-    if (data.status === 'failed') {
-      throw new RunError(data.error || 'Unknown error', data.runId);
-    }
-
-    return data.output;
+      return data.output;
+    }, options.maxRetries);
   }
 
   /**

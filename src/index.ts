@@ -11,10 +11,31 @@ export { fn, FunctionBuilder } from './function.js';
 export { Worker, getRuntime, checkPlatformConnectivity } from './worker.js';
 export type { PlatformWorkerOptions } from './worker.js';
 export { ContextImpl } from './context.js';
+export { PlatformContext } from './platform-context.js';
 
 // Client exports
-export { Client, RunError, EntityProxy } from './client.js';
+export { Client, EntityProxy } from './client.js';
 export type { ClientOptions, RunOptions, RunResponse } from './client.js';
+
+// Error exports
+export {
+  AGNT5Error,
+  ConfigurationError,
+  ExecutionError,
+  RetryError,
+  StateError,
+  CheckpointError,
+  RunError,
+  WaitingForUserInputError,
+  ConnectionError,
+  TimeoutError,
+  ValidationError,
+  AuthorizationError,
+  isAGNT5Error,
+  isWaitingForUserInput,
+  getErrorMessage,
+  createErrorFromResponse,
+} from './errors.js';
 
 // Tool exports
 export { Tool, ToolRegistry, tool } from './tool.js';
