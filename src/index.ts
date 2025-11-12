@@ -114,6 +114,31 @@ export type {
   AgentOptions
 } from './agent.js';
 
+// Language Model exports
+export { LM, systemMessage, userMessage, assistantMessage, createTool, parseToolArguments, jsonSchemaFormat } from './lm.js';
+export type {
+  Message as LMMessage,
+  MessageRole as LMMessageRole,
+  ToolDefinition as LMToolDefinition,
+  ToolCall as LMToolCall,
+  TokenUsage as LMTokenUsage,
+  GenerateResponse as LMGenerateResponse,
+  StreamChunk,
+  ReasoningEffort,
+  Modality,
+  BuiltInTool,
+  GenerationConfig as LMGenerationConfig,
+  ResponseFormatOption,
+  ToolChoiceOption,
+  GenerateRequest as LMGenerateRequest,
+  OpenAIConfig,
+  AnthropicConfig,
+  AzureOpenAIConfig,
+  BedrockConfig,
+  GroqConfig,
+  OpenRouterConfig,
+} from './lm.js';
+
 // Type exports
 export type {
   Context,
