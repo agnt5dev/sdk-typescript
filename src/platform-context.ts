@@ -70,18 +70,9 @@ export class PlatformContext implements Context {
   }
 
   /**
-   * Get value from state
+   * Get value from state (async)
    */
-  get<T>(key: string, defaultValue?: T): T | undefined {
-    // Note: get() is async in native bindings, but our interface expects sync
-    // For now, throw an error - callers should use getAsync() instead
-    throw new Error('Use getAsync() for platform-backed state');
-  }
-
-  /**
-   * Get value from state (async version)
-   */
-  async getAsync<T>(key: string, defaultValue?: T): Promise<T | undefined> {
+  async get<T>(key: string, defaultValue?: T): Promise<T | undefined> {
     try {
       const buffer = await this.stateManager.get(key);
       if (!buffer) {
@@ -99,17 +90,9 @@ export class PlatformContext implements Context {
   }
 
   /**
-   * Set value in state
+   * Set value in state (async)
    */
-  set<T>(key: string, value: T): void {
-    // Note: set() is async in native bindings
-    throw new Error('Use setAsync() for platform-backed state');
-  }
-
-  /**
-   * Set value in state (async version)
-   */
-  async setAsync<T>(key: string, value: T): Promise<void> {
+  async set<T>(key: string, value: T): Promise<void> {
     try {
       const json = JSON.stringify(value);
       const buffer = Buffer.from(json, 'utf-8');
@@ -128,16 +111,9 @@ export class PlatformContext implements Context {
   }
 
   /**
-   * Delete value from state
+   * Delete value from state (async)
    */
-  delete(key: string): void {
-    throw new Error('Use deleteAsync() for platform-backed state');
-  }
-
-  /**
-   * Delete value from state (async version)
-   */
-  async deleteAsync(key: string): Promise<boolean> {
+  async delete(key: string): Promise<boolean> {
     try {
       const deleted = await this.stateManager.delete(key);
 

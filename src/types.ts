@@ -44,6 +44,8 @@ export type FunctionHandler<TInput = any, TOutput = any> = (
 
 /**
  * Execution context provided to all AGNT5 components
+ *
+ * BREAKING CHANGE: State methods are now async to support durable storage
  */
 export interface Context {
   // Metadata
@@ -56,13 +58,13 @@ export interface Context {
   /** Service name */
   readonly serviceName: string;
 
-  // State management
-  /** Get value from state */
-  get<T>(key: string, defaultValue?: T): T | undefined;
-  /** Set value in state */
-  set<T>(key: string, value: T): void;
-  /** Delete key from state */
-  delete(key: string): void;
+  // State management (async for durable storage)
+  /** Get value from state (async) */
+  get<T>(key: string, defaultValue?: T): Promise<T | undefined>;
+  /** Set value in state (async) */
+  set<T>(key: string, value: T): Promise<void>;
+  /** Delete key from state (async) */
+  delete(key: string): Promise<boolean>;
 
   // Checkpointing
   /** Execute and checkpoint a step */

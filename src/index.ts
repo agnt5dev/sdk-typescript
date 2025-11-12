@@ -80,7 +80,7 @@ export {
   EntityInstance,
   _clearEntityState,
   _getEntityState,
-  _getAllEntityKeys
+  _setEntityStorage
 } from './entity.js';
 
 // Workflow exports

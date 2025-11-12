@@ -33,9 +33,12 @@
     "test": "vitest",
     "prepublishOnly": "npm run build"
   },
-  "dependencies": {},
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
   "devDependencies": {
     "@napi-rs/cli": "^3.0.0",
+    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^20.11.0",
     "typescript": "^5.3.3",
     "vitest": "^1.2.0"

@@ -99,16 +99,16 @@ class SimpleContext implements Context {
     };
   }
 
-  get<T>(key: string, defaultValue?: T): T | undefined {
+  async get<T>(key: string, defaultValue?: T): Promise<T | undefined> {
     return this.state.has(key) ? this.state.get(key) : defaultValue;
   }
 
-  set<T>(key: string, value: T): void {
+  async set<T>(key: string, value: T): Promise<void> {
     this.state.set(key, value);
   }
 
-  delete(key: string): void {
-    this.state.delete(key);
+  async delete(key: string): Promise<boolean> {
+    return this.state.delete(key);
   }
 
   async step<T>(stepName: string, fn: () => T | Promise<T>): Promise<T> {
