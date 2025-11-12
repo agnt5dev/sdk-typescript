@@ -99,11 +99,16 @@ export interface WorkerOptions {
  * JSON Schema type definitions
  */
 export interface JSONSchema {
-  type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | 'null';
+  type?: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | 'null';
   description?: string;
   properties?: Record<string, JSONSchema>;
   required?: string[];
   items?: JSONSchema;
+  enum?: any[];
+  const?: any;
+  anyOf?: JSONSchema[];
+  allOf?: JSONSchema[];
+  oneOf?: JSONSchema[];
   [key: string]: any;
 }
 

@@ -37,6 +37,39 @@ export {
   createErrorFromResponse,
 } from './errors.js';
 
+// Retry utilities exports
+export {
+  parseRetryPolicy,
+  parseBackoffPolicy,
+  calculateBackoffDelay,
+  executeWithRetry,
+  createRetryWrapper,
+  executeWithRetryAndTimeout,
+  DEFAULT_RETRY_POLICY,
+  DEFAULT_BACKOFF_POLICY,
+} from './retry-utils.js';
+export type { RetryPredicate, ExecuteWithRetryOptions } from './retry-utils.js';
+
+// Schema utilities exports
+export {
+  detectFormatType,
+  isZodSchema,
+  isTypeBoxSchema,
+  isJsonSchema,
+  zodToJsonSchema,
+  typeBoxToJsonSchema,
+  typeToSchema,
+  createObjectSchema,
+  createArraySchema,
+  createEnumSchema,
+  createUnionSchema,
+  makeOptional,
+  mergeSchemas,
+  validateSchema,
+  extractFunctionDescription,
+} from './schema-utils.js';
+export type { SchemaFormat, SchemaConversionOptions } from './schema-utils.js';
+
 // Tool exports
 export { Tool, ToolRegistry, tool } from './tool.js';
 
