@@ -86,6 +86,19 @@ export {
 // Workflow exports
 export { workflow, WorkflowRegistry } from './workflow.js';
 export type { WorkflowConfig, WorkflowOptions } from './workflow.js';
+export {
+  parallel,
+  gather,
+  executeChildWorkflow,
+  parallelWorkflows,
+  gatherWorkflows,
+  fanOut,
+  batchExecute,
+  race,
+  withTimeout,
+  saga,
+  retryWorkflow,
+} from './workflow-utils.js';
 
 // Agent exports
 export { Agent, MessageRole, Message } from './agent.js';
