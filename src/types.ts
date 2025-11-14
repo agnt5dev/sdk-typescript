@@ -44,6 +44,8 @@ export type FunctionHandler<TInput = any, TOutput = any> = (
 
 /**
  * Execution context provided to all AGNT5 components
+ *
+ * BREAKING CHANGE: State methods are now async to support durable storage
  */
 export interface Context {
   // Metadata
@@ -56,13 +58,13 @@ export interface Context {
   /** Service name */
   readonly serviceName: string;
 
-  // State management
-  /** Get value from state */
-  get<T>(key: string, defaultValue?: T): T | undefined;
-  /** Set value in state */
-  set<T>(key: string, value: T): void;
-  /** Delete key from state */
-  delete(key: string): void;
+  // State management (async for durable storage)
+  /** Get value from state (async) */
+  get<T>(key: string, defaultValue?: T): Promise<T | undefined>;
+  /** Set value in state (async) */
+  set<T>(key: string, value: T): Promise<void>;
+  /** Delete key from state (async) */
+  delete(key: string): Promise<boolean>;
 
   // Checkpointing
   /** Execute and checkpoint a step */
@@ -99,11 +101,16 @@ export interface WorkerOptions {
  * JSON Schema type definitions
  */
 export interface JSONSchema {
-  type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | 'null';
+  type?: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | 'null';
   description?: string;
   properties?: Record<string, JSONSchema>;
   required?: string[];
   items?: JSONSchema;
+  enum?: any[];
+  const?: any;
+  anyOf?: JSONSchema[];
+  allOf?: JSONSchema[];
+  oneOf?: JSONSchema[];
   [key: string]: any;
 }
 

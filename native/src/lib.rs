@@ -11,6 +11,12 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::collections::HashMap;
 use tokio::sync::Mutex as TokioMutex;
 
+// For logging in Span implementation
+extern crate log;
+
+// Language model module
+mod lm;
+
 /// Worker configuration options
 #[napi(object)]
 pub struct WorkerOptions {
@@ -369,5 +375,168 @@ pub async fn check_platform_connectivity(coordinator_url: String) -> Result<bool
     match reqwest::get(&health_url).await {
         Ok(response) => Ok(response.status().is_success()),
         Err(_) => Ok(false), // Platform not reachable
+    }
+}
+
+// =============================================================================
+// State Management
+// =============================================================================
+
+/// Simple in-memory state manager for local execution
+/// Can be extended to use platform-backed state later
+#[napi]
+pub struct StateManager {
+    state: Arc<TokioMutex<HashMap<String, Vec<u8>>>>,
+}
+
+#[napi]
+impl StateManager {
+    /// Create a new in-memory state manager
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        StateManager {
+            state: Arc::new(TokioMutex::new(HashMap::new())),
+        }
+    }
+
+    /// Get a value from state
+    #[napi]
+    pub async fn get(&self, key: String) -> Result<Option<Buffer>> {
+        let state = self.state.lock().await;
+        match state.get(&key) {
+            Some(value) => Ok(Some(Buffer::from(value.clone()))),
+            None => Ok(None),
+        }
+    }
+
+    /// Set a value in state
+    #[napi]
+    pub async fn set(&self, key: String, value: Buffer) -> Result<()> {
+        let mut state = self.state.lock().await;
+        state.insert(key, value.to_vec());
+        Ok(())
+    }
+
+    /// Delete a value from state
+    #[napi]
+    pub async fn delete(&self, key: String) -> Result<bool> {
+        let mut state = self.state.lock().await;
+        Ok(state.remove(&key).is_some())
+    }
+
+    /// Get all keys in state
+    #[napi]
+    pub async fn keys(&self) -> Result<Vec<String>> {
+        let state = self.state.lock().await;
+        Ok(state.keys().cloned().collect())
+    }
+
+    /// Clear all state
+    #[napi]
+    pub async fn clear(&self) -> Result<()> {
+        let mut state = self.state.lock().await;
+        state.clear();
+        Ok(())
+    }
+
+    /// Get the number of items in state
+    #[napi]
+    pub async fn size(&self) -> Result<i32> {
+        let state = self.state.lock().await;
+        Ok(state.len() as i32)
+    }
+}
+
+// =============================================================================
+// OpenTelemetry Span
+// =============================================================================
+
+/// OpenTelemetry Span for distributed tracing
+#[napi]
+pub struct Span {
+    // For now, we'll use a simple wrapper
+    // In the future, this will wrap sdk-core's telemetry::Span
+    name: String,
+    attributes: Arc<StdMutex<HashMap<String, String>>>,
+    ended: Arc<StdMutex<bool>>,
+}
+
+#[napi]
+impl Span {
+    /// Create a new span with the given name
+    #[napi(factory)]
+    pub fn create(name: String) -> Self {
+        Span {
+            name,
+            attributes: Arc::new(StdMutex::new(HashMap::new())),
+            ended: Arc::new(StdMutex::new(false)),
+        }
+    }
+
+    /// Get the span name
+    #[napi(getter)]
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    /// Set a string attribute on the span
+    #[napi]
+    pub fn set_attribute(&self, key: String, value: String) -> Result<()> {
+        let mut attrs = self.attributes.lock()
+            .map_err(|e| Error::from_reason(format!("Failed to lock attributes: {}", e)))?;
+        attrs.insert(key, value);
+        Ok(())
+    }
+
+    /// Get all attributes
+    #[napi]
+    pub fn get_attributes(&self) -> Result<HashMap<String, String>> {
+        let attrs = self.attributes.lock()
+            .map_err(|e| Error::from_reason(format!("Failed to lock attributes: {}", e)))?;
+        Ok(attrs.clone())
+    }
+
+    /// Add an event to the span
+    #[napi]
+    pub fn add_event(&self, name: String, attributes: Option<HashMap<String, String>>) -> Result<()> {
+        // For now, just log it
+        // In the future, this will use sdk-core's telemetry
+        let attrs_str = attributes
+            .map(|a| format!("{:?}", a))
+            .unwrap_or_else(|| "{}".to_string());
+        log::info!("Span event: {} on span '{}' with attributes: {}", name, self.name, attrs_str);
+        Ok(())
+    }
+
+    /// Record an error on the span
+    #[napi]
+    pub fn record_error(&self, error: String) -> Result<()> {
+        log::error!("Span error on '{}': {}", self.name, error);
+        self.set_attribute("error".to_string(), "true".to_string())?;
+        self.set_attribute("error.message".to_string(), error)?;
+        Ok(())
+    }
+
+    /// End the span
+    #[napi]
+    pub fn end(&self) -> Result<()> {
+        let mut ended = self.ended.lock()
+            .map_err(|e| Error::from_reason(format!("Failed to lock ended flag: {}", e)))?;
+
+        if *ended {
+            return Err(Error::from_reason("Span already ended"));
+        }
+
+        *ended = true;
+        log::info!("Span ended: {}", self.name);
+        Ok(())
+    }
+
+    /// Check if span is ended
+    #[napi]
+    pub fn is_ended(&self) -> Result<bool> {
+        let ended = self.ended.lock()
+            .map_err(|e| Error::from_reason(format!("Failed to lock ended flag: {}", e)))?;
+        Ok(*ended)
     }
 }

@@ -1,16 +1,23 @@
 /**
  * Agent component for LLM-driven autonomous execution.
  *
- * Phase 1: Simple agent with external LLM integration and tool orchestration
- * Phase 2: Platform-backed agents with durable execution and multi-agent coordination
+ * Production ready with support for the new LM class and durable execution
  */
 
 import type { Context, ToolSchema } from './types.js';
 import type { Tool } from './tool.js';
 import { ContextImpl } from './context.js';
+import type { LM } from './lm.js';
+import type {
+  Message as LMMessage,
+  GenerateRequest as LMGenerateRequest,
+  GenerateResponse as LMGenerateResponse,
+  ToolCall as LMToolCall,
+} from './lm.js';
 
 /**
- * Message role in conversation
+ * Message role in conversation (for backwards compatibility)
+ * @deprecated Use MessageRole from lm.js instead
  */
 export enum MessageRole {
   System = 'system',
@@ -19,29 +26,23 @@ export enum MessageRole {
 }
 
 /**
- * Conversation message
+ * Conversation message (uses LM types internally)
  */
-export interface Message {
-  role: MessageRole;
-  content: string;
-}
+export type Message = LMMessage;
 
 /**
  * Message factory functions
  */
 export const Message = {
-  system: (content: string): Message => ({ role: MessageRole.System, content }),
-  user: (content: string): Message => ({ role: MessageRole.User, content }),
-  assistant: (content: string): Message => ({ role: MessageRole.Assistant, content })
+  system: (content: string): Message => ({ role: 'system', content }),
+  user: (content: string): Message => ({ role: 'user', content }),
+  assistant: (content: string): Message => ({ role: 'assistant', content })
 };
 
 /**
- * Tool call from LLM
+ * Tool call from LLM (uses LM types internally)
  */
-export interface ToolCall {
-  name: string;
-  arguments: string; // JSON string
-}
+export type ToolCall = LMToolCall;
 
 /**
  * Token usage statistics
@@ -53,7 +54,8 @@ export interface TokenUsage {
 }
 
 /**
- * Generation configuration
+ * Generation configuration (for backwards compatibility)
+ * @deprecated Use GenerationConfig from lm.js instead
  */
 export interface GenerationConfig {
   temperature?: number;
@@ -62,7 +64,8 @@ export interface GenerationConfig {
 }
 
 /**
- * LLM generation request
+ * LLM generation request (for backwards compatibility)
+ * @deprecated Use GenerateRequest from lm.js instead
  */
 export interface GenerateRequest {
   model: string;
@@ -73,7 +76,8 @@ export interface GenerateRequest {
 }
 
 /**
- * LLM generation response
+ * LLM generation response (for backwards compatibility)
+ * @deprecated Use GenerateResponse from lm.js instead
  */
 export interface GenerateResponse {
   text: string;
@@ -83,7 +87,8 @@ export interface GenerateResponse {
 }
 
 /**
- * Language model interface
+ * Language model interface (for backwards compatibility)
+ * @deprecated Use LM class from lm.js instead
  */
 export interface LanguageModel {
   /**
@@ -112,8 +117,8 @@ export interface AgentResult {
 export interface AgentOptions {
   /** Agent name/identifier */
   name: string;
-  /** Language model instance */
-  model: LanguageModel;
+  /** Language model instance (LM class or legacy LanguageModel) */
+  model: LM | LanguageModel;
   /** System instructions for the agent */
   instructions: string;
   /** List of tools available to the agent */
@@ -161,12 +166,13 @@ export interface AgentOptions {
  */
 export class Agent {
   readonly name: string;
-  readonly model: LanguageModel;
+  readonly model: LM | LanguageModel;
   readonly instructions: string;
   readonly modelName: string;
   readonly temperature: number;
   readonly maxIterations: number;
   private tools: Map<string, Tool> = new Map();
+  private isNewLM: boolean;
 
   constructor(options: AgentOptions) {
     this.name = options.name;
@@ -175,6 +181,9 @@ export class Agent {
     this.modelName = options.modelName || 'gpt-4o-mini';
     this.temperature = options.temperature ?? 0.7;
     this.maxIterations = options.maxIterations || 10;
+
+    // Detect if it's the new LM class (has static factory methods)
+    this.isNewLM = 'generate' in options.model && !('stream' in (options.model as any).constructor);
 
     // Build tool registry
     if (options.tools) {
@@ -189,6 +198,65 @@ export class Agent {
           this.tools.set(toolInstance.name, toolInstance);
         }
       }
+    }
+  }
+
+  /**
+   * Convert ToolSchema to LM ToolDefinition
+   */
+  private convertToolSchema(schema: ToolSchema): any {
+    return {
+      name: schema.name,
+      description: schema.description,
+      parameters: JSON.stringify(schema.input_schema),
+      strict: false,
+    };
+  }
+
+  /**
+   * Generate using the model (handles both old and new LM types)
+   */
+  private async generateWithModel(messages: Message[], toolDefs: ToolSchema[]): Promise<GenerateResponse> {
+    if (this.isNewLM) {
+      // New LM class - use new types
+      const lm = this.model as LM;
+      const request: LMGenerateRequest = {
+        model: this.modelName,
+        systemPrompt: this.instructions,
+        messages: messages as LMMessage[],
+        tools: toolDefs.length > 0 ? toolDefs.map(t => this.convertToolSchema(t)) : undefined,
+        config: {
+          temperature: this.temperature,
+        },
+      };
+
+      const response = await lm.generate(request);
+
+      // Convert response to old format
+      return {
+        text: response.text,
+        usage: response.usage ? {
+          promptTokens: response.usage.promptTokens || 0,
+          completionTokens: response.usage.completionTokens || 0,
+          totalTokens: response.usage.totalTokens || 0,
+        } : undefined,
+        finishReason: response.finishReason,
+        toolCalls: response.toolCalls,
+      };
+    } else {
+      // Legacy LanguageModel - use old types
+      const legacyModel = this.model as LanguageModel;
+      const request: GenerateRequest = {
+        model: this.modelName,
+        systemPrompt: this.instructions,
+        messages,
+        tools: toolDefs.length > 0 ? toolDefs : undefined,
+        config: {
+          temperature: this.temperature,
+        },
+      };
+
+      return await legacyModel.generate(request);
     }
   }
 
@@ -221,19 +289,8 @@ export class Agent {
       // Build tool definitions for LLM
       const toolDefs = Array.from(this.tools.values()).map(tool => tool.getSchema());
 
-      // Create LLM request
-      const request: GenerateRequest = {
-        model: this.modelName,
-        systemPrompt: this.instructions,
-        messages,
-        tools: toolDefs.length > 0 ? toolDefs : undefined,
-        config: {
-          temperature: this.temperature
-        }
-      };
-
-      // Call LLM
-      const response = await this.model.generate(request);
+      // Call LLM (using helper to handle both old and new types)
+      const response = await this.generateWithModel(messages, toolDefs);
 
       // Add assistant response to messages
       messages.push(Message.assistant(response.text));
@@ -352,18 +409,8 @@ export class Agent {
     // Add user message
     const conversation = [...messages, Message.user(userMessage)];
 
-    // Build request (no tools for simple chat)
-    const request: GenerateRequest = {
-      model: this.modelName,
-      systemPrompt: this.instructions,
-      messages: conversation,
-      config: {
-        temperature: this.temperature
-      }
-    };
-
-    // Call LLM
-    const response = await this.model.generate(request);
+    // Call LLM (no tools for simple chat, using helper)
+    const response = await this.generateWithModel(conversation, []);
 
     // Add assistant response
     conversation.push(Message.assistant(response.text));

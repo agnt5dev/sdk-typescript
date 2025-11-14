@@ -33,5 +33,11 @@ uuid = { version = "1.0", features = ["v4"] }
 # Async channels
 flume = "0.11"
 
+# Logging
+log = "0.4"
+
+# Futures and streams
+futures-util = "0.3"
+
 [build-dependencies]
 napi-build = "2"
