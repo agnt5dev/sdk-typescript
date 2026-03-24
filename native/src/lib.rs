@@ -1,7 +1,7 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use napi::threadsafe_function::{
-    ThreadsafeFunction, ErrorStrategy,
+    ThreadsafeFunction, ErrorStrategy, ThreadsafeFunctionCallMode,
 };
 
 use agnt5_sdk_core::worker::{Worker as CoreWorker, WorkerConfig};
@@ -28,20 +28,21 @@ pub struct WorkerOptions {
     pub service_type: Option<String>,
     /// Coordinator endpoint URL
     pub coordinator_endpoint: Option<String>,
-    /// Tenant ID
-    pub tenant_id: Option<String>,
-    /// Deployment ID
-    pub deployment_id: Option<String>,
 }
 
 /// Component type enum matching protobuf
 #[napi(string_enum)]
 pub enum ComponentType {
     Function,
+    Flow,
+    Object,
+    Task,
     Workflow,
     Agent,
     Tool,
+    Mcp,
     Entity,
+    Scorer,
 }
 
 /// Component info for registration
@@ -58,21 +59,26 @@ impl From<ComponentInfoData> for ComponentInfo {
     fn from(data: ComponentInfoData) -> Self {
         use agnt5_sdk_core::pb::ComponentType as PbComponentType;
 
-        // Parse component type from string
+        // Parse component type from string (matches proto ComponentType enum)
         let component_type = match data.component_type.to_lowercase().as_str() {
             "function" => PbComponentType::Function as i32,
+            "flow" => PbComponentType::Flow as i32,
+            "object" => PbComponentType::Object as i32,
+            "task" => PbComponentType::Task as i32,
             "workflow" => PbComponentType::Workflow as i32,
             "agent" => PbComponentType::Agent as i32,
             "tool" => PbComponentType::Tool as i32,
+            "mcp" => PbComponentType::Mcp as i32,
             "entity" => PbComponentType::Entity as i32,
+            "scorer" => PbComponentType::Scorer as i32,
             _ => PbComponentType::Function as i32, // default to function
         };
 
         ComponentInfo {
             name: data.name,
             component_type,
-            input_schema: None,  // Will be set later from TypeScript schemas
-            output_schema: None, // Will be set later from TypeScript schemas
+            input_schema: None,
+            output_schema: None,
             config: data.config.unwrap_or_default(),
             metadata: data.metadata.unwrap_or_default(),
             definition: data.definition,
@@ -117,7 +123,10 @@ pub struct Worker {
     service_name: String,
     config: WorkerConfig,
     core_worker: Arc<TokioMutex<CoreWorker>>,
+    /// Fire-and-forget callback to JS handler. The JS side calls resolveResponse() when done.
     message_handler: Arc<StdMutex<Option<ThreadsafeFunction<RuntimeMessageData, ErrorStrategy::Fatal>>>>,
+    /// Response channel map: invocation_id → oneshot sender for the response JSON
+    response_map: Arc<StdMutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>>,
 }
 
 #[napi]
@@ -132,15 +141,9 @@ impl Worker {
             options.service_type.unwrap_or_else(|| "function".to_string()),
         );
 
-        // Override config from options if provided
+        // Override coordinator endpoint if provided
         if let Some(endpoint) = options.coordinator_endpoint {
             config.coordinator_endpoint = endpoint;
-        }
-        if let Some(tenant) = options.tenant_id {
-            config.tenant_id = tenant;
-        }
-        if let Some(deployment) = options.deployment_id {
-            config.deployment_id = deployment;
         }
 
         // Create core worker with empty components initially
@@ -155,6 +158,7 @@ impl Worker {
             config,
             core_worker: Arc::new(TokioMutex::new(core_worker)),
             message_handler: Arc::new(StdMutex::new(None)),
+            response_map: Arc::new(StdMutex::new(HashMap::new())),
         })
     }
 
@@ -176,23 +180,25 @@ impl Worker {
         self.config.coordinator_endpoint.clone()
     }
 
-    /// Get tenant ID
+    /// Get tenant ID from environment (no longer on WorkerConfig)
     #[napi(getter)]
     pub fn tenant_id(&self) -> String {
-        self.config.tenant_id.clone()
+        std::env::var("AGNT5_TENANT_ID").unwrap_or_default()
     }
 
-    /// Get deployment ID
+    /// Get deployment ID from environment (no longer on WorkerConfig)
     #[napi(getter)]
     pub fn deployment_id(&self) -> String {
-        self.config.deployment_id.clone()
+        std::env::var("AGNT5_DEPLOYMENT_ID").unwrap_or_default()
     }
 
-    /// Set the message handler callback
+    /// Set the message handler callback.
+    /// The JS callback should NOT return a value. Instead, call resolveResponse()
+    /// with the invocation ID and JSON response when async processing completes.
     #[napi]
     pub fn set_message_handler(
         &self,
-        #[napi(ts_arg_type = "(message: RuntimeMessageData) => Promise<ServiceMessageData | null>")]
+        #[napi(ts_arg_type = "(message: RuntimeMessageData) => void")]
         callback: JsFunction,
     ) -> Result<()> {
         let tsfn: ThreadsafeFunction<RuntimeMessageData, ErrorStrategy::Fatal> = callback
@@ -204,6 +210,21 @@ impl Worker {
             .map_err(|e| Error::from_reason(format!("Failed to lock message handler: {}", e)))?;
         *handler = Some(tsfn);
 
+        Ok(())
+    }
+
+    /// Called by JS handler when async processing completes.
+    /// Sends the response JSON back through the oneshot channel to the waiting Rust handler.
+    #[napi]
+    pub fn resolve_response(&self, invocation_id: String, response_json: String) -> Result<()> {
+        let sender = {
+            let mut map = self.response_map.lock()
+                .map_err(|e| Error::from_reason(format!("Failed to lock response map: {}", e)))?;
+            map.remove(&invocation_id)
+        };
+        if let Some(sender) = sender {
+            let _ = sender.send(response_json);
+        }
         Ok(())
     }
 
@@ -231,97 +252,136 @@ impl Worker {
             .clone()
             .ok_or_else(|| Error::from_reason("Message handler not set. Call set_message_handler() first."))?;
 
+        // Shared response map for the handler closure
+        let response_map = self.response_map.clone();
+
         // Create message handler that calls TypeScript callback
         let message_handler = move |runtime_msg: RuntimeMessage, _tx: flume::Sender<ServiceMessage>| {
             let handler_clone = handler.clone();
+            let response_map = response_map.clone();
 
             async move {
-                use agnt5_sdk_core::pb::{runtime_message, service_message, ExecuteComponentResponse};
+                use agnt5_sdk_core::pb::{runtime_message, service_message, DispatchComponentResponse, dispatch_component_response};
 
-                // Extract ExecuteComponentRequest from RuntimeMessage
-                let execute_request = match runtime_msg.message_data {
-                    Some(runtime_message::MessageData::ExecuteComponent(req)) => req,
+                // Extract DispatchComponentRequest from RuntimeMessage.
+                // Other message types (health checks, checkpoint acks, etc.) are
+                // handled internally by the core worker — skip them here.
+                let dispatch_request = match runtime_msg.message_data {
+                    Some(runtime_message::MessageData::DispatchComponent(req)) => req,
                     _ => {
-                        return Err(agnt5_sdk_core::error::SdkError::Internal(
-                            "Expected ExecuteComponentRequest".to_string()
-                        ));
+                        return Ok(None);
                     }
                 };
 
-                // Convert component type to string
-                let component_type_str = match execute_request.component_type {
+                // Convert component type i32 to string (matches proto ComponentType enum values)
+                let component_type_str = match dispatch_request.component_type {
                     1 => "function",
-                    2 => "workflow",
-                    3 => "agent",
-                    4 => "tool",
-                    5 => "entity",
+                    2 => "flow",
+                    3 => "object",
+                    4 => "task",
+                    5 => "workflow",
+                    6 => "agent",
+                    7 => "tool",
+                    8 => "mcp",
+                    9 => "entity",
+                    10 => "scorer",
                     _ => "unknown",
                 }.to_string();
 
                 // Convert input_data bytes to JSON string
-                let input_json = String::from_utf8(execute_request.input_data.clone())
+                let input_json = String::from_utf8(dispatch_request.input_data.clone())
                     .unwrap_or_else(|_| "{}".to_string());
+
+                let invocation_id = dispatch_request.invocation_id.clone();
 
                 // Create simplified RuntimeMessageData for TypeScript
                 let runtime_msg_data = RuntimeMessageData {
-                    invocation_id: execute_request.invocation_id.clone(),
-                    component_name: execute_request.component_name.clone(),
+                    invocation_id: invocation_id.clone(),
+                    component_name: dispatch_request.component_name.clone(),
                     component_type: component_type_str,
                     input_json,
-                    metadata: execute_request.metadata.clone(),
+                    metadata: dispatch_request.metadata.clone(),
                 };
 
-                // Call TypeScript handler
-                let response: Option<ServiceMessageData> = handler_clone
-                    .call_async(runtime_msg_data)
-                    .await
-                    .map_err(|e| agnt5_sdk_core::error::SdkError::Internal(
-                        format!("TypeScript handler error: {}", e)
+                // Set up response channel BEFORE firing the JS callback.
+                // JS handler calls resolveResponse(invocationId, json) when done.
+                let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+                {
+                    let mut map = response_map.lock()
+                        .map_err(|e| agnt5_sdk_core::error::SdkError::Internal(
+                            format!("Failed to lock response map: {}", e)
+                        ))?;
+                    map.insert(invocation_id.clone(), tx);
+                }
+
+                // Fire-and-forget: send message to JS thread, don't wait for return value.
+                // napi-rs ThreadsafeFunction can't properly handle async (Promise) returns,
+                // so we use a separate channel (resolveResponse) for the result.
+                handler_clone.call(runtime_msg_data, ThreadsafeFunctionCallMode::NonBlocking);
+
+                // Wait for JS handler to call resolveResponse() (with 5 min timeout)
+                let response_json = tokio::time::timeout(
+                    std::time::Duration::from_secs(300),
+                    rx,
+                ).await
+                    .map_err(|_| agnt5_sdk_core::error::SdkError::Internal(
+                        format!("Handler response timeout for invocation {}", invocation_id)
+                    ))?
+                    .map_err(|_| agnt5_sdk_core::error::SdkError::Internal(
+                        format!("Response channel dropped for invocation {}", invocation_id)
                     ))?;
 
-                // Convert response to ServiceMessage
-                if let Some(resp) = response {
-                    let execute_response = if let Some(err_msg) = resp.error {
-                        // Error response
-                        ExecuteComponentResponse {
-                            invocation_id: resp.invocation_id,
-                            success: false,
-                            result: None,
-                            error_message: err_msg,
-                            metadata: HashMap::new(),
-                            is_chunk: false,
-                            done: true,
-                            chunk_index: 0,
-                            attempt: 0,
-                        }
-                    } else {
-                        // Success response
-                        let output_bytes = resp.output_json
-                            .unwrap_or_else(|| "null".to_string())
-                            .into_bytes();
+                // Parse the JSON response
+                let resp: serde_json::Value = serde_json::from_str(&response_json)
+                    .map_err(|e| agnt5_sdk_core::error::SdkError::Internal(
+                        format!("Failed to parse handler response: {}", e)
+                    ))?;
 
-                        ExecuteComponentResponse {
-                            invocation_id: resp.invocation_id,
-                            success: true,
-                            result: Some(agnt5_sdk_core::pb::execute_component_response::Result::OutputData(output_bytes)),
-                            error_message: String::new(),
-                            metadata: HashMap::new(),
-                            is_chunk: false,
-                            done: true,
-                            chunk_index: 0,
-                            attempt: 0,
-                        }
-                    };
+                let invocation_id = resp["invocationId"].as_str().unwrap_or("").to_string();
+                let error_msg = resp["error"].as_str().map(|s| s.to_string());
+                let output_json = resp["outputJson"].as_str().map(|s| s.to_string());
 
-                    let service_msg = ServiceMessage {
-                        worker_id: String::new(), // Will be set by core worker
-                        message_type: Some(service_message::MessageType::FunctionResponse(execute_response)),
-                    };
-
-                    Ok(Some(service_msg))
+                let dispatch_response = if let Some(err_msg) = error_msg {
+                    // Error response
+                    DispatchComponentResponse {
+                        invocation_id,
+                        success: false,
+                        result: None,
+                        error_message: err_msg,
+                        metadata: HashMap::new(),
+                        event_type: String::new(),
+                        content_index: 0,
+                        sequence: 0,
+                        attempt: 0,
+                        source_timestamp_ns: 0,
+                    }
                 } else {
-                    Ok(None)
-                }
+                    // Success response
+                    let output_bytes = output_json
+                        .unwrap_or_else(|| "null".to_string())
+                        .into_bytes();
+
+                    DispatchComponentResponse {
+                        invocation_id,
+                        success: true,
+                        result: Some(dispatch_component_response::Result::OutputData(output_bytes)),
+                        error_message: String::new(),
+                        metadata: HashMap::new(),
+                        event_type: String::new(),
+                        content_index: 0,
+                        sequence: 0,
+                        attempt: 0,
+                        source_timestamp_ns: 0,
+                    }
+                };
+
+                let service_msg = ServiceMessage {
+                    worker_id: String::new(), // Will be set by core worker
+                    metadata: HashMap::new(), // Always empty — metadata flows in inner response
+                    message_type: Some(service_message::MessageType::FunctionResponse(dispatch_response)),
+                };
+
+                Ok(Some(service_msg))
             }
         };
 
@@ -369,7 +429,6 @@ pub async fn check_platform_connectivity(coordinator_url: String) -> Result<bool
         .map_err(|e| Error::from_reason(format!("Invalid URL: {}", e)))?;
 
     // Try to connect to the health endpoint
-    // Most coordinators should have a health check endpoint
     let health_url = format!("{}/health", coordinator_url.trim_end_matches('/'));
 
     match reqwest::get(&health_url).await {
@@ -500,7 +559,7 @@ impl Span {
     #[napi]
     pub fn add_event(&self, name: String, attributes: Option<HashMap<String, String>>) -> Result<()> {
         // For now, just log it
-        // In the future, this will use sdk-core's telemetry
+        // TODO: connect to sdk-core's telemetry
         let attrs_str = attributes
             .map(|a| format!("{:?}", a))
             .unwrap_or_else(|| "{}".to_string());

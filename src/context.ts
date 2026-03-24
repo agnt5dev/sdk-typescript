@@ -1,4 +1,6 @@
 import type { Context, Logger } from './types.js';
+import { WaitingForUserInputError } from './errors.js';
+import type { HITLInputType, HITLOption } from './errors.js';
 import Database from 'better-sqlite3';
 import { join } from 'path';
 import { mkdirSync, existsSync } from 'fs';
@@ -122,6 +124,7 @@ class MemoryStorage implements StorageBackend {
  */
 export class ContextImpl implements Context {
   private storage: StorageBackend;
+  private _pauseIndex = 0;
 
   constructor(
     public readonly invocationId: string,
@@ -189,6 +192,46 @@ export class ContextImpl implements Context {
         console.debug(`[DEBUG] ${message}`, meta || '');
       },
     };
+  }
+
+  async waitForUser(
+    question: string,
+    options?: {
+      inputType?: HITLInputType;
+      options?: HITLOption[];
+      allowCustom?: boolean;
+      skippable?: boolean;
+    },
+  ): Promise<string | null> {
+    const pauseIndex = this._pauseIndex++;
+    const responseKey = `user_response:${this.runId}:${pauseIndex}`;
+    const stepName = `wait_for_user_${pauseIndex}`;
+
+    // Check for cached response (resume path)
+    const cached = await this.storage.getCheckpoint(responseKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    // First call — throw to pause execution
+    throw new WaitingForUserInputError({
+      runId: this.runId,
+      question,
+      inputType: options?.inputType,
+      options: options?.options,
+      pauseIndex,
+      allowCustom: options?.allowCustom,
+      skippable: options?.skippable,
+      stepName,
+    });
+  }
+
+  /**
+   * Store a user response for HITL resume (called by platform on user reply).
+   */
+  async setUserResponse(pauseIndex: number, response: string | null): Promise<void> {
+    const responseKey = `user_response:${this.runId}:${pauseIndex}`;
+    await this.storage.setCheckpoint(responseKey, response);
   }
 
   /**

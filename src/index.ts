@@ -14,8 +14,12 @@ export { ContextImpl } from './context.js';
 export { PlatformContext } from './platform-context.js';
 
 // Client exports
-export { Client, EntityProxy } from './client.js';
-export type { ClientOptions, RunOptions, RunResponse } from './client.js';
+export { Client, EntityProxy, RunResponse } from './client.js';
+export type { ClientOptions, RunOptions, RunStatus, RunErrorDetail, SubmitResponse, ReceivedEvent } from './client.js';
+
+// Batch exports
+export { BatchResult, BatchStatusResult } from './batch.js';
+export type { BatchConfig, BatchItemInput, BatchItemResult, BatchItemError, BatchStats, BatchStatus, CancelBatchResult } from './batch.js';
 
 // Error exports
 export {
@@ -36,6 +40,7 @@ export {
   getErrorMessage,
   createErrorFromResponse,
 } from './errors.js';
+export type { HITLInputType, HITLOption } from './errors.js';
 
 // Retry utilities exports
 export {
@@ -73,15 +78,6 @@ export type { SchemaFormat, SchemaConversionOptions } from './schema-utils.js';
 // Tool exports
 export { Tool, ToolRegistry, tool } from './tool.js';
 
-// Entity exports
-export {
-  entity,
-  EntityType,
-  EntityInstance,
-  _clearEntityState,
-  _getEntityState,
-  _setEntityStorage
-} from './entity.js';
 
 // Workflow exports
 export { workflow, WorkflowRegistry } from './workflow.js';
@@ -101,7 +97,7 @@ export {
 } from './workflow-utils.js';
 
 // Agent exports
-export { Agent, MessageRole, Message } from './agent.js';
+export { Agent, MessageRole, Message, Handoff, handoff } from './agent.js';
 export type {
   Message as IMessage,
   ToolCall,
@@ -113,6 +109,30 @@ export type {
   AgentResult,
   AgentOptions
 } from './agent.js';
+
+// Event exports
+export type {
+  AgentEvent,
+  BaseEvent,
+  AgentStarted,
+  AgentCompleted,
+  AgentFailed,
+  AgentIterationStarted,
+  AgentIterationCompleted,
+  ToolCallStarted,
+  ToolCallCompleted,
+  ToolCallFailed,
+} from './events.js';
+export {
+  agentStarted,
+  agentCompleted,
+  agentFailed,
+  iterationStarted,
+  iterationCompleted,
+  toolCallStarted,
+  toolCallCompleted,
+  toolCallFailed,
+} from './events.js';
 
 // Language Model exports
 export { LM, systemMessage, userMessage, assistantMessage, createTool, parseToolArguments, jsonSchemaFormat } from './lm.js';
@@ -138,6 +158,115 @@ export type {
   GroqConfig,
   OpenRouterConfig,
 } from './lm.js';
+
+// Context propagation exports
+export { runWithContext, getCurrentContext, requireContext } from './async-context.js';
+export type { PropagatedContext } from './async-context.js';
+
+// State management exports
+export {
+  StateManager,
+  SessionContext,
+  UserContext,
+  ScopedState,
+  MemoryStateAdapter,
+} from './state.js';
+export type { StateAdapter } from './state.js';
+
+// MCP exports
+export { MCPClient, MCPError } from './mcp.js';
+export type {
+  McpTool,
+  McpToolWithServer,
+  ToolContent,
+  CallToolResult,
+  StdioConfig,
+  SseConfig,
+  TransportType,
+  ServerConfig,
+} from './mcp.js';
+
+// Tracing exports
+export { Span, withSpan, spanContext, span, getCurrentSpanInfo } from './tracing.js';
+export type { SpanInfo } from './tracing.js';
+
+// Scorer exports
+export {
+  ScorerResult,
+  ScorerRegistry,
+  scorer,
+  isScorer,
+  getScorerConfig,
+  runScorer,
+  exactMatch,
+  contains,
+  jsonValid,
+  regexMatch,
+  levenshtein,
+  getRequestConfig,
+  getTraceEvents,
+  getTotalTokens,
+} from './scorer.js';
+export type {
+  ScorerRequest,
+  ScorerResultSummary,
+  ScorerContext,
+  ScorerHandler,
+  ScorerConfig,
+  TraceEvent,
+} from './scorer.js';
+
+// Evaluation exports
+export {
+  EvalContext,
+  EvalResponse,
+  BatchEvalItemResult,
+  BatchEvalResult,
+  LLMJudge,
+  normalizeBatchEvalItems,
+  normalizeScorerSpecs,
+} from './eval.js';
+export type {
+  BatchEvalItem,
+  BatchEvalStats,
+  LLMJudgeConfig,
+} from './eval.js';
+
+// Memory exports
+export {
+  MemoryScope,
+  ConversationMemory,
+  SemanticMemory,
+  InMemorySemanticAdapter,
+  GraphMemory,
+} from './memory.js';
+export type {
+  MemoryScopeType,
+  MemoryMessage,
+  MemoryMetadata,
+  MemoryResult,
+  SemanticMemoryAdapter,
+  GraphNode,
+  GraphRelationship,
+  GraphTraversalResult,
+} from './memory.js';
+
+// Platform adapter exports
+export {
+  StubJobQueueAdapter,
+  StubPlatformStateAdapter,
+  StubPlatformSpanAdapter,
+  startJobQueuePolling,
+} from './platform-adapters.js';
+export type {
+  JobAssignment,
+  JobCompletionResult,
+  JobQueueAdapter,
+  SpanAttributes,
+  PlatformSpanAdapter,
+  PlatformSpanHandle,
+  JobQueueConfig,
+} from './platform-adapters.js';
 
 // Type exports
 export type {

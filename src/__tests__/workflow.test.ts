@@ -56,7 +56,8 @@ describe('Workflow', () => {
       return step2;
     });
 
-    const ctx = new ContextImpl('inv-1', 'run-1', 0, 'test');
+    // Use in-memory storage to avoid stale SQLite checkpoints
+    const ctx = new ContextImpl('inv-1', 'run-1', 0, 'test', { storage: 'memory' });
 
     // First execution
     const result1 = await checkpointWorkflow(ctx, 5);

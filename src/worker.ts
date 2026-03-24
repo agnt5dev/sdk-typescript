@@ -1,5 +1,10 @@
 import type { WorkerOptions, Context } from './types.js';
 import { FunctionRegistry } from './function.js';
+import { WorkflowRegistry } from './workflow.js';
+import { ToolRegistry } from './tool.js';
+import { Agent } from './agent.js';
+import { runWithContext } from './async-context.js';
+import { WaitingForUserInputError } from './errors.js';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -68,6 +73,21 @@ export interface PlatformWorkerOptions extends WorkerOptions {
   tenantId?: string;
   /** Deployment ID */
   deploymentId?: string;
+  /** Auto-discover components from registries (default: false) */
+  autoRegister?: boolean;
+  /**
+   * Enable pull-based job queue polling (default: false).
+   * When enabled, the worker polls the platform for pending jobs
+   * in addition to receiving push-based dispatch via streaming.
+   * Requires NAPI bindings with PollJobs/CompleteJob support.
+   */
+  enableJobQueue?: boolean;
+  /** Maximum concurrent jobs from queue (default: 5) */
+  jobQueueConcurrency?: number;
+  /** Initial poll interval in milliseconds (default: 1000) */
+  jobQueuePollIntervalMs?: number;
+  /** Maximum poll interval with exponential backoff (default: 30000) */
+  jobQueueMaxPollIntervalMs?: number;
 }
 
 /**
@@ -209,55 +229,159 @@ export class Worker {
     return this.nativeWorker.deploymentId;
   }
 
+  /** Registered agents (keyed by name) for dispatch */
+  private agents: Map<string, Agent> = new Map();
+
   /**
-   * Handle incoming execution requests from the platform
+   * Register agents that can be dispatched by the worker.
    */
-  private async handleMessage(message: {
+  registerAgents(agents: Agent[]): void {
+    for (const agent of agents) {
+      this.agents.set(agent.name, agent);
+    }
+  }
+
+  /**
+   * Handle incoming execution requests from the platform.
+   * This is a SYNC callback (returns void) — napi-rs ThreadsafeFunction cannot
+   * properly handle async (Promise) return values. Instead, async processing
+   * starts here and calls nativeWorker.resolveResponse() when done, which sends
+   * the result back through a Rust oneshot channel.
+   */
+  private handleMessage(message: {
     invocationId: string;
     componentName: string;
     componentType: string;
     inputJson: string;
     metadata: Record<string, string>;
-  }): Promise<{ invocationId: string; outputJson?: string; error?: string } | null> {
-    try {
-      console.log(`📨 Received ${message.componentType} execution: ${message.componentName}`);
+  }): void {
+    this.processMessage(message).then(
+      (responseJson) => {
+        this.nativeWorker.resolveResponse(message.invocationId, responseJson);
+      },
+      (error) => {
+        this.nativeWorker.resolveResponse(
+          message.invocationId,
+          JSON.stringify({
+            invocationId: message.invocationId,
+            error: (error as Error).message || 'Unknown error',
+          }),
+        );
+      },
+    );
+  }
 
-      // Parse input data
-      const inputData = JSON.parse(message.inputJson);
+  /**
+   * Async message processing — dispatches to the appropriate component handler.
+   */
+  private async processMessage(message: {
+    invocationId: string;
+    componentName: string;
+    componentType: string;
+    inputJson: string;
+    metadata: Record<string, string>;
+  }): Promise<string> {
+    const runId = message.metadata?.run_id || message.invocationId;
 
-      // Create context
-      const ctx = new SimpleContext(
-        message.invocationId,
-        message.metadata.run_id || message.invocationId,
-        0, // attempt
-        this.serviceName
-      );
+    return runWithContext(
+      {
+        runId,
+        sessionId: message.metadata?.session_id,
+        userId: message.metadata?.user_id,
+        correlationId: message.metadata?.correlation_id || message.invocationId,
+        tenantId: message.metadata?.tenant_id,
+      },
+      async () => {
+        try {
+          console.log(`📨 Received ${message.componentType} execution: ${message.componentName}`);
 
-      // Route to appropriate handler based on component type
-      if (message.componentType === 'function') {
-        const fn = FunctionRegistry.get(message.componentName);
-        if (!fn) {
-          throw new Error(`Function not found: ${message.componentName}`);
+          // Parse input data
+          const inputData = JSON.parse(message.inputJson);
+
+          // Create context
+          const ctx = new SimpleContext(
+            message.invocationId,
+            runId,
+            parseInt(message.metadata?.attempt || '0', 10),
+            this.serviceName
+          );
+
+          let result: any;
+
+          switch (message.componentType) {
+            case 'function': {
+              const fn = FunctionRegistry.get(message.componentName);
+              if (!fn) {
+                throw new Error(`Function not found: ${message.componentName}`);
+              }
+              // Platform sends input as a JSON dict (like Python's **kwargs).
+              // Pass the whole dict as a single argument to the handler.
+              result = await fn.handler(ctx, inputData);
+              break;
+            }
+
+            case 'workflow': {
+              const wf = WorkflowRegistry.get(message.componentName);
+              if (!wf) {
+                throw new Error(`Workflow not found: ${message.componentName}`);
+              }
+              result = await wf.handler(ctx, inputData);
+              break;
+            }
+
+            case 'agent': {
+              const agent = this.agents.get(message.componentName);
+              if (!agent) {
+                throw new Error(`Agent not found: ${message.componentName}`);
+              }
+              const agentResult = await agent.run(inputData.prompt || inputData.message || JSON.stringify(inputData), ctx);
+              result = agentResult.output;
+              break;
+            }
+
+            case 'tool': {
+              const tool = ToolRegistry.get(message.componentName);
+              if (!tool) {
+                throw new Error(`Tool not found: ${message.componentName}`);
+              }
+              result = await tool.invoke(ctx, inputData);
+              break;
+            }
+
+            default:
+              throw new Error(`Unknown component type: ${message.componentType}`);
+          }
+
+          return JSON.stringify({
+            invocationId: message.invocationId,
+            outputJson: JSON.stringify(result),
+          });
+        } catch (error) {
+          // HITL: propagate pause signal to platform
+          if (error instanceof WaitingForUserInputError) {
+            return JSON.stringify({
+              invocationId: message.invocationId,
+              error: JSON.stringify({
+                type: 'waiting_for_user_input',
+                question: error.question,
+                inputType: error.inputType,
+                options: error.options,
+                pauseIndex: error.pauseIndex,
+                allowCustom: error.allowCustom,
+                skippable: error.skippable,
+                stepName: error.stepName,
+              }),
+            });
+          }
+
+          console.error(`❌ Execution failed:`, error);
+          return JSON.stringify({
+            invocationId: message.invocationId,
+            error: (error as Error).message,
+          });
         }
-
-        // Execute the function handler
-        const result = await fn.handler(ctx, ...inputData.args);
-
-        // Return success response
-        return {
-          invocationId: message.invocationId,
-          outputJson: JSON.stringify(result),
-        };
-      } else {
-        throw new Error(`Component type not yet supported: ${message.componentType}`);
-      }
-    } catch (error) {
-      console.error(`❌ Execution failed:`, error);
-      return {
-        invocationId: message.invocationId,
-        error: (error as Error).message,
-      };
-    }
+      },
+    );
   }
 
   /**
@@ -276,17 +400,37 @@ export class Worker {
    Runtime: ${getRuntime()}
 `);
 
-    // Get all registered components
-    const functions = FunctionRegistry.getAll();
-    console.log(`📦 Registered components: ${functions.length} function(s)`);
+    // Collect all registered components
+    const components: Array<{ name: string; componentType: string; config: Record<string, string>; metadata: Record<string, string> }> = [];
 
-    // Register components with native worker
-    const components = functions.map(([name, config]) => ({
-      name,
-      componentType: 'function',
-      config: {},
-      metadata: {},
-    }));
+    // Functions
+    for (const [name] of FunctionRegistry.getAll()) {
+      components.push({ name, componentType: 'function', config: {}, metadata: {} });
+    }
+
+    // Workflows (auto-discover from registry)
+    for (const [name] of WorkflowRegistry.all()) {
+      components.push({ name, componentType: 'workflow', config: {}, metadata: {} });
+    }
+
+    // Tools (auto-discover from registry)
+    for (const [name] of ToolRegistry.all()) {
+      components.push({ name, componentType: 'tool', config: {}, metadata: {} });
+    }
+
+    // Agents (explicitly registered via registerAgents)
+    for (const [name] of this.agents) {
+      components.push({ name, componentType: 'agent', config: {}, metadata: {} });
+    }
+
+    const counts = {
+      function: components.filter(c => c.componentType === 'function').length,
+      workflow: components.filter(c => c.componentType === 'workflow').length,
+      tool: components.filter(c => c.componentType === 'tool').length,
+      agent: components.filter(c => c.componentType === 'agent').length,
+    };
+    const summary = Object.entries(counts).filter(([, n]) => n > 0).map(([t, n]) => `${n} ${t}(s)`).join(', ');
+    console.log(`📦 Registered components: ${summary || 'none'}`);
 
     await this.nativeWorker.setComponents(components);
 

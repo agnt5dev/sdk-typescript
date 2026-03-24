@@ -5,7 +5,7 @@
  */
 
 import type { Context, ToolSchema } from './types.js';
-import type { Tool } from './tool.js';
+import { Tool } from './tool.js';
 import { ContextImpl } from './context.js';
 import type { LM } from './lm.js';
 import type {
@@ -14,6 +14,18 @@ import type {
   GenerateResponse as LMGenerateResponse,
   ToolCall as LMToolCall,
 } from './lm.js';
+import { randomUUID } from 'crypto';
+import type { AgentEvent } from './events.js';
+import {
+  agentStarted,
+  agentCompleted,
+  agentFailed,
+  iterationStarted,
+  iterationCompleted,
+  toolCallStarted,
+  toolCallCompleted,
+  toolCallFailed,
+} from './events.js';
 
 /**
  * Message role in conversation (for backwards compatibility)
@@ -109,6 +121,44 @@ export interface AgentResult {
   output: string;
   toolCalls: Array<{ name: string; arguments: string; iteration: number }>;
   context: Context;
+  /** Name of agent control was handed off to (null if no handoff) */
+  handoffTo: string | null;
+  /** Metadata from the handoff (empty if no handoff) */
+  handoffMetadata: Record<string, any>;
+}
+
+/**
+ * Handoff configuration for agent-to-agent delegation
+ */
+export class Handoff {
+  readonly agent: Agent;
+  readonly description: string;
+  readonly toolName: string;
+  readonly passFullHistory: boolean;
+
+  constructor(
+    agent: Agent,
+    description?: string,
+    toolName?: string,
+    passFullHistory: boolean = true,
+  ) {
+    this.agent = agent;
+    this.description = description || agent.instructions || `Transfer to ${agent.name}`;
+    this.toolName = toolName || `transfer_to_${agent.name}`;
+    this.passFullHistory = passFullHistory;
+  }
+}
+
+/**
+ * Create a handoff configuration for agent delegation
+ */
+export function handoff(
+  agent: Agent,
+  description?: string,
+  toolName?: string,
+  passFullHistory: boolean = true,
+): Handoff {
+  return new Handoff(agent, description, toolName, passFullHistory);
 }
 
 /**
@@ -123,6 +173,8 @@ export interface AgentOptions {
   instructions: string;
   /** List of tools available to the agent */
   tools?: (Tool | any)[];
+  /** Handoff targets for agent-to-agent delegation */
+  handoffs?: (Agent | Handoff)[];
   /** Model name to use (e.g., "gpt-4o-mini") */
   modelName?: string;
   /** LLM temperature (0.0 to 1.0) */
@@ -172,6 +224,7 @@ export class Agent {
   readonly temperature: number;
   readonly maxIterations: number;
   private tools: Map<string, Tool> = new Map();
+  private handoffs: Handoff[] = [];
   private isNewLM: boolean;
 
   constructor(options: AgentOptions) {
@@ -187,18 +240,75 @@ export class Agent {
 
     // Build tool registry
     if (options.tools) {
-      for (const tool of options.tools) {
-        // Check if it's a Tool instance
-        if ('name' in tool && 'getSchema' in tool) {
-          this.tools.set(tool.name, tool);
-        }
-        // Check if it's a decorated function with _tool attached
-        else if ('_tool' in tool) {
-          const toolInstance = (tool as any)._tool as Tool;
-          this.tools.set(toolInstance.name, toolInstance);
-        }
+      for (const t of options.tools) {
+        this.addTool(t);
       }
     }
+
+    // Register handoff targets
+    if (options.handoffs) {
+      for (const item of options.handoffs) {
+        const h = item instanceof Handoff ? item : new Handoff(item);
+        this.handoffs.push(h);
+        // Create and register the transfer tool
+        const transferTool = this.createHandoffTool(h);
+        this.tools.set(transferTool.name, transferTool);
+      }
+    }
+  }
+
+  /**
+   * Add a tool to this agent's tool set
+   */
+  private addTool(t: Tool | any): void {
+    if (t instanceof Tool) {
+      this.tools.set(t.name, t);
+    } else if ('name' in t && 'getSchema' in t) {
+      this.tools.set(t.name, t);
+    } else if ('_tool' in t) {
+      const toolInstance = (t as any)._tool as Tool;
+      this.tools.set(toolInstance.name, toolInstance);
+    }
+  }
+
+  /**
+   * Create an auto-generated transfer tool for a handoff target
+   */
+  private createHandoffTool(h: Handoff): Tool {
+    const targetAgent = h.agent;
+    const passHistory = h.passFullHistory;
+
+    return new Tool(
+      h.toolName,
+      h.description,
+      async (ctx: Context, args: Record<string, any>) => {
+        const message = args.message || args.prompt || '';
+
+        // Run target agent to completion
+        const result = await targetAgent.run(
+          message,
+          ctx,
+          passHistory ? (ctx as any)._agentConversation : undefined,
+        );
+
+        // Return with handoff marker
+        return {
+          _handoff: true,
+          to_agent: targetAgent.name,
+          output: result.output,
+          tool_calls: result.toolCalls,
+        };
+      },
+      {
+        inputSchema: {
+          type: 'object',
+          properties: {
+            message: { type: 'string', description: 'Message to send to the target agent' },
+          },
+          required: ['message'],
+        },
+      },
+    );
   }
 
   /**
@@ -261,7 +371,206 @@ export class Agent {
   }
 
   /**
-   * Run agent to completion
+   * Stream agent execution, yielding events at each stage.
+   *
+   * @example
+   * ```typescript
+   * for await (const event of agent.stream('Analyze tech news')) {
+   *   if (event.eventType === 'agent.completed') {
+   *     console.log('Done:', event.outputLength);
+   *   }
+   * }
+   * ```
+   */
+  async *stream(
+    userMessage: string,
+    context?: Context,
+    history?: Message[],
+  ): AsyncGenerator<AgentEvent | AgentResult, void, undefined> {
+    const agentCorrelationId = randomUUID();
+
+    // Create context if not provided
+    const ctx = context || new ContextImpl(
+      `agent-${this.name}-${Date.now()}`,
+      `run-${Date.now()}`,
+      0,
+      this.name,
+    );
+
+    // Stash conversation on context for handoff history passing
+    const messages: Message[] = history ? [...history] : [];
+    messages.push(Message.user(userMessage));
+    (ctx as any)._agentConversation = messages;
+
+    const toolNames = Array.from(this.tools.keys());
+    const allToolCalls: Array<{ name: string; arguments: string; iteration: number }> = [];
+
+    // ── AgentStarted ──
+    yield agentStarted(this.name, agentCorrelationId, {
+      agentModel: this.modelName,
+      toolNames,
+      maxIterations: this.maxIterations,
+    });
+
+    let completedIterations = 0;
+
+    try {
+      for (let iteration = 0; iteration < this.maxIterations; iteration++) {
+        const iterCorrelationId = randomUUID();
+
+        // ── IterationStarted ──
+        yield iterationStarted(iterCorrelationId, agentCorrelationId, {
+          iteration: iteration + 1,
+          maxIterations: this.maxIterations,
+        });
+
+        // Build tool definitions and call LLM
+        const toolDefs = Array.from(this.tools.values()).map(t => t.getSchema());
+        const response = await this.generateWithModel(messages, toolDefs);
+
+        messages.push(Message.assistant(response.text));
+
+        if (response.toolCalls && response.toolCalls.length > 0) {
+          // Execute tool calls
+          const toolResults: Array<{ tool: string; result: string | null; error: string | null }> = [];
+
+          for (const tc of response.toolCalls) {
+            const tcId = randomUUID();
+            const toolName = tc.name;
+            const toolArgsStr = tc.arguments;
+
+            allToolCalls.push({ name: toolName, arguments: toolArgsStr, iteration: iteration + 1 });
+
+            // ── ToolCallStarted ──
+            yield toolCallStarted(tcId, iterCorrelationId, { toolName, toolCallId: tcId });
+
+            try {
+              const toolArgs = JSON.parse(toolArgsStr);
+              const tool = this.tools.get(toolName);
+              if (!tool) {
+                yield toolCallFailed(tcId, iterCorrelationId, {
+                  toolName,
+                  toolCallId: tcId,
+                  error: `Tool '${toolName}' not found`,
+                });
+                toolResults.push({ tool: toolName, result: null, error: `Tool '${toolName}' not found` });
+                continue;
+              }
+
+              const result = await tool.invoke(ctx, toolArgs);
+
+              // ── Handoff detection ──
+              if (result && typeof result === 'object' && (result as any)._handoff) {
+                yield toolCallCompleted(tcId, iterCorrelationId, { toolName, toolCallId: tcId });
+
+                completedIterations = iteration + 1;
+                const handoffResult: AgentResult = {
+                  output: (result as any).output,
+                  toolCalls: [...allToolCalls, ...((result as any).tool_calls || [])],
+                  context: ctx,
+                  handoffTo: (result as any).to_agent,
+                  handoffMetadata: result as Record<string, any>,
+                };
+
+                // ── AgentCompleted (with handoff) ──
+                yield agentCompleted(this.name, agentCorrelationId, {
+                  iterations: completedIterations,
+                  toolCallsCount: allToolCalls.length,
+                  handoffTo: (result as any).to_agent,
+                  outputLength: handoffResult.output.length,
+                });
+
+                yield handoffResult;
+                return;
+              }
+
+              const resultText = JSON.stringify(result);
+              yield toolCallCompleted(tcId, iterCorrelationId, { toolName, toolCallId: tcId });
+              toolResults.push({ tool: toolName, result: resultText, error: null });
+            } catch (error) {
+              yield toolCallFailed(tcId, iterCorrelationId, {
+                toolName,
+                toolCallId: tcId,
+                error: String(error),
+              });
+              toolResults.push({ tool: toolName, result: null, error: String(error) });
+            }
+          }
+
+          // Add tool results to conversation
+          const resultsText = toolResults
+            .map(tr => tr.error ? `Tool: ${tr.tool}\nError: ${tr.error}` : `Tool: ${tr.tool}\nResult: ${tr.result}`)
+            .join('\n\n');
+          messages.push(Message.user(`Tool results:\n${resultsText}`));
+
+          // ── IterationCompleted (with tools) ──
+          yield iterationCompleted(iterCorrelationId, agentCorrelationId, {
+            iteration: iteration + 1,
+            hasToolCalls: true,
+            toolCallsCount: response.toolCalls.length,
+          });
+
+          completedIterations = iteration + 1;
+        } else {
+          // No tool calls — agent is done
+          completedIterations = iteration + 1;
+
+          // ── IterationCompleted (final) ──
+          yield iterationCompleted(iterCorrelationId, agentCorrelationId, {
+            iteration: iteration + 1,
+            hasToolCalls: false,
+            toolCallsCount: 0,
+          });
+
+          // ── AgentCompleted ──
+          yield agentCompleted(this.name, agentCorrelationId, {
+            iterations: completedIterations,
+            toolCallsCount: allToolCalls.length,
+            handoffTo: null,
+            outputLength: response.text.length,
+          });
+
+          yield {
+            output: response.text,
+            toolCalls: allToolCalls,
+            context: ctx,
+            handoffTo: null,
+            handoffMetadata: {},
+          } satisfies AgentResult;
+          return;
+        }
+      }
+
+      // Max iterations reached
+      completedIterations = this.maxIterations;
+      const finalOutput = messages[messages.length - 1]?.content || 'No output generated';
+
+      yield agentCompleted(this.name, agentCorrelationId, {
+        iterations: completedIterations,
+        toolCallsCount: allToolCalls.length,
+        handoffTo: null,
+        outputLength: finalOutput.length,
+      });
+
+      yield {
+        output: finalOutput,
+        toolCalls: allToolCalls,
+        context: ctx,
+        handoffTo: null,
+        handoffMetadata: {},
+      } satisfies AgentResult;
+    } catch (error) {
+      yield agentFailed(this.name, agentCorrelationId, {
+        iterations: completedIterations,
+        error: String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Run agent to completion (non-streaming).
+   * Consumes stream() internally and returns the final AgentResult.
    *
    * @example
    * ```typescript
@@ -269,117 +578,25 @@ export class Agent {
    * console.log(result.output);
    * ```
    */
-  async run(userMessage: string, context?: Context): Promise<AgentResult> {
-    // Create context if not provided
-    const ctx = context || new ContextImpl(
-      `agent-${this.name}-${Date.now()}`,
-      `run-${Date.now()}`,
-      0,
-      this.name
-    );
+  async run(
+    userMessage: string,
+    context?: Context,
+    history?: Message[],
+  ): Promise<AgentResult> {
+    let result: AgentResult | undefined;
 
-    // Initialize conversation
-    const messages: Message[] = [Message.user(userMessage)];
-    const allToolCalls: Array<{ name: string; arguments: string; iteration: number }> = [];
-
-    // Reasoning loop
-    for (let iteration = 0; iteration < this.maxIterations; iteration++) {
-      ctx.logger.info(`Agent iteration ${iteration + 1}/${this.maxIterations}`);
-
-      // Build tool definitions for LLM
-      const toolDefs = Array.from(this.tools.values()).map(tool => tool.getSchema());
-
-      // Call LLM (using helper to handle both old and new types)
-      const response = await this.generateWithModel(messages, toolDefs);
-
-      // Add assistant response to messages
-      messages.push(Message.assistant(response.text));
-
-      // Check if LLM wants to use tools
-      if (response.toolCalls && response.toolCalls.length > 0) {
-        ctx.logger.info(`Agent calling ${response.toolCalls.length} tool(s)`);
-
-        // Execute tool calls
-        const toolResults: Array<{ tool: string; result: string | null; error: string | null }> = [];
-
-        for (const toolCall of response.toolCalls) {
-          const toolName = toolCall.name;
-          const toolArgsStr = toolCall.arguments;
-
-          // Track tool call
-          allToolCalls.push({
-            name: toolName,
-            arguments: toolArgsStr,
-            iteration: iteration + 1
-          });
-
-          // Execute tool
-          try {
-            // Parse arguments
-            const toolArgs = JSON.parse(toolArgsStr);
-
-            // Get tool
-            const tool = this.tools.get(toolName);
-            if (!tool) {
-              toolResults.push({
-                tool: toolName,
-                result: null,
-                error: `Tool '${toolName}' not found`
-              });
-              continue;
-            }
-
-            // Execute tool
-            const result = await tool.invoke(ctx, toolArgs);
-            const resultText = JSON.stringify(result);
-
-            toolResults.push({
-              tool: toolName,
-              result: resultText,
-              error: null
-            });
-          } catch (error) {
-            ctx.logger.error(`Tool execution error: ${error}`);
-            toolResults.push({
-              tool: toolName,
-              result: null,
-              error: String(error)
-            });
-          }
-        }
-
-        // Add tool results to conversation
-        const resultsText = toolResults
-          .map(tr => {
-            if (tr.error) {
-              return `Tool: ${tr.tool}\nError: ${tr.error}`;
-            }
-            return `Tool: ${tr.tool}\nResult: ${tr.result}`;
-          })
-          .join('\n\n');
-
-        messages.push(Message.user(`Tool results:\n${resultsText}`));
-
-        // Continue loop for agent to process results
-      } else {
-        // No tool calls - agent is done
-        ctx.logger.info(`Agent completed after ${iteration + 1} iterations`);
-        return {
-          output: response.text,
-          toolCalls: allToolCalls,
-          context: ctx
-        };
+    for await (const event of this.stream(userMessage, context, history)) {
+      // The last yielded value that has 'output' is the AgentResult
+      if ('output' in event && 'toolCalls' in event && 'context' in event) {
+        result = event as AgentResult;
       }
     }
 
-    // Max iterations reached
-    ctx.logger.warn(`Agent reached max iterations (${this.maxIterations})`);
-    const finalOutput = messages[messages.length - 1]?.content || 'No output generated';
-    return {
-      output: finalOutput,
-      toolCalls: allToolCalls,
-      context: ctx
-    };
+    if (!result) {
+      throw new Error(`Agent '${this.name}' completed without producing a result`);
+    }
+
+    return result;
   }
 
   /**

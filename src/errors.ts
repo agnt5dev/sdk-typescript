@@ -103,23 +103,59 @@ export class RunError extends AGNT5Error {
   }
 }
 
+/** HITL input types */
+export type HITLInputType = 'text' | 'approval' | 'select' | 'multiselect';
+
+/** HITL option for select/multiselect/approval */
+export interface HITLOption {
+  id: string;
+  label: string;
+}
+
 /**
- * Human-in-the-loop exception (waiting for user input)
- * This is a special error that signals the workflow is paused
+ * Human-in-the-loop exception (waiting for user input).
+ *
+ * Thrown by ctx.waitForUser() to pause a workflow and request user interaction.
+ * The platform catches this, saves checkpoint state, and resumes when the user responds.
  */
 export class WaitingForUserInputError extends AGNT5Error {
   public readonly runId: string;
-  public readonly prompt: string;
-  public readonly inputType?: string;
-  public readonly choices?: string[];
+  public readonly question: string;
+  public readonly inputType: HITLInputType;
+  public readonly options: HITLOption[];
+  public readonly pauseIndex: number;
+  public readonly allowCustom: boolean;
+  public readonly skippable: boolean;
+  public readonly checkpointState: Record<string, any>;
+  public readonly stepName: string | undefined;
 
-  constructor(runId: string, prompt: string, inputType?: string, choices?: string[]) {
-    super(`Waiting for user input: ${prompt}`);
+  /** @deprecated Use `question` instead */
+  get prompt(): string { return this.question; }
+  /** @deprecated Use `options` instead */
+  get choices(): string[] { return this.options.map(o => o.label); }
+
+  constructor(opts: {
+    runId: string;
+    question: string;
+    inputType?: HITLInputType;
+    options?: HITLOption[];
+    pauseIndex?: number;
+    allowCustom?: boolean;
+    skippable?: boolean;
+    checkpointState?: Record<string, any>;
+    stepName?: string;
+  }) {
+    super(`Waiting for user input: ${opts.question}`);
     this.name = 'WaitingForUserInputError';
-    this.runId = runId;
-    this.prompt = prompt;
-    this.inputType = inputType;
-    this.choices = choices;
+    this.runId = opts.runId;
+    this.question = opts.question;
+    this.inputType = opts.inputType || 'text';
+    this.options = opts.options || [];
+    this.pauseIndex = opts.pauseIndex ?? 0;
+    this.allowCustom = opts.allowCustom ?? false;
+    this.skippable = opts.skippable ?? false;
+    this.checkpointState = opts.checkpointState || {};
+    this.stepName = opts.stepName;
   }
 }
 

@@ -384,6 +384,7 @@ impl TryFrom<JsGenerateRequest> for GenerateRequest {
             tool_choice,
             user_id: req.user_id,
             config,
+            previous_response_id: None,
             otel_context: None,
         })
     }
@@ -715,7 +716,7 @@ impl LanguageModel {
         tokio::spawn(async move {
             while let Some(chunk_result) = stream_handle.next().await {
                 match chunk_result {
-                    Ok(StreamChunk::Delta { content }) => {
+                    Ok(StreamChunk::Delta { content, .. }) => {
                         let js_chunk = JsStreamChunk {
                             chunk_type: "delta".to_string(),
                             content: Some(content),
@@ -734,6 +735,11 @@ impl LanguageModel {
                         };
                         let _ = callback.call(js_chunk, napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking);
                         break;
+                    }
+                    Ok(StreamChunk::ContentBlockStart { .. }) |
+                    Ok(StreamChunk::ContentBlockStop { .. }) => {
+                        // Content block markers — skip for now
+                        continue;
                     }
                     Err(e) => {
                         eprintln!("Stream error: {}", e);

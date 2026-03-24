@@ -9,10 +9,20 @@ import {
   ValidationError,
   createErrorFromResponse,
 } from './errors.js';
+import { BatchResult, BatchStatusResult } from './batch.js';
+import type { BatchConfig, BatchItemInput, CancelBatchResult } from './batch.js';
+import { EvalResponse, BatchEvalResult, BatchEvalItemResult, LLMJudge, normalizeBatchEvalItems, normalizeScorerSpecs } from './eval.js';
+import type { BatchEvalItem } from './eval.js';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 export interface ClientOptions {
   /** Gateway URL (default: http://localhost:34181) */
   gatewayUrl?: string;
+  /** API key for authentication (falls back to AGNT5_API_KEY env var) */
+  apiKey?: string;
   /** Request timeout in milliseconds (default: 30000) */
   timeout?: number;
   /** Max retry attempts for transient failures (default: 3) */
@@ -32,15 +42,168 @@ export interface RunOptions {
   maxRetries?: number;
 }
 
-export interface RunResponse {
-  runId: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-  output?: any;
-  error?: string;
-  submittedAt?: number;
-  startedAt?: number;
-  completedAt?: number;
+// ---------------------------------------------------------------------------
+// Run status & response types
+// ---------------------------------------------------------------------------
+
+/** Run execution status values */
+export type RunStatus =
+  | 'enqueued'
+  | 'started'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'paused'
+  | 'awaiting_input'
+  | 'timeout'
+  | 'unknown';
+
+/** Structured error detail from a failed run */
+export interface RunErrorDetail {
+  code: string;
+  message: string;
+  details?: Record<string, any>;
 }
+
+/** Raw JSON shape returned by platform APIs */
+interface RawRunResponse {
+  run_id?: string;
+  runId?: string;
+  status_code?: number;
+  status?: string;
+  output?: any;
+  error?: any;
+  duration_ms?: number;
+  trace_id?: string;
+  component?: string;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  failed_at?: string;
+  session_id?: string;
+  metadata?: Record<string, any>;
+}
+
+/**
+ * Typed response from run(), getResult(), waitForResult().
+ *
+ * Follows httpx-style patterns with isSuccess, isPending, isError, raiseForStatus().
+ *
+ * @example
+ * ```typescript
+ * const response = await client.run('greet', { name: 'Alice' });
+ * if (response.isSuccess) {
+ *   console.log(response.output);
+ * } else {
+ *   response.raiseForStatus();
+ * }
+ * ```
+ */
+export class RunResponse<T = any> {
+  readonly runId: string;
+  readonly statusCode: number;
+  readonly status: RunStatus;
+  readonly output: T | undefined;
+  readonly error: RunErrorDetail | undefined;
+  readonly durationMs: number | undefined;
+  readonly traceId: string | undefined;
+  readonly component: string | undefined;
+  readonly createdAt: string | undefined;
+  readonly startedAt: string | undefined;
+  readonly completedAt: string | undefined;
+  readonly failedAt: string | undefined;
+  readonly sessionId: string | undefined;
+  readonly metadata: Record<string, any> | undefined;
+
+  constructor(raw: RawRunResponse) {
+    this.runId = raw.run_id || raw.runId || '';
+    this.statusCode = raw.status_code ?? (raw.status === 'completed' ? 200 : raw.status === 'failed' ? 500 : 202);
+    this.status = (raw.status as RunStatus) || 'unknown';
+    this.output = raw.output as T | undefined;
+    this.durationMs = raw.duration_ms;
+    this.traceId = raw.trace_id;
+    this.component = raw.component;
+    this.createdAt = raw.created_at;
+    this.startedAt = raw.started_at;
+    this.completedAt = raw.completed_at;
+    this.failedAt = raw.failed_at;
+    this.sessionId = raw.session_id;
+    this.metadata = raw.metadata;
+
+    // Parse error — could be a string or a structured object
+    if (raw.error) {
+      if (typeof raw.error === 'string') {
+        this.error = { code: 'EXECUTION_FAILED', message: raw.error };
+      } else if (typeof raw.error === 'object') {
+        this.error = {
+          code: raw.error.code || 'EXECUTION_FAILED',
+          message: raw.error.message || String(raw.error),
+          details: raw.error.details,
+        };
+      }
+    }
+  }
+
+  /** True if the run completed successfully */
+  get isSuccess(): boolean {
+    return this.status === 'completed' && !this.error;
+  }
+
+  /** True if the run is still in progress */
+  get isPending(): boolean {
+    return ['enqueued', 'started', 'running', 'paused', 'awaiting_input'].includes(this.status);
+  }
+
+  /** True if the run failed, was cancelled, or timed out */
+  get isError(): boolean {
+    return ['failed', 'cancelled', 'timeout'].includes(this.status) || this.statusCode === 500;
+  }
+
+  /** Execution duration as milliseconds (undefined if not available) */
+  get elapsed(): number | undefined {
+    return this.durationMs;
+  }
+
+  /** Throw RunError if the run failed */
+  raiseForStatus(): void {
+    if (this.isError) {
+      if (this.error) {
+        throw new RunError(this.error.message, this.runId, this.status, this.error.code);
+      }
+      throw new RunError(`Run failed with status: ${this.status}`, this.runId, this.status);
+    }
+  }
+}
+
+/** Response from submit() */
+export interface SubmitResponse {
+  runId: string;
+  status: RunStatus;
+  traceId?: string;
+  component?: string;
+  createdAt?: string;
+}
+
+// ---------------------------------------------------------------------------
+// SSE event types (A4)
+// ---------------------------------------------------------------------------
+
+/** Event received from SSE stream */
+export interface ReceivedEvent {
+  /** Event type string (e.g., 'run.started', 'output.delta', 'agent.iteration.completed') */
+  eventType: string;
+  /** Event data payload */
+  data: Record<string, any>;
+  /** Content block index for streaming events */
+  contentIndex: number;
+  /** Sequence number for ordering */
+  sequence: number;
+}
+
+// ---------------------------------------------------------------------------
+// Entity proxy
+// ---------------------------------------------------------------------------
 
 /**
  * Proxy for calling methods on durable entities
@@ -52,17 +215,12 @@ export class EntityProxy {
     private key: string
   ) {}
 
-  /**
-   * Call an entity method
-   */
   async call(method: string, args: any = {}): Promise<any> {
     const url = `${this.client['gatewayUrl']}/v1/entity/${this.entityType}/${this.key}/${method}`;
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: this.client['buildHeaders'](),
       body: JSON.stringify(args),
       signal: AbortSignal.timeout(this.client['timeout']),
     });
@@ -75,15 +233,20 @@ export class EntityProxy {
       );
     }
 
-    const data = (await response.json()) as RunResponse;
+    const data = (await response.json()) as RawRunResponse;
 
     if (data.status === 'failed') {
-      throw new RunError(data.error || 'Unknown error', data.runId);
+      const errMsg = typeof data.error === 'string' ? data.error : data.error?.message || 'Unknown error';
+      throw new RunError(errMsg, data.run_id || data.runId);
     }
 
     return data.output;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
 
 /**
  * Client for invoking AGNT5 components
@@ -92,40 +255,64 @@ export class EntityProxy {
  * ```typescript
  * import { Client } from '@agnt5/sdk';
  *
+ * // Local development
  * const client = new Client({ gatewayUrl: 'http://localhost:34181' });
  *
- * // Synchronous execution
- * const result = await client.run('greet', { name: 'Alice' });
- * console.log(result); // { message: "Hello, Alice!" }
+ * // Production with API key
+ * const client = new Client({
+ *   gatewayUrl: 'https://api.agnt5.com',
+ *   apiKey: 'agnt5_sk_...',
+ * });
  *
- * // Async execution
- * const runId = await client.submit('long_task', { data: '...' });
- * const result = await client.waitForResult(runId);
- *
- * // Streaming
- * for await (const chunk of client.stream('generate_text', { prompt: '...' })) {
- *   process.stdout.write(chunk);
+ * // Synchronous execution with typed response
+ * const response = await client.run('greet', { name: 'Alice' });
+ * if (response.isSuccess) {
+ *   console.log(response.output);
  * }
  *
- * // Entity method call
- * const count = await client.entity('Counter', 'user-123').call('increment', { amount: 5 });
+ * // Async execution
+ * const submit = await client.submit('long_task', { data: '...' });
+ * const result = await client.waitForResult(submit.runId);
+ *
+ * // Stream typed events
+ * for await (const event of client.events(runId)) {
+ *   console.log(event.eventType, event.data);
+ * }
  * ```
  */
 export class Client {
   private readonly gatewayUrl: string;
+  private readonly apiKey: string | undefined;
   private readonly timeout: number;
   private readonly maxRetries: number;
   private readonly retryDelayMs: number;
 
   constructor(options: ClientOptions = {}) {
     this.gatewayUrl = (options.gatewayUrl || 'http://localhost:34181').replace(/\/$/, '');
+    this.apiKey = options.apiKey || (typeof process !== 'undefined' ? process.env?.AGNT5_API_KEY : undefined);
     this.timeout = options.timeout || 30000;
     this.maxRetries = options.maxRetries ?? 3;
     this.retryDelayMs = options.retryDelayMs || 1000;
   }
 
   /**
-   * Helper to retry failed requests with exponential backoff
+   * Build request headers with authentication
+   */
+  private buildHeaders(extra?: Record<string, string>): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (this.apiKey) {
+      headers['X-API-KEY'] = this.apiKey;
+    }
+    if (extra) {
+      Object.assign(headers, extra);
+    }
+    return headers;
+  }
+
+  /**
+   * Retry failed requests with exponential backoff
    */
   private async withRetry<T>(
     operation: () => Promise<T>,
@@ -149,12 +336,8 @@ export class Client {
           throw error;
         }
 
-        // Last attempt - throw error
-        if (attempt === retries) {
-          break;
-        }
+        if (attempt === retries) break;
 
-        // Calculate delay with exponential backoff
         const delay = this.retryDelayMs * Math.pow(2, attempt);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
@@ -164,61 +347,51 @@ export class Client {
   }
 
   /**
-   * Execute a component synchronously and wait for the result
+   * Execute a component synchronously and wait for the result.
+   *
+   * Returns a typed RunResponse with metadata (traceId, durationMs, status).
    */
-  async run(component: string, inputData: any = {}, options: RunOptions = {}): Promise<any> {
+  async run<T = any>(component: string, inputData: any = {}, options: RunOptions = {}): Promise<RunResponse<T>> {
     return this.withRetry(async () => {
       const componentType = options.componentType || 'function';
-      const url = `${this.gatewayUrl}/v1/run/${componentType}/${component}`;
+      const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/run`;
 
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-
+      const extra: Record<string, string> = {};
       if (options.sessionId) {
-        headers['X-Session-ID'] = options.sessionId;
+        extra['X-Session-ID'] = options.sessionId;
       }
       if (options.userId) {
-        headers['X-User-ID'] = options.userId;
+        extra['X-User-ID'] = options.userId;
       }
 
       const response = await fetch(url, {
         method: 'POST',
-        headers,
+        headers: this.buildHeaders(extra),
         body: JSON.stringify(inputData),
         signal: AbortSignal.timeout(this.timeout),
       });
 
-      // Handle non-OK responses
       if (!response.ok) {
         const errorData = (await response.json().catch(() => ({}))) as any;
         const message = errorData.error || `Component '${component}' execution failed`;
-        throw createErrorFromResponse(response.status, message, errorData.runId, url);
+        throw createErrorFromResponse(response.status, message, errorData.runId || errorData.run_id, url);
       }
 
-      const data = (await response.json()) as RunResponse;
-
-      // Check execution status
-      if (data.status === 'failed') {
-        throw new RunError(data.error || 'Unknown error', data.runId, 'failed');
-      }
-
-      return data.output;
+      const data = (await response.json()) as RawRunResponse;
+      return new RunResponse<T>(data);
     }, options.maxRetries);
   }
 
   /**
-   * Submit a component for async execution and return immediately
+   * Submit a component for async execution and return immediately.
    */
-  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType'> = {}): Promise<string> {
+  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType'> = {}): Promise<SubmitResponse> {
     const componentType = options.componentType || 'function';
-    const url = `${this.gatewayUrl}/v1/submit/${componentType}/${component}`;
+    const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/submit`;
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: this.buildHeaders(),
       body: JSON.stringify(inputData),
       signal: AbortSignal.timeout(this.timeout),
     });
@@ -228,17 +401,24 @@ export class Client {
     }
 
     const data = (await response.json()) as any;
-    return data.runId || '';
+    return {
+      runId: data.run_id || data.runId || '',
+      status: (data.status as RunStatus) || 'enqueued',
+      traceId: data.trace_id,
+      component: data.component,
+      createdAt: data.created_at,
+    };
   }
 
   /**
-   * Get the current status of a run
+   * Get the current status of a run.
    */
   async getStatus(runId: string): Promise<RunResponse> {
-    const url = `${this.gatewayUrl}/v1/status/${runId}`;
+    const url = `${this.gatewayUrl}/v1/runs/${runId}/status`;
 
     const response = await fetch(url, {
       method: 'GET',
+      headers: this.buildHeaders(),
       signal: AbortSignal.timeout(this.timeout),
     });
 
@@ -246,17 +426,19 @@ export class Client {
       throw new Error(`HTTP ${response.status}: Failed to get status`);
     }
 
-    return (await response.json()) as RunResponse;
+    const data = (await response.json()) as RawRunResponse;
+    return new RunResponse(data);
   }
 
   /**
-   * Get the result of a completed run
+   * Get the result of a completed run.
    */
-  async getResult(runId: string): Promise<any> {
-    const url = `${this.gatewayUrl}/v1/result/${runId}`;
+  async getResult<T = any>(runId: string): Promise<RunResponse<T>> {
+    const url = `${this.gatewayUrl}/v1/runs/${runId}/result`;
 
     const response = await fetch(url, {
       method: 'GET',
+      headers: this.buildHeaders(),
       signal: AbortSignal.timeout(this.timeout),
     });
 
@@ -271,52 +453,68 @@ export class Client {
       throw new Error(`HTTP ${response.status}: Failed to get result`);
     }
 
-    const data = (await response.json()) as RunResponse;
-
-    if (data.status === 'failed') {
-      throw new RunError(data.error || 'Unknown error', runId);
-    }
-
-    return data.output;
+    const data = (await response.json()) as RawRunResponse;
+    return new RunResponse<T>(data);
   }
 
   /**
-   * Wait for a run to complete and return the result
+   * Wait for a run to complete and return the result.
    */
-  async waitForResult(runId: string, timeoutMs: number = 300000, pollIntervalMs: number = 1000): Promise<any> {
+  async waitForResult<T = any>(runId: string, timeoutMs: number = 300000, pollIntervalMs: number = 1000): Promise<RunResponse<T>> {
     const startTime = Date.now();
 
     while (true) {
-      // Check timeout
       const elapsed = Date.now() - startTime;
       if (elapsed >= timeoutMs) {
         throw new RunError(`Timeout waiting for run to complete after ${timeoutMs}ms`, runId);
       }
 
-      // Get current status
       const status = await this.getStatus(runId);
 
-      // Check if complete
-      if (status.status === 'completed' || status.status === 'failed' || status.status === 'cancelled') {
-        return await this.getResult(runId);
+      if (['completed', 'failed', 'cancelled', 'timeout'].includes(status.status)) {
+        return await this.getResult<T>(runId);
       }
 
-      // Wait before next poll
       await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
     }
   }
 
   /**
-   * Stream responses from a component using Server-Sent Events (SSE)
+   * Stream text chunks from a component using SSE.
+   * For typed events, use events() instead.
    */
-  async *stream(component: string, inputData: any = {}): AsyncGenerator<string, void, unknown> {
-    const url = `${this.gatewayUrl}/v1/stream/${component}`;
+  async *stream(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType'> = {}): AsyncGenerator<string, void, unknown> {
+    for await (const event of this.events(component, inputData, options)) {
+      if (event.data.chunk !== undefined) {
+        yield event.data.chunk;
+      }
+    }
+  }
+
+  /**
+   * Stream typed events from a component using Server-Sent Events.
+   *
+   * @example
+   * ```typescript
+   * for await (const event of client.events('my-workflow', { data: '...' })) {
+   *   switch (event.eventType) {
+   *     case 'output.delta':
+   *       process.stdout.write(event.data.chunk);
+   *       break;
+   *     case 'run.completed':
+   *       console.log('Done:', event.data.output);
+   *       break;
+   *   }
+   * }
+   * ```
+   */
+  async *events(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType'> = {}): AsyncGenerator<ReceivedEvent, void, unknown> {
+    const componentType = options.componentType || 'function';
+    const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/stream`;
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: this.buildHeaders(),
       body: JSON.stringify(inputData),
       signal: AbortSignal.timeout(300000), // 5 minute timeout for streaming
     });
@@ -332,6 +530,8 @@ export class Client {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let currentEventType = 'message';
+    let sequence = 0;
 
     try {
       while (true) {
@@ -339,42 +539,51 @@ export class Client {
 
         if (done) break;
 
-        // Decode chunk and add to buffer
         buffer += decoder.decode(value, { stream: true });
 
-        // Process complete lines
         const lines = buffer.split('\n');
-        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+        buffer = lines.pop() || '';
 
         for (const line of lines) {
           const trimmed = line.trim();
 
-          // Skip empty lines and comments
-          if (!trimmed || trimmed.startsWith(':')) {
+          // Skip comments
+          if (trimmed.startsWith(':')) continue;
+
+          // Empty line = end of event block
+          if (!trimmed) {
+            currentEventType = 'message';
             continue;
           }
 
-          // Parse SSE format: "data: {...}"
-          if (trimmed.startsWith('data: ')) {
-            const dataStr = trimmed.substring(6); // Remove "data: " prefix
+          // Parse "event: <type>"
+          if (trimmed.startsWith('event: ') || trimmed.startsWith('event:')) {
+            currentEventType = trimmed.substring(trimmed.indexOf(':') + 1).trim();
+            continue;
+          }
+
+          // Parse "data: <json>"
+          if (trimmed.startsWith('data: ') || trimmed.startsWith('data:')) {
+            const dataStr = trimmed.substring(trimmed.indexOf(':') + 1).trim();
 
             try {
               const data = JSON.parse(dataStr);
 
-              // Check for completion
-              if (data.done) {
-                return;
-              }
+              // Check for stream-end signal
+              if (data.done) return;
 
               // Check for error
-              if (data.error) {
-                throw new RunError(data.error, data.runId);
+              if (data.error && currentEventType === 'error') {
+                throw new RunError(data.error, data.runId || data.run_id);
               }
 
-              // Yield chunk
-              if (data.chunk !== undefined) {
-                yield data.chunk;
-              }
+              sequence++;
+              yield {
+                eventType: currentEventType,
+                data,
+                contentIndex: data.index ?? 0,
+                sequence,
+              };
             } catch (e) {
               if (e instanceof RunError) throw e;
               // Skip malformed JSON
@@ -392,5 +601,271 @@ export class Client {
    */
   entity(entityType: string, key: string): EntityProxy {
     return new EntityProxy(this, entityType, key);
+  }
+
+  // ─── Batch operations ───────────────────────────────────────────────
+
+  /**
+   * Execute a component in batch with multiple inputs.
+   *
+   * @example
+   * ```typescript
+   * const result = await client.batch('greet', [
+   *   { input: { name: 'Alice' } },
+   *   { input: { name: 'Bob' } },
+   * ], { maxConcurrency: 5 });
+   *
+   * if (result.isSuccess) {
+   *   console.log(result.outputs);
+   * }
+   * ```
+   */
+  async batch(
+    component: string,
+    items: Array<Record<string, any> | BatchItemInput>,
+    options: BatchConfig & { componentType?: string; metadata?: Record<string, string> } = {},
+  ): Promise<BatchResult> {
+    const componentType = options.componentType || 'function';
+    const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/batch`;
+
+    // Normalize items: plain objects become { input: obj }
+    const normalizedItems = items.map((item, i) => {
+      if ('input' in item) {
+        return { ...item, index: (item as BatchItemInput).index ?? i };
+      }
+      return { input: item, index: i };
+    });
+
+    const body: Record<string, any> = {
+      items: normalizedItems,
+      config: {
+        max_concurrency: options.maxConcurrency ?? 10,
+        continue_on_failure: options.continueOnFailure ?? true,
+        ...(options.batchTimeoutMs && { batch_timeout_ms: options.batchTimeoutMs }),
+        ...(options.defaultItemTimeoutMs && { default_item_timeout_ms: options.defaultItemTimeoutMs }),
+      },
+    };
+
+    if (options.metadata) {
+      body.metadata = options.metadata;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.buildHeaders(),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(options.batchTimeoutMs || 3600000),
+    });
+
+    if (!response.ok) {
+      const errorData = (await response.json().catch(() => ({}))) as any;
+      throw createErrorFromResponse(
+        response.status,
+        errorData.error || `Batch execution failed for '${component}'`,
+        undefined,
+        url,
+      );
+    }
+
+    const data = await response.json();
+    return new BatchResult(data as Record<string, any>);
+  }
+
+  /**
+   * Get the status of a batch execution.
+   */
+  async getBatchStatus(batchId: string, includeResults: boolean = true): Promise<BatchStatusResult> {
+    const url = `${this.gatewayUrl}/v1/batches/${batchId}?include_results=${includeResults}`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: this.buildHeaders(),
+      signal: AbortSignal.timeout(this.timeout),
+    });
+
+    if (!response.ok) {
+      throw new RunError(`HTTP ${response.status}: Failed to get batch status`, batchId);
+    }
+
+    const data = await response.json();
+    return new BatchStatusResult(data as Record<string, any>);
+  }
+
+  /**
+   * Cancel a running batch execution.
+   */
+  async cancelBatch(batchId: string): Promise<CancelBatchResult> {
+    const url = `${this.gatewayUrl}/v1/batches/${batchId}/cancel`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.buildHeaders(),
+      signal: AbortSignal.timeout(this.timeout),
+    });
+
+    if (!response.ok) {
+      throw new RunError(`HTTP ${response.status}: Failed to cancel batch`, batchId);
+    }
+
+    const data = (await response.json()) as any;
+    return {
+      batchId: data.batch_id || data.batchId || batchId,
+      status: data.status || 'cancelled',
+      cancelledItems: data.cancelled_items ?? data.cancelledItems ?? 0,
+      completedItems: data.completed_items ?? data.completedItems ?? 0,
+    };
+  }
+
+  // ─── Evaluation operations ──────────────────────────────────────────
+
+  /**
+   * Evaluate a component with scorers.
+   *
+   * @example
+   * ```typescript
+   * const result = await client.eval('greet', { name: 'Alice' }, {
+   *   expected: 'Hello, Alice!',
+   *   scorers: ['exact_match', 'contains'],
+   * });
+   *
+   * if (result.passed) {
+   *   console.log('All scorers passed');
+   * }
+   * ```
+   */
+  async eval<T = any>(
+    component: string,
+    inputData?: Record<string, any>,
+    options: {
+      expected?: any;
+      scorers?: Array<string | LLMJudge | Record<string, any>>;
+      componentType?: string;
+      sessionId?: string;
+      userId?: string;
+      timeout?: number;
+    } = {},
+  ): Promise<EvalResponse<T>> {
+    const componentType = options.componentType || 'function';
+    const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/eval`;
+
+    // Default to exact_match if expected is provided but no scorers
+    let scorers = options.scorers;
+    if (options.expected !== undefined && (!scorers || scorers.length === 0)) {
+      scorers = ['exact_match'];
+    }
+
+    const body: Record<string, any> = {};
+    if (inputData !== undefined) body.input = inputData;
+    if (options.expected !== undefined) body.expected = options.expected;
+    if (scorers && scorers.length > 0) body.scorers = normalizeScorerSpecs(scorers);
+
+    const extra: Record<string, string> = {};
+    if (options.sessionId) extra['X-Session-ID'] = options.sessionId;
+    if (options.userId) extra['X-User-ID'] = options.userId;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.buildHeaders(extra),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(options.timeout || this.timeout),
+    });
+
+    if (!response.ok) {
+      const errorData = (await response.json().catch(() => ({}))) as any;
+      throw createErrorFromResponse(
+        response.status,
+        errorData.error || `Evaluation failed for '${component}'`,
+        errorData.run_id || errorData.runId,
+        url,
+      );
+    }
+
+    const data = await response.json();
+    return new EvalResponse<T>(data as Record<string, any>);
+  }
+
+  /**
+   * Evaluate a component in batch with multiple inputs and scorers.
+   *
+   * @example
+   * ```typescript
+   * const result = await client.batchEval('greet', [
+   *   { input: { name: 'Alice' }, expected: 'Hello, Alice!' },
+   *   { input: { name: 'Bob' }, expected: 'Hello, Bob!' },
+   * ], {
+   *   scorers: ['exact_match'],
+   *   maxConcurrency: 5,
+   * });
+   *
+   * console.log(`Pass rate: ${(result.passRate * 100).toFixed(1)}%`);
+   * ```
+   */
+  async batchEval(
+    component: string,
+    items: Array<Record<string, any> | BatchEvalItem>,
+    options: {
+      scorers?: Array<string | LLMJudge | Record<string, any>>;
+      expected?: any[];
+      componentType?: string;
+      maxConcurrency?: number;
+      timeout?: number;
+    } = {},
+  ): Promise<BatchEvalResult> {
+    const normalized = normalizeBatchEvalItems(items, options.expected);
+    const maxConcurrency = options.maxConcurrency ?? 10;
+    const startTime = Date.now();
+
+    // Run evaluations with concurrency limit
+    const results: BatchEvalItemResult[] = [];
+    let running = 0;
+    let nextIdx = 0;
+
+    const runOne = async (item: typeof normalized[0], idx: number): Promise<void> => {
+      try {
+        const evalResponse = await this.eval(component, item.input, {
+          expected: item.expected,
+          scorers: options.scorers,
+          componentType: options.componentType,
+          timeout: options.timeout,
+        });
+        results.push(BatchEvalItemResult.fromEvalResponse(evalResponse, idx, item.itemId));
+      } catch (error) {
+        results.push(BatchEvalItemResult.fromException(error as Error, idx, item.itemId));
+      }
+    };
+
+    // Simple semaphore-based concurrency
+    await new Promise<void>((resolve) => {
+      const tryNext = () => {
+        while (running < maxConcurrency && nextIdx < normalized.length) {
+          const item = normalized[nextIdx];
+          const idx = nextIdx;
+          nextIdx++;
+          running++;
+          runOne(item, idx).then(() => {
+            running--;
+            if (results.length === normalized.length) {
+              resolve();
+            } else {
+              tryNext();
+            }
+          });
+        }
+        if (normalized.length === 0) resolve();
+      };
+      tryNext();
+    });
+
+    const totalDurationMs = Date.now() - startTime;
+    const hasErrors = results.some(r => r.isFailed);
+    const allErrors = results.every(r => r.isFailed);
+    const status = allErrors ? 'failed' : hasErrors ? 'partial_failure' : 'completed';
+
+    return new BatchEvalResult({
+      batchId: `batch_eval_${Date.now()}`,
+      status,
+      results,
+      durationMs: totalDurationMs,
+    });
   }
 }

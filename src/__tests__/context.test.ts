@@ -3,7 +3,7 @@ import { ContextImpl } from '../context';
 
 describe('Context', () => {
   it('should create context with metadata', () => {
-    const ctx = new ContextImpl('inv-123', 'run-456', 2, 'my-service');
+    const ctx = new ContextImpl('inv-123', 'run-456', 2, 'my-service', { storage: 'memory' });
 
     expect(ctx.invocationId).toBe('inv-123');
     expect(ctx.runId).toBe('run-456');
@@ -11,23 +11,23 @@ describe('Context', () => {
     expect(ctx.serviceName).toBe('my-service');
   });
 
-  it('should manage state', () => {
-    const ctx = new ContextImpl('inv-1', 'run-1', 0, 'test');
+  it('should manage state', async () => {
+    const ctx = new ContextImpl('inv-1', 'run-1', 0, 'test', { storage: 'memory' });
 
     // Set and get
-    ctx.set('key1', 'value1');
-    expect(ctx.get('key1')).toBe('value1');
+    await ctx.set('key1', 'value1');
+    expect(await ctx.get('key1')).toBe('value1');
 
     // Get with default
-    expect(ctx.get('missing', 'default')).toBe('default');
+    expect(await ctx.get('missing', 'default')).toBe('default');
 
     // Delete
-    ctx.delete('key1');
-    expect(ctx.get('key1')).toBeUndefined();
+    await ctx.delete('key1');
+    expect(await ctx.get('key1')).toBeUndefined();
   });
 
   it('should checkpoint steps', async () => {
-    const ctx = new ContextImpl('inv-1', 'run-1', 0, 'test');
+    const ctx = new ContextImpl('inv-1', 'run-1', 0, 'test', { storage: 'memory' });
 
     let executionCount = 0;
     const expensiveOp = () => {
@@ -47,7 +47,7 @@ describe('Context', () => {
   });
 
   it('should provide logger', () => {
-    const ctx = new ContextImpl('inv-1', 'run-1', 0, 'test');
+    const ctx = new ContextImpl('inv-1', 'run-1', 0, 'test', { storage: 'memory' });
 
     expect(ctx.logger).toBeDefined();
     expect(typeof ctx.logger.info).toBe('function');

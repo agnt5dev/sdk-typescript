@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { entity, _clearEntityState, _getEntityState } from '../entity.js';
+import { entity, _clearEntityState, _getEntityState, _setEntityStorage } from '../entity.js';
 
 describe('Entity', () => {
   beforeEach(() => {
-    _clearEntityState();
+    // Force in-memory storage for tests by resetting global storage
+    // Setting to null forces getGlobalStorage() to create a fresh instance
+    process.env.AGNT5_STORAGE = 'memory';
+    _setEntityStorage(null);
   });
 
   it('should create entity type and instances', () => {
@@ -18,14 +21,14 @@ describe('Entity', () => {
     const Counter = entity('Counter');
 
     Counter.method('increment', async (ctx, amount: number = 1) => {
-      const current = ctx.get<number>('count', 0);
-      const newCount = current + amount;
-      ctx.set('count', newCount);
+      const current = await ctx.get<number>('count', 0);
+      const newCount = current! + amount;
+      await ctx.set('count', newCount);
       return newCount;
     });
 
     Counter.method('getCount', async (ctx) => {
-      return ctx.get<number>('count', 0);
+      return await ctx.get<number>('count', 0);
     });
 
     const counter = Counter.call('test');
@@ -44,9 +47,9 @@ describe('Entity', () => {
     const Counter = entity('Counter');
 
     Counter.method('increment', async (ctx, amount: number = 1) => {
-      const current = ctx.get<number>('count', 0);
-      const newCount = current + amount;
-      ctx.set('count', newCount);
+      const current = await ctx.get<number>('count', 0);
+      const newCount = current! + amount;
+      await ctx.set('count', newCount);
       return newCount;
     });
 
@@ -56,8 +59,8 @@ describe('Entity', () => {
     await counter1.invoke('increment', 10);
     await counter2.invoke('increment', 5);
 
-    const state1 = _getEntityState('Counter', 'user-1');
-    const state2 = _getEntityState('Counter', 'user-2');
+    const state1 = await _getEntityState('Counter', 'user-1');
+    const state2 = await _getEntityState('Counter', 'user-2');
 
     expect(state1?.get('count')).toBe(10);
     expect(state2?.get('count')).toBe(5);
@@ -76,11 +79,11 @@ describe('Entity', () => {
     const Counter = entity('Counter');
 
     Counter.method('increment', async (ctx) => {
-      const current = ctx.get<number>('count', 0);
+      const current = await ctx.get<number>('count', 0);
       // Simulate some async work
       await new Promise(resolve => setTimeout(resolve, 10));
-      ctx.set('count', current + 1);
-      return current + 1;
+      await ctx.set('count', current! + 1);
+      return current! + 1;
     });
 
     const counter = Counter.call('concurrent');
@@ -94,7 +97,7 @@ describe('Entity', () => {
       counter.invoke('increment')
     ]);
 
-    const state = _getEntityState('Counter', 'concurrent');
+    const state = await _getEntityState('Counter', 'concurrent');
     expect(state?.get('count')).toBe(5);
   });
 });
