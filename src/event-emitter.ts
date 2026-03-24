@@ -7,7 +7,33 @@
  */
 
 import type { BaseEvent } from './events.js';
-import { isCheckpointEvent, toEventPayload } from './events.js';
+import { isCheckpointEvent } from './events.js';
+
+/**
+ * Convert camelCase key to snake_case.
+ */
+function toSnakeCase(key: string): string {
+  return key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+}
+
+/**
+ * Serialize a BaseEvent to a full JSON string matching Python SDK's event.to_dict().
+ *
+ * Python sends ALL fields (event_type, correlation_id, name, etc.) in the event data.
+ * The EE/Studio UI needs these fields (especially correlation_id) to link events
+ * to the correct run lifecycle. Keys are converted from camelCase to snake_case.
+ */
+function serializeEvent(event: BaseEvent): string {
+  const payload: Record<string, any> = {};
+
+  for (const [key, value] of Object.entries(event)) {
+    // Convert BigInt to Number for JSON serialization
+    const serializedValue = typeof value === 'bigint' ? Number(value) : value;
+    payload[toSnakeCase(key)] = serializedValue;
+  }
+
+  return JSON.stringify(payload);
+}
 
 export class EventEmitter {
   private runId: string;
@@ -41,7 +67,8 @@ export class EventEmitter {
 
     this.sequence++;
 
-    const eventData = JSON.stringify(toEventPayload(event));
+    // Serialize full event with snake_case keys (matches Python SDK's event.to_dict())
+    const eventData = serializeEvent(event);
     const metadata: Record<string, string> = { ...this.baseMetadata };
 
     // Copy string metadata from event (skip non-string values)
