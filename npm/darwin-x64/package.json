@@ -1,0 +1,37 @@
+{
+  "name": "@agnt5/sdk-darwin-x64",
+  "version": "0.1.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "agnt5-sdk-native.darwin-x64.node",
+  "files": [
+    "agnt5-sdk-native.darwin-x64.node"
+  ],
+  "description": "AGNT5 TypeScript SDK - Durable AI workflows and agents",
+  "keywords": [
+    "agnt5",
+    "ai",
+    "agents",
+    "workflows",
+    "durable",
+    "orchestration",
+    "typescript"
+  ],
+  "author": "AGNT5 Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agnt5/agnt5.git",
+    "directory": "sdk/sdk-typescript"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "os": [
+    "darwin"
+  ]
+}

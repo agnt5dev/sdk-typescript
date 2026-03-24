@@ -1,0 +1,40 @@
+{
+  "name": "@agnt5/sdk-linux-arm64-gnu",
+  "version": "0.1.0",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "agnt5-sdk-native.linux-arm64-gnu.node",
+  "files": [
+    "agnt5-sdk-native.linux-arm64-gnu.node"
+  ],
+  "description": "AGNT5 TypeScript SDK - Durable AI workflows and agents",
+  "keywords": [
+    "agnt5",
+    "ai",
+    "agents",
+    "workflows",
+    "durable",
+    "orchestration",
+    "typescript"
+  ],
+  "author": "AGNT5 Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agnt5/agnt5.git",
+    "directory": "sdk/sdk-typescript"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}
