@@ -122,6 +122,24 @@ export type {
   ToolCallStarted,
   ToolCallCompleted,
   ToolCallFailed,
+  // Lifecycle events
+  RunStarted,
+  RunCompleted,
+  RunFailed,
+  FunctionStarted,
+  FunctionCompleted,
+  FunctionFailed,
+  WorkflowStarted,
+  WorkflowCompleted,
+  WorkflowFailed,
+  ToolStarted,
+  ToolCompleted,
+  ToolFailed,
+  OutputStart,
+  OutputDelta,
+  OutputStop,
+  LifecycleEvent,
+  PlatformEvent,
 } from './events.js';
 export {
   agentStarted,
@@ -132,7 +150,28 @@ export {
   toolCallStarted,
   toolCallCompleted,
   toolCallFailed,
+  // Lifecycle factories
+  generateCid,
+  runStarted,
+  runCompleted,
+  runFailed,
+  functionStarted,
+  functionCompleted,
+  functionFailed,
+  workflowStarted,
+  workflowCompleted,
+  workflowFailed,
+  toolStarted,
+  toolCompleted,
+  toolFailed,
+  // Classification
+  isCheckpointEvent,
+  isSseOnlyEvent,
+  toEventPayload,
 } from './events.js';
+
+// EventEmitter export
+export { EventEmitter } from './event-emitter.js';
 
 // Language Model exports
 export { LM, systemMessage, userMessage, assistantMessage, createTool, parseToolArguments, jsonSchemaFormat } from './lm.js';

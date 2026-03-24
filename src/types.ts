@@ -73,6 +73,10 @@ export interface Context {
   // Logging
   /** Structured logger */
   readonly logger: Logger;
+
+  // Event emission
+  /** Emit an event to the platform (no-op when running locally without a worker) */
+  emit(event: any): Promise<void>;
 }
 
 /**

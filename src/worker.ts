@@ -3,8 +3,18 @@ import { FunctionRegistry } from './function.js';
 import { WorkflowRegistry } from './workflow.js';
 import { ToolRegistry } from './tool.js';
 import { Agent } from './agent.js';
+import type { AgentResult } from './agent.js';
 import { runWithContext } from './async-context.js';
 import { WaitingForUserInputError } from './errors.js';
+import { EventEmitter } from './event-emitter.js';
+import {
+  generateCid,
+  runStarted, runCompleted, runFailed,
+  functionStarted, functionCompleted, functionFailed,
+  workflowStarted, workflowCompleted, workflowFailed,
+  toolStarted, toolCompleted, toolFailed,
+} from './events.js';
+import type { AgentEvent } from './events.js';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -94,6 +104,8 @@ export interface PlatformWorkerOptions extends WorkerOptions {
  * Simple context implementation
  */
 class SimpleContext implements Context {
+  private _emitter?: EventEmitter;
+
   constructor(
     public readonly invocationId: string,
     public readonly runId: string,
@@ -101,6 +113,16 @@ class SimpleContext implements Context {
     public readonly serviceName: string,
     private state: Map<string, any> = new Map()
   ) {}
+
+  setEmitter(emitter: EventEmitter): void {
+    this._emitter = emitter;
+  }
+
+  async emit(event: any): Promise<void> {
+    if (this._emitter) {
+      await this._emitter.emit(event);
+    }
+  }
 
   get logger() {
     return {
@@ -273,6 +295,8 @@ export class Worker {
 
   /**
    * Async message processing — dispatches to the appropriate component handler.
+   * Wraps each dispatch with lifecycle events matching the Python SDK executor pattern:
+   *   run.started → component.started → handler → component.completed/failed → run.completed/failed
    */
   private async processMessage(message: {
     invocationId: string;
@@ -292,21 +316,41 @@ export class Worker {
         tenantId: message.metadata?.tenant_id,
       },
       async () => {
+        // Create EventEmitter wired to NAPI worker for event emission
+        const emitter = new EventEmitter(runId, {
+          traceparent: message.metadata?.traceparent || '',
+          tracestate: message.metadata?.tracestate || '',
+        });
+        emitter.setWorker(this.nativeWorker);
+
+        // Correlation IDs: run CID from run_id[:8], component CID random
+        const runCid = runId.slice(0, 8);
+        const parentCid = message.metadata?.parent_correlation_id || null;
+        const attempt = parseInt(message.metadata?.attempt || '0', 10);
+
         try {
           console.log(`📨 Received ${message.componentType} execution: ${message.componentName}`);
 
           // Parse input data
           const inputData = JSON.parse(message.inputJson);
 
-          // Create context
+          // Create context with emitter
           const ctx = new SimpleContext(
             message.invocationId,
             runId,
-            parseInt(message.metadata?.attempt || '0', 10),
-            this.serviceName
+            attempt,
+            this.serviceName,
           );
+          ctx.setEmitter(emitter);
+
+          // ── run.started ──
+          await emitter.emit(runStarted(runCid, parentCid, {
+            inputData,
+            attempt,
+          }));
 
           let result: any;
+          const startTimeNs = BigInt(Date.now()) * 1_000_000n;
 
           switch (message.componentType) {
             case 'function': {
@@ -314,9 +358,35 @@ export class Worker {
               if (!fn) {
                 throw new Error(`Function not found: ${message.componentName}`);
               }
-              // Platform sends input as a JSON dict (like Python's **kwargs).
-              // Pass the whole dict as a single argument to the handler.
-              result = await fn.handler(ctx, inputData);
+
+              const fnCid = generateCid();
+
+              // ── function.started ──
+              await emitter.emit(functionStarted(fnCid, runCid, {
+                inputData,
+                attempt,
+              }));
+
+              try {
+                result = await fn.handler(ctx, inputData);
+                const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
+
+                // ── function.completed ──
+                await emitter.emit(functionCompleted(fnCid, runCid, {
+                  outputData: result,
+                  durationMs,
+                }));
+              } catch (fnError) {
+                const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
+
+                // ── function.failed ──
+                await emitter.emit(functionFailed(fnCid, runCid, {
+                  errorCode: 'FUNCTION_ERROR',
+                  errorMessage: (fnError as Error).message,
+                  durationMs,
+                }));
+                throw fnError;
+              }
               break;
             }
 
@@ -325,7 +395,35 @@ export class Worker {
               if (!wf) {
                 throw new Error(`Workflow not found: ${message.componentName}`);
               }
-              result = await wf.handler(ctx, inputData);
+
+              const wfCid = generateCid();
+
+              // ── workflow.started ──
+              await emitter.emit(workflowStarted(wfCid, runCid, {
+                inputData,
+                attempt,
+              }));
+
+              try {
+                result = await wf.handler(ctx, inputData);
+                const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
+
+                // ── workflow.completed ──
+                await emitter.emit(workflowCompleted(wfCid, runCid, {
+                  outputData: result,
+                  durationMs,
+                }));
+              } catch (wfError) {
+                const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
+
+                // ── workflow.failed ──
+                await emitter.emit(workflowFailed(wfCid, runCid, {
+                  errorCode: 'WORKFLOW_ERROR',
+                  errorMessage: (wfError as Error).message,
+                  durationMs,
+                }));
+                throw wfError;
+              }
               break;
             }
 
@@ -334,7 +432,24 @@ export class Worker {
               if (!agent) {
                 throw new Error(`Agent not found: ${message.componentName}`);
               }
-              const agentResult = await agent.run(inputData.prompt || inputData.message || JSON.stringify(inputData), ctx);
+
+              // Consume the agent stream so internal events (agent.started,
+              // iteration.started, tool_call.started, etc.) are forwarded to the platform.
+              const userMessage = inputData.prompt || inputData.message || JSON.stringify(inputData);
+              let agentResult: AgentResult | undefined;
+
+              for await (const event of agent.stream(userMessage, ctx)) {
+                if ('output' in event && 'toolCalls' in event && 'context' in event) {
+                  agentResult = event as AgentResult;
+                } else {
+                  // Forward AgentEvent to platform via emitter
+                  await emitter.emit(event as AgentEvent);
+                }
+              }
+
+              if (!agentResult) {
+                throw new Error(`Agent '${message.componentName}' completed without producing a result`);
+              }
               result = agentResult.output;
               break;
             }
@@ -344,7 +459,35 @@ export class Worker {
               if (!tool) {
                 throw new Error(`Tool not found: ${message.componentName}`);
               }
-              result = await tool.invoke(ctx, inputData);
+
+              const toolCid = generateCid();
+
+              // ── tool.started ──
+              await emitter.emit(toolStarted(toolCid, runCid, {
+                inputData,
+                attempt,
+              }));
+
+              try {
+                result = await tool.invoke(ctx, inputData);
+                const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
+
+                // ── tool.completed ──
+                await emitter.emit(toolCompleted(toolCid, runCid, {
+                  outputData: result,
+                  durationMs,
+                }));
+              } catch (toolError) {
+                const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
+
+                // ── tool.failed ──
+                await emitter.emit(toolFailed(toolCid, runCid, {
+                  errorCode: 'TOOL_ERROR',
+                  errorMessage: (toolError as Error).message,
+                  durationMs,
+                }));
+                throw toolError;
+              }
               break;
             }
 
@@ -352,12 +495,17 @@ export class Worker {
               throw new Error(`Unknown component type: ${message.componentType}`);
           }
 
+          // ── run.completed ──
+          await emitter.emit(runCompleted(runCid, parentCid, {
+            outputData: result,
+          }));
+
           return JSON.stringify({
             invocationId: message.invocationId,
             outputJson: JSON.stringify(result),
           });
         } catch (error) {
-          // HITL: propagate pause signal to platform
+          // HITL: propagate pause signal to platform (no run.failed for pause)
           if (error instanceof WaitingForUserInputError) {
             return JSON.stringify({
               invocationId: message.invocationId,
@@ -372,6 +520,16 @@ export class Worker {
                 stepName: error.stepName,
               }),
             });
+          }
+
+          // ── run.failed ──
+          try {
+            await emitter.emit(runFailed(runCid, parentCid, {
+              errorCode: 'EXECUTION_ERROR',
+              errorMessage: (error as Error).message,
+            }));
+          } catch (emitError) {
+            console.error('Failed to emit run.failed event:', emitError);
           }
 
           console.error(`❌ Execution failed:`, error);

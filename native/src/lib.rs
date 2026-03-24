@@ -6,6 +6,7 @@ use napi::threadsafe_function::{
 
 use agnt5_sdk_core::worker::{Worker as CoreWorker, WorkerConfig};
 use agnt5_sdk_core::pb::{RuntimeMessage, ServiceMessage, ComponentInfo};
+use agnt5_sdk_core::{JournalEventQueue, JournalEventMessage};
 
 use std::sync::{Arc, Mutex as StdMutex};
 use std::collections::HashMap;
@@ -28,6 +29,10 @@ pub struct WorkerOptions {
     pub service_type: Option<String>,
     /// Coordinator endpoint URL
     pub coordinator_endpoint: Option<String>,
+    /// Tenant ID (falls back to AGNT5_TENANT_ID env var)
+    pub tenant_id: Option<String>,
+    /// Deployment ID (falls back to AGNT5_DEPLOYMENT_ID env var)
+    pub deployment_id: Option<String>,
 }
 
 /// Component type enum matching protobuf
@@ -127,6 +132,13 @@ pub struct Worker {
     message_handler: Arc<StdMutex<Option<ThreadsafeFunction<RuntimeMessageData, ErrorStrategy::Fatal>>>>,
     /// Response channel map: invocation_id → oneshot sender for the response JSON
     response_map: Arc<StdMutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>>,
+    /// Journal event queue (Arc-backed, shared with core worker's flush task)
+    journal_queue: JournalEventQueue,
+    /// Cloned CoreWorker for emit_checkpoint. CoreWorker is Clone and all internal state
+    /// is Arc-backed, so this clone shares the same EE client, journal queue, etc.
+    /// Needed because run() holds core_worker's TokioMutex for its entire lifetime,
+    /// which would deadlock if emit_checkpoint tried to acquire the same lock.
+    emit_worker: Arc<StdMutex<Option<CoreWorker>>>,
 }
 
 #[napi]
@@ -146,12 +158,34 @@ impl Worker {
             config.coordinator_endpoint = endpoint;
         }
 
+        // Build service metadata (tenant_id, deployment_id) for checkpoint emission.
+        // emit_checkpoint_sync merges self.metadata into each checkpoint's metadata,
+        // and the EE requires tenant_id to write to journal_events.
+        let mut metadata = HashMap::new();
+        if let Some(ref tid) = options.tenant_id {
+            metadata.insert("tenant_id".to_string(), tid.clone());
+        } else if let Ok(tid) = std::env::var("AGNT5_TENANT_ID") {
+            metadata.insert("tenant_id".to_string(), tid);
+        }
+        if let Some(ref did) = options.deployment_id {
+            metadata.insert("deployment_id".to_string(), did.clone());
+        } else if let Ok(did) = std::env::var("AGNT5_DEPLOYMENT_ID") {
+            metadata.insert("deployment_id".to_string(), did);
+        }
+
         // Create core worker with empty components initially
         let core_worker = CoreWorker::new(
             config.clone(),
             vec![],
-            HashMap::new(),
+            metadata,
         );
+
+        // Clone the journal queue (Arc-backed) for direct access from NAPI methods.
+        // The core worker's run() will spawn a flush task that drains this same queue.
+        let journal_queue = core_worker.journal_queue();
+
+        // Clone the core worker for emit_checkpoint (Arc-backed, shares all internal state)
+        let emit_worker = core_worker.clone();
 
         Ok(Worker {
             service_name: options.service_name,
@@ -159,6 +193,8 @@ impl Worker {
             core_worker: Arc::new(TokioMutex::new(core_worker)),
             message_handler: Arc::new(StdMutex::new(None)),
             response_map: Arc::new(StdMutex::new(HashMap::new())),
+            journal_queue,
+            emit_worker: Arc::new(StdMutex::new(Some(emit_worker))),
         })
     }
 
@@ -225,6 +261,75 @@ impl Worker {
         if let Some(sender) = sender {
             let _ = sender.send(response_json);
         }
+        Ok(())
+    }
+
+    /// Queue an SSE-only event (output.delta, log, progress, etc.) into the journal queue.
+    /// The background flush task (spawned by run()) drains this queue every 50ms.
+    #[napi]
+    pub fn queue_event(
+        &self,
+        run_id: String,
+        event_type: String,
+        event_data: String,
+        content_index: i32,
+        sequence: i64,
+        metadata: HashMap<String, String>,
+        source_timestamp_ns: f64,
+        correlation_id: String,
+        parent_correlation_id: String,
+    ) -> Result<()> {
+        let is_sse_only = JournalEventMessage::is_sse_only_event_type(&event_type);
+        let event = JournalEventMessage {
+            run_id,
+            event_type,
+            data: event_data.into_bytes(),
+            correlation_id,
+            parent_correlation_id,
+            tenant_id: Some(std::env::var("AGNT5_TENANT_ID").unwrap_or_default()),
+            source_timestamp_ns: source_timestamp_ns as i64,
+            metadata,
+            queued_at: std::time::Instant::now(),
+            is_streaming: true,
+            is_sse_only,
+            content_index,
+            sequence,
+        };
+        self.journal_queue.push(event)
+            .map_err(|e| Error::from_reason(format!("Failed to queue event: {}", e)))?;
+        Ok(())
+    }
+
+    /// Emit a checkpoint event (run.started, function.completed, etc.) via direct gRPC
+    /// to the Execution Engine. Blocks until acknowledged or timeout.
+    ///
+    /// Uses emit_worker (a Clone of CoreWorker) to avoid deadlocking with run(),
+    /// which holds core_worker's TokioMutex for its entire lifetime.
+    #[napi]
+    pub async fn emit_checkpoint(
+        &self,
+        run_id: String,
+        event_type: String,
+        event_data: String,
+        sequence_number: i64,
+        metadata: HashMap<String, String>,
+        source_timestamp_ns: f64,
+        timeout_ms: Option<f64>,
+    ) -> Result<()> {
+        let worker = {
+            let guard = self.emit_worker.lock()
+                .map_err(|e| Error::from_reason(format!("Failed to lock emit_worker: {}", e)))?;
+            guard.clone().ok_or_else(|| Error::from_reason("emit_worker not available"))?
+        };
+        worker.emit_checkpoint_sync(
+            run_id,
+            event_type,
+            event_data.into_bytes(),
+            sequence_number,
+            metadata,
+            source_timestamp_ns as i64,
+            timeout_ms.unwrap_or(5000.0) as u64,
+        ).await.map_err(|e| Error::from_reason(format!("Checkpoint emission failed: {}", e)))?;
         Ok(())
     }
 

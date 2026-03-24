@@ -214,6 +214,13 @@ export class PlatformContext implements Context {
   }
 
   /**
+   * Emit an event to the platform. No-op in PlatformContext (events are handled by the worker).
+   */
+  async emit(event: any): Promise<void> {
+    // PlatformContext doesn't emit events directly — the worker's EventEmitter handles this.
+  }
+
+  /**
    * End the span (call this when context is no longer needed)
    */
   endSpan(): void {

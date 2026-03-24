@@ -1,4 +1,5 @@
 import type { Context, Logger } from './types.js';
+import type { EventEmitter } from './event-emitter.js';
 import { WaitingForUserInputError } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import Database from 'better-sqlite3';
@@ -125,6 +126,7 @@ class MemoryStorage implements StorageBackend {
 export class ContextImpl implements Context {
   private storage: StorageBackend;
   private _pauseIndex = 0;
+  private _emitter?: EventEmitter;
 
   constructor(
     public readonly invocationId: string,
@@ -232,6 +234,22 @@ export class ContextImpl implements Context {
   async setUserResponse(pauseIndex: number, response: string | null): Promise<void> {
     const responseKey = `user_response:${this.runId}:${pauseIndex}`;
     await this.storage.setCheckpoint(responseKey, response);
+  }
+
+  /**
+   * Set the EventEmitter for platform event emission.
+   */
+  setEmitter(emitter: EventEmitter): void {
+    this._emitter = emitter;
+  }
+
+  /**
+   * Emit an event to the platform. No-op if no emitter is set (local/test mode).
+   */
+  async emit(event: any): Promise<void> {
+    if (this._emitter) {
+      await this._emitter.emit(event);
+    }
   }
 
   /**
