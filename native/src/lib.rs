@@ -15,6 +15,9 @@ use tokio::sync::Mutex as TokioMutex;
 // For logging in Span implementation
 extern crate log;
 
+// Chat SDK module
+mod chat;
+
 // Language model module
 mod lm;
 
@@ -523,6 +526,115 @@ pub fn initialize(service_name: String, service_version: Option<String>) -> Resu
 #[napi]
 pub fn get_version() -> String {
     "0.1.0".to_string()
+}
+
+/// Forward TypeScript user logs to Rust tracing system for OpenTelemetry export.
+///
+/// This mirrors Python's `log_from_python` — user application logs are emitted through
+/// Rust's tracing system with `log_source = "application"` so the control plane can
+/// distinguish them from platform-internal logs.
+#[napi]
+pub fn log_from_typescript(
+    level: String,
+    message: String,
+    run_id: Option<String>,
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    attributes: Option<HashMap<String, String>>,
+) -> Result<()> {
+    // Get effective tenant_id and deployment_id from global config
+    let effective_tenant_id = agnt5_sdk_core::telemetry::get_tenant_id().map(|s| s.to_string());
+    let effective_deployment_id = agnt5_sdk_core::telemetry::get_deployment_id().map(|s| s.to_string());
+
+    // Serialize attributes to JSON for structured logging
+    let attrs_json = attributes.as_ref().map(|attrs| {
+        serde_json::to_string(attrs).unwrap_or_else(|_| "{}".to_string())
+    });
+
+    // Attach OpenTelemetry context if trace_id and span_id are provided
+    let _cx_guard = if let (Some(ref tid_str), Some(ref sid_str)) = (&trace_id, &span_id) {
+        use opentelemetry::trace::{TraceId, SpanId, SpanContext, TraceFlags, TraceContextExt};
+
+        if let (Ok(tid_bytes), Ok(sid_bytes)) = (hex::decode(tid_str), hex::decode(sid_str)) {
+            if tid_bytes.len() == 16 && sid_bytes.len() == 8 {
+                let trace_id = TraceId::from_bytes(tid_bytes.try_into().expect("trace_id length verified"));
+                let span_id = SpanId::from_bytes(sid_bytes.try_into().expect("span_id length verified"));
+
+                let span_context = SpanContext::new(
+                    trace_id,
+                    span_id,
+                    TraceFlags::SAMPLED,
+                    false,
+                    Default::default(),
+                );
+
+                let cx = opentelemetry::Context::current().with_remote_span_context(span_context);
+                Some(cx.attach())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    match level.to_uppercase().as_str() {
+        "DEBUG" => tracing::debug!(
+            target: "agnt5_sdk_typescript",
+            log_source = "application",
+            run_id = run_id.as_deref(),
+            tenant_id = effective_tenant_id.as_deref(),
+            deployment_id = effective_deployment_id.as_deref(),
+            log_attributes = attrs_json.as_deref(),
+            "{}",
+            message
+        ),
+        "INFO" => tracing::info!(
+            target: "agnt5_sdk_typescript",
+            log_source = "application",
+            run_id = run_id.as_deref(),
+            tenant_id = effective_tenant_id.as_deref(),
+            deployment_id = effective_deployment_id.as_deref(),
+            log_attributes = attrs_json.as_deref(),
+            "{}",
+            message
+        ),
+        "WARNING" | "WARN" => tracing::warn!(
+            target: "agnt5_sdk_typescript",
+            log_source = "application",
+            run_id = run_id.as_deref(),
+            tenant_id = effective_tenant_id.as_deref(),
+            deployment_id = effective_deployment_id.as_deref(),
+            log_attributes = attrs_json.as_deref(),
+            "{}",
+            message
+        ),
+        "ERROR" => tracing::error!(
+            target: "agnt5_sdk_typescript",
+            log_source = "application",
+            run_id = run_id.as_deref(),
+            tenant_id = effective_tenant_id.as_deref(),
+            deployment_id = effective_deployment_id.as_deref(),
+            log_attributes = attrs_json.as_deref(),
+            "{}",
+            message
+        ),
+        _ => tracing::info!(
+            target: "agnt5_sdk_typescript",
+            log_source = "application",
+            run_id = run_id.as_deref(),
+            tenant_id = effective_tenant_id.as_deref(),
+            deployment_id = effective_deployment_id.as_deref(),
+            log_attributes = attrs_json.as_deref(),
+            "[{}] {}",
+            level,
+            message
+        ),
+    }
+
+    Ok(())
 }
 
 /// Check if platform is reachable

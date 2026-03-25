@@ -3,8 +3,39 @@ import type { EventEmitter } from './event-emitter.js';
 import { WaitingForUserInputError } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import Database from 'better-sqlite3';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { mkdirSync, existsSync } from 'fs';
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+
+// Lazy-loaded native log function for OTLP export
+let _nativeLogFn: ((level: string, message: string, runId: string | null, traceId: string | null, spanId: string | null, attributes: Record<string, string> | null) => void) | null | undefined;
+
+function getNativeLogFn() {
+  if (_nativeLogFn !== undefined) return _nativeLogFn;
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const require = createRequire(import.meta.url);
+    const paths = [
+      join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),
+      join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),
+      join(__dirname, '../../native/agnt5-sdk-native.linux-x64-gnu.node'),
+      join(__dirname, '../native/agnt5-sdk-native.linux-x64-gnu.node'),
+    ];
+    for (const p of paths) {
+      try {
+        const native = require(p);
+        if (native.logFromTypescript) {
+          _nativeLogFn = native.logFromTypescript;
+          return _nativeLogFn;
+        }
+      } catch { continue; }
+    }
+  } catch { /* native not available */ }
+  _nativeLogFn = null;
+  return null;
+}
 
 /**
  * Storage backend interface
@@ -180,18 +211,24 @@ export class ContextImpl implements Context {
   }
 
   get logger(): Logger {
+    const runId = this.runId;
+    const logFn = getNativeLogFn();
     return {
       info: (message: string, meta?: Record<string, any>) => {
         console.log(`[INFO] ${message}`, meta || '');
+        logFn?.('INFO', message, runId, null, null, meta as Record<string, string> ?? null);
       },
       error: (message: string, meta?: Record<string, any>) => {
         console.error(`[ERROR] ${message}`, meta || '');
+        logFn?.('ERROR', message, runId, null, null, meta as Record<string, string> ?? null);
       },
       warn: (message: string, meta?: Record<string, any>) => {
         console.warn(`[WARN] ${message}`, meta || '');
+        logFn?.('WARN', message, runId, null, null, meta as Record<string, string> ?? null);
       },
       debug: (message: string, meta?: Record<string, any>) => {
         console.debug(`[DEBUG] ${message}`, meta || '');
+        logFn?.('DEBUG', message, runId, null, null, meta as Record<string, string> ?? null);
       },
     };
   }

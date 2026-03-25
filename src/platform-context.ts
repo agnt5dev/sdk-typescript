@@ -178,23 +178,29 @@ export class PlatformContext implements Context {
    * Get logger with span integration
    */
   get logger(): Logger {
+    const runId = this.runId;
+    const native = nativeBindings;
     return {
       info: (message: string, meta?: Record<string, any>) => {
         console.log(`[INFO] ${message}`, meta || '');
         this.span.addEvent('log.info', { message, ...meta });
+        native?.logFromTypescript('INFO', message, runId, null, null, meta ?? null);
       },
       error: (message: string, meta?: Record<string, any>) => {
         console.error(`[ERROR] ${message}`, meta || '');
         this.span.addEvent('log.error', { message, ...meta });
         this.span.recordError(message);
+        native?.logFromTypescript('ERROR', message, runId, null, null, meta ?? null);
       },
       warn: (message: string, meta?: Record<string, any>) => {
         console.warn(`[WARN] ${message}`, meta || '');
         this.span.addEvent('log.warn', { message, ...meta });
+        native?.logFromTypescript('WARN', message, runId, null, null, meta ?? null);
       },
       debug: (message: string, meta?: Record<string, any>) => {
         console.debug(`[DEBUG] ${message}`, meta || '');
         this.span.addEvent('log.debug', { message, ...meta });
+        native?.logFromTypescript('DEBUG', message, runId, null, null, meta ?? null);
       },
     };
   }

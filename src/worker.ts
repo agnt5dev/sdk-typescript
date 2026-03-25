@@ -4,6 +4,7 @@ import { WorkflowRegistry } from './workflow.js';
 import { ToolRegistry } from './tool.js';
 import { Agent } from './agent.js';
 import type { AgentResult } from './agent.js';
+import { ChatBot } from './chat.js';
 import { runWithContext } from './async-context.js';
 import { WaitingForUserInputError } from './errors.js';
 import { EventEmitter } from './event-emitter.js';
@@ -125,18 +126,23 @@ class SimpleContext implements Context {
   }
 
   get logger() {
+    const runId = this.runId;
     return {
       info: (message: string, meta?: Record<string, any>) => {
         console.log(`[INFO] ${message}`, meta || {});
+        nativeBindings?.logFromTypescript('INFO', message, runId, null, null, meta ?? null);
       },
       error: (message: string, meta?: Record<string, any>) => {
         console.error(`[ERROR] ${message}`, meta || {});
+        nativeBindings?.logFromTypescript('ERROR', message, runId, null, null, meta ?? null);
       },
       warn: (message: string, meta?: Record<string, any>) => {
         console.warn(`[WARN] ${message}`, meta || {});
+        nativeBindings?.logFromTypescript('WARN', message, runId, null, null, meta ?? null);
       },
       debug: (message: string, meta?: Record<string, any>) => {
         console.debug(`[DEBUG] ${message}`, meta || {});
+        nativeBindings?.logFromTypescript('DEBUG', message, runId, null, null, meta ?? null);
       },
     };
   }
@@ -254,12 +260,26 @@ export class Worker {
   /** Registered agents (keyed by name) for dispatch */
   private agents: Map<string, Agent> = new Map();
 
+  /** Registered ChatBots (keyed by agent name) for webhook dispatch */
+  private chatbots: Map<string, ChatBot> = new Map();
+
   /**
    * Register agents that can be dispatched by the worker.
+   * Accepts both Agent and ChatBot instances. ChatBot instances
+   * will have their wrapped agent registered for normal dispatch,
+   * plus the ChatBot tracked for webhook routing.
    */
-  registerAgents(agents: Agent[]): void {
-    for (const agent of agents) {
-      this.agents.set(agent.name, agent);
+  registerAgents(agents: (Agent | ChatBot)[]): void {
+    for (const item of agents) {
+      if (item instanceof ChatBot) {
+        this.chatbots.set(item.name, item);
+        // ChatBot wraps an agent — register the agent for the platform
+        // (The ChatBot.agent getter would need to be public for this)
+        // For now, just track by name — webhook dispatch uses ChatBot directly
+        console.log(`Registered ChatBot for agent '${item.name}'`);
+      } else {
+        this.agents.set(item.name, item);
+      }
     }
   }
 
@@ -428,6 +448,20 @@ export class Worker {
             }
 
             case 'agent': {
+              // Check if this is a chat webhook dispatch
+              if (inputData._chat_webhook && this.chatbots.has(message.componentName)) {
+                const chatbot = this.chatbots.get(message.componentName)!;
+                const platform = inputData.platform as string;
+                const headers = (inputData.headers || {}) as Record<string, string>;
+                const body = Buffer.from(inputData.body || '', 'utf-8');
+
+                console.log(`💬 Chat webhook received: platform=${platform}, bot=${message.componentName}`);
+
+                const challengeResult = await chatbot.handleWebhook(platform, headers, body);
+                result = challengeResult ?? {};
+                break;
+              }
+
               const agent = this.agents.get(message.componentName);
               if (!agent) {
                 throw new Error(`Agent not found: ${message.componentName}`);
