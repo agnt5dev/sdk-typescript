@@ -96,6 +96,10 @@ export {
   retryWorkflow,
 } from './workflow-utils.js';
 
+// Chat SDK exports
+export { ChatBot } from './chat.js';
+export type { SlackConfig, DiscordConfig, TeamsConfig, TelegramConfig, PlatformConfig, ChatEvent, ChatMessage, ChatUser, ChatEventHandler } from './chat.js';
+
 // Agent exports
 export { Agent, MessageRole, Message, Handoff, handoff } from './agent.js';
 export type {

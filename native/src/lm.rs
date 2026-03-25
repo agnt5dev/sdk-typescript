@@ -335,6 +335,7 @@ impl TryFrom<JsGenerationConfig> for GenerationConfig {
             reasoning_effort,
             modalities,
             built_in_tools,
+            timeout: None,
         })
     }
 }
