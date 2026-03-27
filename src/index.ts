@@ -76,7 +76,7 @@ export {
 export type { SchemaFormat, SchemaConversionOptions } from './schema-utils.js';
 
 // Tool exports
-export { Tool, ToolRegistry, tool } from './tool.js';
+export { Tool, ToolRegistry, tool, AskUserTool, RequestApprovalTool } from './tool.js';
 
 
 // Workflow exports

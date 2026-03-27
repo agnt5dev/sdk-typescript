@@ -7,6 +7,8 @@
  */
 
 import type { Context, ToolHandler, ToolOptions, ToolSchema, JSONSchema } from './types.js';
+import type { ContextImpl } from './context.js';
+import { ConfigurationError } from './errors.js';
 
 /**
  * Tool class representing a callable tool for agents
@@ -166,4 +168,105 @@ export function tool<TInput = any, TOutput = any>(
   (toolWrapper as any)._tool = toolInstance;
 
   return toolWrapper as ToolHandler<TInput, TOutput>;
+}
+
+// ─── Built-in Human-in-the-Loop Tools ────────────────────────────────
+
+/**
+ * Built-in tool that agents can use to request text input from users.
+ *
+ * Pauses workflow execution and waits for the user to provide a text response.
+ *
+ * @example
+ * ```typescript
+ * const agent = new Agent({
+ *   name: 'research_agent',
+ *   model: LM.openai(),
+ *   instructions: 'You are a research assistant.',
+ *   tools: [new AskUserTool(wfCtx)],
+ * });
+ * ```
+ */
+export class AskUserTool extends Tool<{ question: string }, string | null> {
+  constructor(context: ContextImpl) {
+    if (!context || typeof (context as any).waitForUser !== 'function') {
+      throw new ConfigurationError(
+        'AskUserTool requires a ContextImpl with waitForUser. ' +
+        'This tool can only be used within workflows.'
+      );
+    }
+    const wfContext = context;
+    super(
+      'ask_user',
+      'Ask the user a question and wait for their text response',
+      async (_ctx: Context, args: any) => {
+        const question = typeof args === 'string' ? args : args.question;
+        return wfContext.waitForUser(question, { inputType: 'text' });
+      },
+      {
+        inputSchema: {
+          type: 'object',
+          properties: {
+            question: { type: 'string', description: 'Question to ask the user' },
+          },
+          required: ['question'],
+        },
+      },
+    );
+  }
+}
+
+/**
+ * Built-in tool that agents can use to request approval from users.
+ *
+ * Pauses workflow execution and presents approve/reject options to the user.
+ *
+ * @example
+ * ```typescript
+ * const agent = new Agent({
+ *   name: 'deploy_agent',
+ *   model: LM.openai(),
+ *   instructions: 'You help deploy code changes safely.',
+ *   tools: [new RequestApprovalTool(wfCtx)],
+ * });
+ * ```
+ */
+export class RequestApprovalTool extends Tool<{ action: string; details?: string }, string | null> {
+  constructor(context: ContextImpl) {
+    if (!context || typeof (context as any).waitForUser !== 'function') {
+      throw new ConfigurationError(
+        'RequestApprovalTool requires a ContextImpl with waitForUser. ' +
+        'This tool can only be used within workflows.'
+      );
+    }
+    const wfContext = context;
+    super(
+      'request_approval',
+      'Request user approval for an action before proceeding',
+      async (_ctx: Context, args: any) => {
+        let question = `Action: ${args.action}`;
+        if (args.details) {
+          question += `\n\nDetails:\n${args.details}`;
+        }
+        question += '\n\nDo you approve?';
+        return wfContext.waitForUser(question, {
+          inputType: 'approval',
+          options: [
+            { id: 'approve', label: 'Approve' },
+            { id: 'reject', label: 'Reject' },
+          ],
+        });
+      },
+      {
+        inputSchema: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', description: 'The action requiring approval' },
+            details: { type: 'string', description: 'Additional details about the action' },
+          },
+          required: ['action'],
+        },
+      },
+    );
+  }
 }

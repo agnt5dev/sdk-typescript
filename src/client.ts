@@ -56,6 +56,7 @@ export type RunStatus =
   | 'cancelled'
   | 'paused'
   | 'awaiting_input'
+  | 'awaiting_user_input'
   | 'timeout'
   | 'unknown';
 
@@ -288,7 +289,8 @@ export class Client {
   private readonly retryDelayMs: number;
 
   constructor(options: ClientOptions = {}) {
-    this.gatewayUrl = (options.gatewayUrl || 'http://localhost:34181').replace(/\/$/, '');
+    const envGatewayUrl = typeof process !== 'undefined' ? process.env?.AGNT5_GATEWAY_URL : undefined;
+    this.gatewayUrl = (options.gatewayUrl || envGatewayUrl || 'http://localhost:34181').replace(/\/$/, '');
     this.apiKey = options.apiKey || (typeof process !== 'undefined' ? process.env?.AGNT5_API_KEY : undefined);
     this.timeout = options.timeout || 30000;
     this.maxRetries = options.maxRetries ?? 3;
