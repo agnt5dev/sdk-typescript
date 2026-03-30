@@ -30,6 +30,8 @@ export interface FunctionOptions {
   retries?: RetryPolicy;
   /** Backoff strategy for retries */
   backoff?: BackoffPolicy;
+  /** Timeout in milliseconds for function execution */
+  timeout_ms?: number;
 }
 
 /**

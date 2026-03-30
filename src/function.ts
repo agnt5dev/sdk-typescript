@@ -32,6 +32,14 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
   }
 
   /**
+   * Configure timeout in milliseconds
+   */
+  timeout(ms: number): this {
+    this.config.timeout_ms = ms;
+    return this;
+  }
+
+  /**
    * Define the function handler
    */
   run(handler: FunctionHandler<TInput, TOutput>): FunctionHandler<TInput, TOutput> {
