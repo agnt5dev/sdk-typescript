@@ -238,6 +238,231 @@ class StdioTransport implements Transport {
   }
 }
 
+/**
+ * SSE transport using HTTP POST for requests and Server-Sent Events for responses.
+ *
+ * Protocol:
+ * 1. GET to server URL with Accept: text/event-stream to open SSE stream
+ * 2. SSE stream delivers JSON-RPC responses and session IDs
+ * 3. POST JSON-RPC requests to server URL (with session query param if available)
+ * 4. Responses arrive either in POST response body or via SSE stream
+ */
+class SseTransport implements Transport {
+  private _connected = false;
+  private nextId = 1;
+  private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  private sessionId: string | null = null;
+  private abortController: AbortController | null = null;
+  private url: string;
+  private headers: Record<string, string>;
+
+  private constructor(url: string, headers: Record<string, string>) {
+    this.url = url;
+    this.headers = headers;
+  }
+
+  static async create(config: SseConfig): Promise<SseTransport> {
+    const transport = new SseTransport(config.url, config.headers || {});
+    await transport.connect();
+    return transport;
+  }
+
+  get isConnected(): boolean {
+    return this._connected;
+  }
+
+  private async connect(): Promise<void> {
+    this.abortController = new AbortController();
+
+    const response = await fetch(this.url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'text/event-stream',
+        ...this.headers,
+      },
+      signal: this.abortController.signal,
+    });
+
+    if (!response.ok) {
+      throw new MCPError(`SSE connection failed: ${response.status} ${response.statusText}`);
+    }
+
+    if (!response.body) {
+      throw new MCPError('SSE response has no body');
+    }
+
+    this._connected = true;
+
+    // Start background SSE reader
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    const readLoop = async () => {
+      let buffer = '';
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+
+          // Process complete SSE lines
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith(':')) continue; // Skip empty lines and comments
+
+            if (trimmed.startsWith('data: ')) {
+              const data = trimmed.slice(6);
+              try {
+                const value = JSON.parse(data);
+
+                // Check for session ID
+                if (value.session && typeof value.session === 'string') {
+                  this.sessionId = value.session;
+                }
+
+                // Check for JSON-RPC response (has id field)
+                if (value.id !== undefined && this.pending.has(value.id)) {
+                  const p = this.pending.get(value.id)!;
+                  this.pending.delete(value.id);
+                  if (value.error) {
+                    p.reject(new MCPError(value.error.message || JSON.stringify(value.error)));
+                  } else {
+                    p.resolve(value.result || {});
+                  }
+                }
+              } catch {
+                // Skip non-JSON data lines
+              }
+            }
+          }
+        }
+      } catch (e: any) {
+        if (e.name !== 'AbortError') {
+          this._connected = false;
+        }
+      }
+    };
+
+    // Don't await — run in background
+    readLoop().catch(() => { this._connected = false; });
+  }
+
+  async request(method: string, params: Record<string, any>): Promise<Record<string, any>> {
+    if (!this._connected) {
+      throw new MCPError('SSE transport not connected');
+    }
+
+    const id = this.nextId++;
+    const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
+
+    // Build URL with session if available
+    let url = this.url;
+    if (this.sessionId) {
+      url += (url.includes('?') ? '&' : '?') + `session=${this.sessionId}`;
+    }
+
+    // Create pending promise for SSE-delivered response
+    const responsePromise = new Promise<Record<string, any>>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new MCPError(`MCP SSE request timed out: ${method}`));
+      }, 30000);
+
+      this.pending.set(id, {
+        resolve: (v) => { clearTimeout(timeout); resolve(v); },
+        reject: (e) => { clearTimeout(timeout); reject(e); },
+      });
+    });
+
+    // POST the request
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.headers,
+      },
+      body,
+    });
+
+    if (!response.ok) {
+      this.pending.delete(id);
+      throw new MCPError(`SSE request failed: ${response.status} ${response.statusText}`);
+    }
+
+    // Try to get response from POST body first (stateless endpoints)
+    const responseBody = await response.text();
+    if (responseBody) {
+      try {
+        const rpcResponse = JSON.parse(responseBody);
+        if (rpcResponse.id === id) {
+          this.pending.delete(id);
+          if (rpcResponse.error) {
+            throw new MCPError(rpcResponse.error.message || JSON.stringify(rpcResponse.error));
+          }
+          return rpcResponse.result || {};
+        }
+      } catch (e) {
+        if (e instanceof MCPError) throw e;
+        // Not valid JSON or different ID — wait for SSE
+      }
+    }
+
+    // Wait for response via SSE stream
+    return responsePromise;
+  }
+
+  async notify(method: string, params: Record<string, any>): Promise<void> {
+    if (!this._connected) {
+      throw new MCPError('SSE transport not connected');
+    }
+
+    const body = JSON.stringify({ jsonrpc: '2.0', method, params });
+
+    let url = this.url;
+    if (this.sessionId) {
+      url += (url.includes('?') ? '&' : '?') + `session=${this.sessionId}`;
+    }
+
+    await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.headers,
+      },
+      body,
+    });
+  }
+
+  async close(): Promise<void> {
+    this._connected = false;
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+    for (const [, p] of this.pending) {
+      p.reject(new MCPError('Transport closed'));
+    }
+    this.pending.clear();
+  }
+}
+
+// ─── Types ──────────────────────────────────────────────────────────
+
+export interface ServerCapabilities {
+  tools?: boolean;
+  resources?: boolean;
+  prompts?: boolean;
+}
+
+export interface ServerInfo {
+  name: string;
+  version: string;
+}
+
 // ─── MCPClient ───────────────────────────────────────────────────────
 
 /**
@@ -318,9 +543,8 @@ export class MCPClient {
 
     if (config.transportType === 'stdio' && config.stdio) {
       transport = await StdioTransport.create(config.stdio);
-    } else if (config.transportType === 'sse') {
-      // TODO: SSE transport implementation
-      throw new MCPError('SSE transport not yet implemented');
+    } else if (config.transportType === 'sse' && config.sse) {
+      transport = await SseTransport.create(config.sse);
     } else {
       throw new MCPError(`Unknown transport type: ${config.transportType}`);
     }

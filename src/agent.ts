@@ -162,6 +162,48 @@ export function handoff(
 }
 
 /**
+ * Global registry for looking up agents by name.
+ *
+ * Provides discovery for multi-agent systems where agents need to find each
+ * other, and for the worker to enumerate registered agents.
+ *
+ * @example
+ * ```typescript
+ * const researcher = new Agent({ name: 'researcher', ... });
+ * // Agent is auto-registered in constructor
+ *
+ * // Look up later
+ * const found = AgentRegistry.get('researcher');
+ * ```
+ */
+export class AgentRegistry {
+  private static agents = new Map<string, Agent>();
+
+  static register(agent: Agent): void {
+    if (this.agents.has(agent.name)) {
+      console.warn(`Overwriting existing agent '${agent.name}'`);
+    }
+    this.agents.set(agent.name, agent);
+  }
+
+  static get(name: string): Agent | undefined {
+    return this.agents.get(name);
+  }
+
+  static all(): Map<string, Agent> {
+    return new Map(this.agents);
+  }
+
+  static listNames(): string[] {
+    return Array.from(this.agents.keys());
+  }
+
+  static clear(): void {
+    this.agents.clear();
+  }
+}
+
+/**
  * Agent configuration options
  */
 export interface AgentOptions {
@@ -255,6 +297,9 @@ export class Agent {
         this.tools.set(transferTool.name, transferTool);
       }
     }
+
+    // Auto-register in global registry
+    AgentRegistry.register(this);
   }
 
   /**

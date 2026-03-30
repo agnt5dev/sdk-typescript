@@ -14,8 +14,8 @@ export { ContextImpl } from './context.js';
 export { PlatformContext } from './platform-context.js';
 
 // Client exports
-export { Client, EntityProxy, RunResponse } from './client.js';
-export type { ClientOptions, RunOptions, RunStatus, RunErrorDetail, SubmitResponse, ReceivedEvent } from './client.js';
+export { Client, EntityProxy, RunResponse, WorkflowProxy, SessionProxy } from './client.js';
+export type { ClientOptions, RunOptions, RunStatus, RunErrorDetail, SubmitResponse, ReceivedEvent, EventRecord, EventsResponse } from './client.js';
 
 // Batch exports
 export { BatchResult, BatchStatusResult } from './batch.js';
@@ -94,6 +94,7 @@ export {
   withTimeout,
   saga,
   retryWorkflow,
+  sleep,
 } from './workflow-utils.js';
 
 // Chat SDK exports
@@ -101,7 +102,7 @@ export { ChatBot } from './chat.js';
 export type { SlackConfig, DiscordConfig, TeamsConfig, TelegramConfig, PlatformConfig, ChatEvent, ChatMessage, ChatUser, ChatEventHandler } from './chat.js';
 
 // Agent exports
-export { Agent, MessageRole, Message, Handoff, handoff } from './agent.js';
+export { Agent, AgentRegistry, MessageRole, Message, Handoff, handoff } from './agent.js';
 export type {
   Message as IMessage,
   ToolCall,
@@ -200,6 +201,13 @@ export type {
   BedrockConfig,
   GroqConfig,
   OpenRouterConfig,
+  DeepSeekConfig,
+  GoogleConfig,
+  MistralConfig,
+  OllamaConfig,
+  XaiConfig,
+  HuggingFaceConfig,
+  OpenAiChatConfig,
 } from './lm.js';
 
 // Context propagation exports
@@ -227,6 +235,8 @@ export type {
   SseConfig,
   TransportType,
   ServerConfig,
+  ServerCapabilities,
+  ServerInfo,
 } from './mcp.js';
 
 // Tracing exports
@@ -266,10 +276,14 @@ export {
   BatchEvalItemResult,
   BatchEvalResult,
   LLMJudge,
+  TraceAssertion,
+  traceScorer,
   normalizeBatchEvalItems,
   normalizeScorerSpecs,
 } from './eval.js';
 export type {
+  AssertionResult,
+  TraceScorerResult,
   BatchEvalItem,
   BatchEvalStats,
   LLMJudgeConfig,
@@ -294,11 +308,16 @@ export type {
   GraphTraversalResult,
 } from './memory.js';
 
+// Logging exports
+export { ContextLogger, getLogger, setLogLevel, getLogLevel } from './logging.js';
+export type { LogLevel } from './logging.js';
+
 // Platform adapter exports
 export {
   StubJobQueueAdapter,
   StubPlatformStateAdapter,
   StubPlatformSpanAdapter,
+  NapiPlatformSpanAdapter,
   startJobQueuePolling,
 } from './platform-adapters.js';
 export type {

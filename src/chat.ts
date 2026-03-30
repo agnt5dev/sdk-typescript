@@ -269,13 +269,13 @@ export class ChatBot {
       slackConfig.botToken, msg.channelId, 'Thinking...', threadTs,
     );
     const initialResp = await this.executeRequest(initialReq);
-    const respData = await initialResp.json();
+    const respData = await initialResp.json() as Record<string, any>;
     const messageTs = respData.ts || '';
 
     // Stream agent response with buffer
     const buffer = new native.StreamingMessageBuffer(500);
 
-    for await (const agentEvent of this.agent.runStream(msg.content)) {
+    for await (const agentEvent of this.agent.stream(msg.content)) {
       const delta = (agentEvent as any).delta;
       if (delta === undefined || delta === null) continue;
 

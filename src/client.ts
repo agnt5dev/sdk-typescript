@@ -605,6 +605,66 @@ export class Client {
     return new EntityProxy(this, entityType, key);
   }
 
+  /**
+   * Get all journal events for a completed run.
+   *
+   * @example
+   * ```typescript
+   * const events = await client.getEvents(runId);
+   * for (const event of events.events) {
+   *   console.log(event.eventType, event.data);
+   * }
+   * ```
+   */
+  async getEvents(runId: string): Promise<EventsResponse> {
+    const url = `${this.gatewayUrl}/v1/runs/${runId}/events`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: this.buildHeaders(),
+    });
+
+    if (!response.ok) {
+      throw createErrorFromResponse(response.status, await response.text(), runId);
+    }
+
+    const data = await response.json() as any;
+    const events: EventRecord[] = (data.events || data || []).map((e: any) => ({
+      eventType: e.event_type || e.eventType || '',
+      data: e.data || e.output_data || {},
+      timestamp: e.timestamp || e.created_at,
+      sequence: e.sequence ?? 0,
+      correlationId: e.correlation_id || e.correlationId,
+    }));
+
+    return { events, runId };
+  }
+
+  /**
+   * Get a proxy for invoking a workflow with fluent API.
+   *
+   * @example
+   * ```typescript
+   * const result = await client.workflow('support_bot').chat('Help me', 'session-123');
+   * ```
+   */
+  workflow(workflowName: string): WorkflowProxy {
+    return new WorkflowProxy(this, workflowName);
+  }
+
+  /**
+   * Get a proxy for a session entity.
+   *
+   * @example
+   * ```typescript
+   * const session = client.session('Conversation', 'user-alice');
+   * const response = await session.chat('Hello!');
+   * ```
+   */
+  session(sessionType: string, key: string): SessionProxy {
+    return new SessionProxy(this, sessionType, key);
+  }
+
   // ─── Batch operations ───────────────────────────────────────────────
 
   /**
@@ -869,5 +929,89 @@ export class Client {
       results,
       durationMs: totalDurationMs,
     });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Event types
+// ---------------------------------------------------------------------------
+
+export interface EventRecord {
+  eventType: string;
+  data: Record<string, any>;
+  timestamp?: string;
+  sequence: number;
+  correlationId?: string;
+}
+
+export interface EventsResponse {
+  events: EventRecord[];
+  runId: string;
+}
+
+// ---------------------------------------------------------------------------
+// WorkflowProxy
+// ---------------------------------------------------------------------------
+
+export class WorkflowProxy {
+  constructor(
+    private client: Client,
+    private workflowName: string,
+  ) {}
+
+  /** Execute the workflow synchronously */
+  async run<T = any>(
+    input?: Record<string, any>,
+    options?: { sessionId?: string; userId?: string },
+  ): Promise<RunResponse<T>> {
+    return this.client.run<T>(this.workflowName, input, {
+      componentType: 'workflow',
+      sessionId: options?.sessionId,
+      userId: options?.userId,
+    });
+  }
+
+  /** Send a message to a chat-enabled workflow */
+  async chat<T = any>(
+    message: string,
+    sessionId?: string,
+    options?: { userId?: string; extra?: Record<string, any> },
+  ): Promise<RunResponse<T>> {
+    const input = { message, ...(options?.extra || {}) };
+    return this.client.run<T>(this.workflowName, input, {
+      componentType: 'workflow',
+      sessionId,
+      userId: options?.userId,
+    });
+  }
+
+  /** Submit the workflow for async execution */
+  async submit(input?: Record<string, any>): Promise<SubmitResponse> {
+    return this.client.submit(this.workflowName, input, { componentType: 'workflow' });
+  }
+
+  /** Stream events from workflow execution */
+  async *events(
+    input?: Record<string, any>,
+  ): AsyncGenerator<ReceivedEvent> {
+    yield* this.client.events(this.workflowName, input, {
+      componentType: 'workflow',
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SessionProxy
+// ---------------------------------------------------------------------------
+
+export class SessionProxy extends EntityProxy {
+  /** Send a chat message to the session entity */
+  async chat(message: string, extra?: Record<string, any>): Promise<any> {
+    return this.call('chat', { message, ...(extra || {}) });
+  }
+
+  /** Get conversation history from the session entity */
+  async getHistory(): Promise<any> {
+    return this.call('get_history', {});
   }
 }

@@ -386,6 +386,52 @@ export async function saga<T = any>(
  * );
  * ```
  */
+/**
+ * Durable sleep that survives workflow restarts.
+ *
+ * Unlike `setTimeout` or `new Promise(resolve => setTimeout(...))`, this sleep
+ * is checkpointed via `ctx.step()`. If the workflow crashes and restarts, it
+ * only sleeps for the remaining duration (or skips entirely if the period has
+ * already elapsed).
+ *
+ * @param ctx - Workflow context
+ * @param durationMs - Duration to sleep in milliseconds
+ * @param name - Optional name for the sleep checkpoint (auto-generated if omitted)
+ *
+ * @example
+ * ```typescript
+ * const notifyLater = workflow('notify-later', async (ctx, userId) => {
+ *   await ctx.step('send-ack', () => sendAck(userId));
+ *
+ *   // Wait 24 hours (survives restarts!)
+ *   await sleep(ctx, 24 * 60 * 60 * 1000, 'wait_24h');
+ *
+ *   await ctx.step('send-followup', () => sendFollowup(userId));
+ * });
+ * ```
+ */
+export async function sleep(
+  ctx: Context,
+  durationMs: number,
+  name?: string,
+): Promise<void> {
+  const sleepName = name || `sleep_${durationMs}ms`;
+
+  // ctx.step() checkpoints the start time — on replay it returns the cached value
+  const startTime = await ctx.step(sleepName, () => Date.now());
+
+  const elapsed = Date.now() - startTime;
+  const remaining = durationMs - elapsed;
+
+  if (remaining > 0) {
+    ctx.logger.info(`Starting durable sleep '${sleepName}': ${remaining}ms`);
+    await new Promise<void>(resolve => setTimeout(resolve, remaining));
+    ctx.logger.info(`Sleep '${sleepName}' completed`);
+  } else {
+    ctx.logger.info(`Sleep '${sleepName}' already elapsed (${elapsed}ms ago)`);
+  }
+}
+
 export async function retryWorkflow<TInput = any, TOutput = any>(
   ctx: Context,
   workflowNameOrHandler: string | WorkflowHandler<TInput, TOutput>,

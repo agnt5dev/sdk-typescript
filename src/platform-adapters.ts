@@ -128,7 +128,7 @@ export interface PlatformSpanHandle {
 
 /**
  * Stub span adapter that logs to console.
- * Used when NAPI bindings aren't available yet.
+ * Used when NAPI bindings aren't available.
  */
 export class StubPlatformSpanAdapter implements PlatformSpanAdapter {
   createSpan(name: string): PlatformSpanHandle {
@@ -139,6 +139,46 @@ export class StubPlatformSpanAdapter implements PlatformSpanAdapter {
       addEvent: (eventName) => console.debug(`[span:${name}] event: ${eventName}`),
       recordError: (err) => console.error(`[span:${name}] error:`, err),
       end: () => {},
+    };
+  }
+}
+
+/**
+ * NAPI-backed span adapter that creates real OpenTelemetry spans
+ * via the sdk-core Rust telemetry subsystem.
+ *
+ * Uses the Span NAPI class from tracing.ts which delegates to
+ * sdk-core's create_component_span() + OTLP exporter.
+ */
+export class NapiPlatformSpanAdapter implements PlatformSpanAdapter {
+  createSpan(name: string, attributes?: SpanAttributes): PlatformSpanHandle {
+    // Import Span from tracing.ts (which handles NAPI loading internally)
+    // We use dynamic import to avoid circular deps at module load time
+    const { Span } = require('./tracing.js');
+    const stringAttrs: Record<string, string> = {};
+    if (attributes) {
+      for (const [k, v] of Object.entries(attributes)) {
+        stringAttrs[k] = String(v);
+      }
+    }
+    const span = new Span(name, 'platform', undefined, stringAttrs);
+    return {
+      get traceId() { return span.traceId; },
+      get spanId() { return span.spanId; },
+      setAttribute(key: string, value: string | number | boolean) {
+        span.setAttribute(key, String(value));
+      },
+      addEvent(eventName: string, eventAttrs?: SpanAttributes) {
+        // Span class delegates to NAPI addEvent if available
+        span.setAttribute(`event.${eventName}`, 'true');
+      },
+      recordError(error: Error | string) {
+        const msg = error instanceof Error ? error.message : error;
+        span.recordException(new Error(msg));
+      },
+      end() {
+        span.end();
+      },
     };
   }
 }
