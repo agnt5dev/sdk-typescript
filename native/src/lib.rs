@@ -21,6 +21,12 @@ mod chat;
 // Language model module
 mod lm;
 
+// Memory module (SemanticMemory + GraphMemory)
+mod memory;
+
+// Sandbox module (WasmSandbox + RemoteSandbox)
+mod sandbox;
+
 /// Worker configuration options
 #[napi(object)]
 pub struct WorkerOptions {
@@ -724,28 +730,103 @@ impl StateManager {
 }
 
 // =============================================================================
-// OpenTelemetry Span
+// OpenTelemetry Span (backed by sdk-core)
 // =============================================================================
 
-/// OpenTelemetry Span for distributed tracing
+use opentelemetry::trace::{
+    SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
+};
+use opentelemetry::Context as OtelContext;
+
+/// Initialize OpenTelemetry telemetry (OTLP exporter, metrics, logs).
+/// Call once at worker startup before creating any spans.
+#[napi]
+pub fn init_telemetry(service_name: String, service_version: String) -> Result<()> {
+    agnt5_sdk_core::init_telemetry(&service_name, &service_version)
+        .map_err(|e| Error::from_reason(format!("Failed to init telemetry: {}", e)))
+}
+
+/// Shut down OpenTelemetry gracefully, flushing any pending spans.
+#[napi]
+pub fn shutdown_telemetry() {
+    agnt5_sdk_core::shutdown_telemetry();
+}
+
+/// OpenTelemetry Span backed by sdk-core's BoxedSpan.
+/// Provides real distributed tracing via OTLP export.
 #[napi]
 pub struct Span {
-    // For now, we'll use a simple wrapper
-    // In the future, this will wrap sdk-core's telemetry::Span
+    inner: StdMutex<Option<opentelemetry::global::BoxedSpan>>,
     name: String,
-    attributes: Arc<StdMutex<HashMap<String, String>>>,
-    ended: Arc<StdMutex<bool>>,
+    trace_id: String,
+    span_id: String,
+    attributes: StdMutex<HashMap<String, String>>,
 }
 
 #[napi]
 impl Span {
-    /// Create a new span with the given name
+    /// Create a new span with the given name and component type.
+    /// Optionally pass parent trace/span IDs for proper parent-child linking.
     #[napi(factory)]
-    pub fn create(name: String) -> Self {
+    pub fn create(
+        name: String,
+        component_type: Option<String>,
+        parent_trace_id: Option<String>,
+        parent_span_id: Option<String>,
+        attributes: Option<HashMap<String, String>>,
+    ) -> Self {
+        let comp_type = component_type.unwrap_or_else(|| "operation".to_string());
+
+        // Build parent context from trace/span IDs if provided
+        let parent_context = match (&parent_trace_id, &parent_span_id) {
+            (Some(tid), Some(sid)) => {
+                let trace_id = TraceId::from_hex(tid).unwrap_or(TraceId::INVALID);
+                let span_id = SpanId::from_hex(sid).unwrap_or(SpanId::INVALID);
+                if trace_id != TraceId::INVALID && span_id != SpanId::INVALID {
+                    let span_context = SpanContext::new(
+                        trace_id,
+                        span_id,
+                        TraceFlags::SAMPLED,
+                        true, // is_remote
+                        TraceState::default(),
+                    );
+                    Some(OtelContext::new().with_remote_span_context(span_context))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        let metadata = attributes.unwrap_or_default();
+
+        let span = agnt5_sdk_core::create_component_span(
+            &name,
+            &comp_type,
+            "", // service_name — set via init_telemetry global
+            "", // worker_id
+            "", // run_id
+            parent_context,
+            Some(&metadata),
+        );
+
+        // Extract trace_id and span_id from the created span
+        let (trace_id, span_id) = {
+            use opentelemetry::trace::Span as OtelSpan;
+            let ctx = span.span_context();
+            if ctx.is_valid() {
+                (ctx.trace_id().to_string(), ctx.span_id().to_string())
+            } else {
+                (String::new(), String::new())
+            }
+        };
+
         Span {
+            inner: StdMutex::new(Some(span)),
             name,
-            attributes: Arc::new(StdMutex::new(HashMap::new())),
-            ended: Arc::new(StdMutex::new(false)),
+            trace_id,
+            span_id,
+            attributes: StdMutex::new(HashMap::new()),
         }
     }
 
@@ -755,64 +836,99 @@ impl Span {
         self.name.clone()
     }
 
+    /// Get the trace ID (hex string)
+    #[napi(getter)]
+    pub fn trace_id(&self) -> String {
+        self.trace_id.clone()
+    }
+
+    /// Get the span ID (hex string)
+    #[napi(getter)]
+    pub fn span_id(&self) -> String {
+        self.span_id.clone()
+    }
+
     /// Set a string attribute on the span
     #[napi]
     pub fn set_attribute(&self, key: String, value: String) -> Result<()> {
-        let mut attrs = self.attributes.lock()
-            .map_err(|e| Error::from_reason(format!("Failed to lock attributes: {}", e)))?;
-        attrs.insert(key, value);
+        let mut guard = self.inner.lock()
+            .map_err(|e| Error::from_reason(format!("Span mutex poisoned: {}", e)))?;
+        if let Some(ref mut span) = *guard {
+            use opentelemetry::trace::Span as OtelSpan;
+            span.set_attribute(opentelemetry::KeyValue::new(key.clone(), value.clone()));
+        }
+        // Track locally for getAttributes()
+        if let Ok(mut attrs) = self.attributes.lock() {
+            attrs.insert(key, value);
+        }
         Ok(())
     }
 
-    /// Get all attributes
+    /// Get all attributes set on this span
     #[napi]
     pub fn get_attributes(&self) -> Result<HashMap<String, String>> {
         let attrs = self.attributes.lock()
-            .map_err(|e| Error::from_reason(format!("Failed to lock attributes: {}", e)))?;
+            .map_err(|e| Error::from_reason(format!("Span attrs mutex poisoned: {}", e)))?;
         Ok(attrs.clone())
     }
 
     /// Add an event to the span
     #[napi]
     pub fn add_event(&self, name: String, attributes: Option<HashMap<String, String>>) -> Result<()> {
-        // For now, just log it
-        // TODO: connect to sdk-core's telemetry
-        let attrs_str = attributes
-            .map(|a| format!("{:?}", a))
-            .unwrap_or_else(|| "{}".to_string());
-        log::info!("Span event: {} on span '{}' with attributes: {}", name, self.name, attrs_str);
+        let mut guard = self.inner.lock()
+            .map_err(|e| Error::from_reason(format!("Span mutex poisoned: {}", e)))?;
+        if let Some(ref mut span) = *guard {
+            use opentelemetry::trace::Span as OtelSpan;
+            let attrs: Vec<opentelemetry::KeyValue> = attributes
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, v)| opentelemetry::KeyValue::new(k, v))
+                .collect();
+            span.add_event(name, attrs);
+        }
         Ok(())
     }
 
     /// Record an error on the span
     #[napi]
     pub fn record_error(&self, error: String) -> Result<()> {
-        log::error!("Span error on '{}': {}", self.name, error);
-        self.set_attribute("error".to_string(), "true".to_string())?;
-        self.set_attribute("error.message".to_string(), error)?;
+        let mut guard = self.inner.lock()
+            .map_err(|e| Error::from_reason(format!("Span mutex poisoned: {}", e)))?;
+        if let Some(ref mut span) = *guard {
+            use opentelemetry::trace::Span as OtelSpan;
+            span.set_attribute(opentelemetry::KeyValue::new("error", true));
+            span.set_attribute(opentelemetry::KeyValue::new("error.message", error.clone()));
+            span.set_status(opentelemetry::trace::Status::error(error.clone()));
+        }
+        // Track locally for getAttributes()
+        if let Ok(mut attrs) = self.attributes.lock() {
+            attrs.insert("error".to_string(), "true".to_string());
+            attrs.insert("error.message".to_string(), error);
+        }
         Ok(())
     }
 
-    /// End the span
+    /// End the span. Takes ownership of the inner span and drops it.
+    /// Throws if the span has already been ended.
     #[napi]
     pub fn end(&self) -> Result<()> {
-        let mut ended = self.ended.lock()
-            .map_err(|e| Error::from_reason(format!("Failed to lock ended flag: {}", e)))?;
-
-        if *ended {
-            return Err(Error::from_reason("Span already ended"));
+        let mut guard = self.inner.lock()
+            .map_err(|e| Error::from_reason(format!("Span mutex poisoned: {}", e)))?;
+        match guard.take() {
+            Some(mut span) => {
+                use opentelemetry::trace::Span as OtelSpan;
+                span.end();
+                Ok(())
+            }
+            None => Err(Error::from_reason("Span already ended")),
         }
-
-        *ended = true;
-        log::info!("Span ended: {}", self.name);
-        Ok(())
     }
 
-    /// Check if span is ended
+    /// Check if span has been ended
     #[napi]
     pub fn is_ended(&self) -> Result<bool> {
-        let ended = self.ended.lock()
-            .map_err(|e| Error::from_reason(format!("Failed to lock ended flag: {}", e)))?;
-        Ok(*ended)
+        let guard = self.inner.lock()
+            .map_err(|e| Error::from_reason(format!("Span mutex poisoned: {}", e)))?;
+        Ok(guard.is_none())
     }
 }

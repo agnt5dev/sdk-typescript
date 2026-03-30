@@ -44,5 +44,9 @@ hex = "0.4"
 # Futures and streams
 futures-util = "0.3"
 
+[features]
+default = ["wasm-sandbox"]
+wasm-sandbox = ["agnt5-sdk-core/wasm-sandbox"]
+
 [build-dependencies]
 napi-build = "2"
