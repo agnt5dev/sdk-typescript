@@ -23,6 +23,10 @@ export interface ClientOptions {
   gatewayUrl?: string;
   /** API key for authentication (falls back to AGNT5_API_KEY env var) */
   apiKey?: string;
+  /** Tenant ID for routing (falls back to AGNT5_TENANT_ID env var) */
+  tenantId?: string;
+  /** Deployment ID for routing (falls back to AGNT5_DEPLOYMENT_ID env var) */
+  deploymentId?: string;
   /** Request timeout in milliseconds (default: 30000) */
   timeout?: number;
   /** Max retry attempts for transient failures (default: 3) */
@@ -284,21 +288,25 @@ export class EntityProxy {
 export class Client {
   private readonly gatewayUrl: string;
   private readonly apiKey: string | undefined;
+  private readonly tenantId: string | undefined;
+  private readonly deploymentId: string | undefined;
   private readonly timeout: number;
   private readonly maxRetries: number;
   private readonly retryDelayMs: number;
 
   constructor(options: ClientOptions = {}) {
-    const envGatewayUrl = typeof process !== 'undefined' ? process.env?.AGNT5_GATEWAY_URL : undefined;
-    this.gatewayUrl = (options.gatewayUrl || envGatewayUrl || 'http://localhost:34181').replace(/\/$/, '');
-    this.apiKey = options.apiKey || (typeof process !== 'undefined' ? process.env?.AGNT5_API_KEY : undefined);
+    const env = typeof process !== 'undefined' ? process.env : undefined;
+    this.gatewayUrl = (options.gatewayUrl || env?.AGNT5_GATEWAY_URL || 'http://localhost:34181').replace(/\/$/, '');
+    this.apiKey = options.apiKey || env?.AGNT5_API_KEY;
+    this.tenantId = options.tenantId || env?.AGNT5_TENANT_ID;
+    this.deploymentId = options.deploymentId || env?.AGNT5_DEPLOYMENT_ID;
     this.timeout = options.timeout || 30000;
     this.maxRetries = options.maxRetries ?? 3;
     this.retryDelayMs = options.retryDelayMs || 1000;
   }
 
   /**
-   * Build request headers with authentication
+   * Build request headers with authentication and routing
    */
   private buildHeaders(extra?: Record<string, string>): Record<string, string> {
     const headers: Record<string, string> = {
@@ -306,6 +314,12 @@ export class Client {
     };
     if (this.apiKey) {
       headers['X-API-KEY'] = this.apiKey;
+    }
+    if (this.tenantId) {
+      headers['X-Tenant-ID'] = this.tenantId;
+    }
+    if (this.deploymentId) {
+      headers['X-Deployment-ID'] = this.deploymentId;
     }
     if (extra) {
       Object.assign(headers, extra);
