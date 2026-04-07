@@ -281,6 +281,8 @@ export interface RunFailed extends BaseEvent {
   eventType: 'run.failed';
   errorCode: string;
   errorMessage: string;
+  attempt: number;
+  maxAttempts: number;
 }
 
 // ─── Function lifecycle events ──────────────────────────────────────
@@ -407,13 +409,18 @@ export function runCompleted(
 export function runFailed(
   correlationId: string,
   parentCorrelationId: string | null,
-  opts: { errorCode: string; errorMessage: string },
+  opts: { errorCode: string; errorMessage: string; attempt: number; maxAttempts: number },
 ): RunFailed {
   return {
-    ...baseFields('run.failed', correlationId, parentCorrelationId),
+    ...baseFields('run.failed', correlationId, parentCorrelationId, {
+      attempt: String(opts.attempt),
+      max_attempts: String(opts.maxAttempts),
+    }),
     eventType: 'run.failed',
     errorCode: opts.errorCode,
     errorMessage: opts.errorMessage,
+    attempt: opts.attempt,
+    maxAttempts: opts.maxAttempts,
   };
 }
 

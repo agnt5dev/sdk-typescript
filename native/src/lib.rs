@@ -73,6 +73,21 @@ impl From<ComponentInfoData> for ComponentInfo {
     fn from(data: ComponentInfoData) -> Self {
         use agnt5_sdk_core::pb::ComponentType as PbComponentType;
 
+        let config = data.config.unwrap_or_default();
+        let metadata = data.metadata.unwrap_or_default();
+
+        let max_attempts = config.get("max_attempts").and_then(|v| v.parse::<i32>().ok());
+        let initial_interval_ms = config
+            .get("initial_interval_ms")
+            .and_then(|v| v.parse::<i32>().ok());
+        let max_interval_ms = config
+            .get("max_interval_ms")
+            .and_then(|v| v.parse::<i32>().ok());
+        let backoff_type = config.get("backoff_type").cloned();
+        let backoff_multiplier = config
+            .get("backoff_multiplier")
+            .and_then(|v| v.parse::<f64>().ok());
+
         // Parse component type from string (matches proto ComponentType enum)
         let component_type = match data.component_type.to_lowercase().as_str() {
             "function" => PbComponentType::Function as i32,
@@ -93,14 +108,14 @@ impl From<ComponentInfoData> for ComponentInfo {
             component_type,
             input_schema: None,
             output_schema: None,
-            config: data.config.unwrap_or_default(),
-            metadata: data.metadata.unwrap_or_default(),
+            config,
+            metadata,
             definition: data.definition,
-            max_attempts: None,
-            initial_interval_ms: None,
-            max_interval_ms: None,
-            backoff_type: None,
-            backoff_multiplier: None,
+            max_attempts,
+            initial_interval_ms,
+            max_interval_ms,
+            backoff_type,
+            backoff_multiplier,
         }
     }
 }

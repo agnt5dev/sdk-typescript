@@ -7,6 +7,7 @@ import type { AgentResult } from './agent.js';
 import { ChatBot } from './chat.js';
 import { runWithContext } from './async-context.js';
 import { WaitingForUserInputError } from './errors.js';
+import type { HITLInputType, HITLOption } from './errors.js';
 import { EventEmitter } from './event-emitter.js';
 import {
   generateCid,
@@ -110,6 +111,19 @@ class SimpleContext implements Context {
   private _stepCounter = 0;
   private _stepCache = new Map<string, any>();
 
+  // HITL state — populated by Worker.processMessage on resume from message metadata.
+  // _pauseIndex is the running counter incremented by each waitForUser call.
+  // _userResponses is a sparse cache of {pauseIndex -> user response} populated
+  // from the resume metadata so the workflow handler can replay past pauses.
+  // FIXME(hitl-replay): only the LATEST pause's response is currently restored.
+  // Multi-step HITL replay (where the workflow re-runs through several past
+  // pauses) needs full step-event accumulation + persistence in pause metadata,
+  // matching what sdk-python's WorkflowEntity does. See
+  // sdk-python/src/agnt5/workflow.py:1611 for the persistence side and
+  // sdk-python/src/agnt5/worker/_executors.py:1311 for the restore side.
+  private _pauseIndex = 0;
+  private _userResponses = new Map<number, string | null>();
+
   constructor(
     public readonly invocationId: string,
     public readonly runId: string,
@@ -117,6 +131,37 @@ class SimpleContext implements Context {
     public readonly serviceName: string,
     private state: Map<string, any> = new Map()
   ) {}
+
+  /**
+   * Seed HITL replay state from incoming message metadata.
+   * Called by Worker.processMessage before invoking the workflow handler.
+   *
+   * Reads `user_response` and `pause_index` from metadata (set by the gateway's
+   * resume endpoint at runtime/crates/gateway/src/handlers/signals.rs) and
+   * caches the response so the next waitForUser call at that index returns it
+   * instead of throwing.
+   */
+  loadReplayState(metadata: Record<string, string> | undefined): void {
+    if (!metadata) return;
+
+    const userResponse = metadata.user_response;
+    if (userResponse === undefined) return;
+
+    const pauseIndexStr = metadata.pause_index ?? '0';
+    const pauseIndex = Number.parseInt(pauseIndexStr, 10);
+    if (Number.isNaN(pauseIndex)) return;
+
+    // Wire-format decoding mirrors sdk-python's wait_for_user (workflow.py:1520):
+    // "__skipped__" → null, "__custom__:..." → strip prefix.
+    let decoded: string | null = userResponse;
+    if (userResponse === '__skipped__' || userResponse === '__skip__') {
+      decoded = null;
+    } else if (userResponse.startsWith('__custom__:')) {
+      decoded = userResponse.slice('__custom__:'.length);
+    }
+
+    this._userResponses.set(pauseIndex, decoded);
+  }
 
   setEmitter(emitter: EventEmitter): void {
     this._emitter = emitter;
@@ -164,6 +209,50 @@ class SimpleContext implements Context {
 
   async delete(key: string): Promise<boolean> {
     return this.state.delete(key);
+  }
+
+  /**
+   * Pause the workflow and request user input (HITL).
+   *
+   * On first call: throws WaitingForUserInputError, which Worker.processMessage
+   * catches and propagates as a `waiting_for_user_input` response to the
+   * platform. On resume, the platform re-dispatches the workflow with the
+   * user's response in metadata; loadReplayState seeds _userResponses, and
+   * the next call at the matching pauseIndex returns the cached value.
+   *
+   * Mirrors sdk-python/src/agnt5/workflow.py wait_for_user. The TS resume
+   * cache currently only restores the LATEST pause — see the FIXME at
+   * _userResponses for the multi-step replay limitation.
+   */
+  async waitForUser(
+    question: string,
+    options?: {
+      inputType?: HITLInputType;
+      options?: HITLOption[];
+      allowCustom?: boolean;
+      skippable?: boolean;
+    },
+  ): Promise<string | null> {
+    const pauseIndex = this._pauseIndex++;
+
+    // Resume path: response was injected from metadata before handler ran.
+    if (this._userResponses.has(pauseIndex)) {
+      return this._userResponses.get(pauseIndex)!;
+    }
+
+    // First-time path: throw to pause execution. The worker catches and
+    // sends back a `waiting_for_user_input` response, which the runtime
+    // turns into a workflow.paused event.
+    throw new WaitingForUserInputError({
+      runId: this.runId,
+      question,
+      inputType: options?.inputType,
+      options: options?.options,
+      pauseIndex,
+      allowCustom: options?.allowCustom,
+      skippable: options?.skippable,
+      stepName: `wait_for_user_${pauseIndex}`,
+    });
   }
 
   /**
@@ -409,6 +498,7 @@ export class Worker {
         const runCid = runId.slice(0, 8);
         const parentCid = message.metadata?.parent_correlation_id || null;
         const attempt = parseInt(message.metadata?.attempt || '0', 10);
+        const maxAttempts = parseInt(message.metadata?.max_attempts || '1', 10);
 
         try {
           console.log(`📨 Received ${message.componentType} execution: ${message.componentName}`);
@@ -427,6 +517,10 @@ export class Worker {
           if (this.nativeWorker) {
             ctx.setNativeWorker(this.nativeWorker);
           }
+          // Seed HITL replay state from incoming resume metadata (no-op on
+          // fresh dispatches). Mirrors sdk-python's executors which read
+          // user_response/pause_index from request.metadata on resume.
+          ctx.loadReplayState(message.metadata);
 
           // ── run.started ──
           await emitter.emit(runStarted(runCid, parentCid, {
@@ -626,6 +720,8 @@ export class Worker {
             await emitter.emit(runFailed(runCid, parentCid, {
               errorCode: 'EXECUTION_ERROR',
               errorMessage: (error as Error).message,
+              attempt,
+              maxAttempts,
             }));
           } catch (emitError) {
             console.error('Failed to emit run.failed event:', emitError);
@@ -661,8 +757,29 @@ export class Worker {
     const components: Array<{ name: string; componentType: string; config: Record<string, string>; metadata: Record<string, string> }> = [];
 
     // Functions
-    for (const [name] of FunctionRegistry.getAll()) {
-      components.push({ name, componentType: 'function', config: {}, metadata: {} });
+    for (const [name, fnConfig] of FunctionRegistry.getAll()) {
+      const config: Record<string, string> = {};
+
+      if (fnConfig.options.retries?.maxAttempts !== undefined) {
+        config.max_attempts = String(fnConfig.options.retries.maxAttempts);
+      }
+      if (fnConfig.options.retries?.initialIntervalMs !== undefined) {
+        config.initial_interval_ms = String(fnConfig.options.retries.initialIntervalMs);
+      }
+      if (fnConfig.options.retries?.maxIntervalMs !== undefined) {
+        config.max_interval_ms = String(fnConfig.options.retries.maxIntervalMs);
+      }
+      if (fnConfig.options.backoff?.type) {
+        config.backoff_type = fnConfig.options.backoff.type;
+      }
+      if (fnConfig.options.backoff?.multiplier !== undefined) {
+        config.backoff_multiplier = String(fnConfig.options.backoff.multiplier);
+      }
+      if (fnConfig.options.timeout_ms !== undefined) {
+        config.timeout_ms = String(fnConfig.options.timeout_ms);
+      }
+
+      components.push({ name, componentType: 'function', config, metadata: {} });
     }
 
     // Workflows (auto-discover from registry)

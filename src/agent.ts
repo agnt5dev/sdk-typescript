@@ -273,7 +273,7 @@ export class Agent {
     this.name = options.name;
     this.model = options.model;
     this.instructions = options.instructions;
-    this.modelName = options.modelName || 'gpt-4o-mini';
+    this.modelName = options.modelName || 'openai/gpt-4o-mini';
     this.temperature = options.temperature ?? 0.7;
     this.maxIterations = options.maxIterations || 10;
 

@@ -78,7 +78,10 @@ interface RawRunResponse {
   status_code?: number;
   status?: string;
   output?: any;
+  output_data?: any;
   error?: any;
+  error_message?: string;
+  error_code?: string;
   duration_ms?: number;
   trace_id?: string;
   component?: string;
@@ -88,6 +91,13 @@ interface RawRunResponse {
   failed_at?: string;
   session_id?: string;
   metadata?: Record<string, any>;
+  result?: {
+    output?: {
+      output_data?: any;
+      [key: string]: any;
+    };
+    [key: string]: any;
+  };
 }
 
 /**
@@ -125,7 +135,13 @@ export class RunResponse<T = any> {
     this.runId = raw.run_id || raw.runId || '';
     this.statusCode = raw.status_code ?? (raw.status === 'completed' ? 200 : raw.status === 'failed' ? 500 : 202);
     this.status = (raw.status as RunStatus) || 'unknown';
-    this.output = raw.output as T | undefined;
+    const nestedOutput = raw.result?.output;
+    this.output = (
+      raw.output ??
+      raw.output_data ??
+      nestedOutput?.output_data ??
+      nestedOutput
+    ) as T | undefined;
     this.durationMs = raw.duration_ms;
     this.traceId = raw.trace_id;
     this.component = raw.component;
@@ -137,15 +153,17 @@ export class RunResponse<T = any> {
     this.metadata = raw.metadata;
 
     // Parse error — could be a string or a structured object
-    if (raw.error) {
+    if (raw.error || raw.error_message) {
       if (typeof raw.error === 'string') {
-        this.error = { code: 'EXECUTION_FAILED', message: raw.error };
+        this.error = { code: raw.error_code || 'EXECUTION_FAILED', message: raw.error };
       } else if (typeof raw.error === 'object') {
         this.error = {
-          code: raw.error.code || 'EXECUTION_FAILED',
+          code: raw.error.code || raw.error_code || 'EXECUTION_FAILED',
           message: raw.error.message || String(raw.error),
           details: raw.error.details,
         };
+      } else if (raw.error_message) {
+        this.error = { code: raw.error_code || 'EXECUTION_FAILED', message: raw.error_message };
       }
     }
   }
@@ -643,7 +661,14 @@ export class Client {
     }
 
     const data = await response.json() as any;
-    const events: EventRecord[] = (data.events || data || []).map((e: any) => ({
+    const rawItems: any[] = Array.isArray(data?.items)
+      ? data.items
+      : Array.isArray(data?.events)
+        ? data.events
+        : Array.isArray(data)
+          ? data
+          : [];
+    const events: EventRecord[] = rawItems.map((e: any) => ({
       eventType: e.event_type || e.eventType || '',
       data: e.data || e.output_data || {},
       timestamp: e.timestamp || e.created_at,
@@ -822,7 +847,11 @@ export class Client {
     } = {},
   ): Promise<EvalResponse<T>> {
     const componentType = options.componentType || 'function';
-    const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/eval`;
+    // Gateway exposes a single global eval route at POST /v1/eval; the
+    // component identity goes in the body, not the URL. See
+    // runtime/crates/gateway/src/server.rs and handlers/eval.rs
+    // (EvalRequest fields). Mirrors sdk-python/src/agnt5/client.py:709.
+    const url = `${this.gatewayUrl}/v1/eval`;
 
     // Default to exact_match if expected is provided but no scorers
     let scorers = options.scorers;
@@ -830,7 +859,10 @@ export class Client {
       scorers = ['exact_match'];
     }
 
-    const body: Record<string, any> = {};
+    const body: Record<string, any> = {
+      component,
+      component_type: componentType,
+    };
     if (inputData !== undefined) body.input = inputData;
     if (options.expected !== undefined) body.expected = options.expected;
     if (scorers && scorers.length > 0) body.scorers = normalizeScorerSpecs(scorers);

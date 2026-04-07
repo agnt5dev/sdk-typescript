@@ -53,6 +53,47 @@ describe('RunResponse', () => {
     expect(resp.error?.message).toBe('Function timed out after 30s');
   });
 
+  it('should parse output_data from the current backend response shape', () => {
+    const resp = new RunResponse({
+      run_id: 'run-4',
+      status: 'completed',
+      output_data: { greeting: 'Hello from output_data' },
+      status_code: 200,
+    });
+
+    expect(resp.isSuccess).toBe(true);
+    expect(resp.output).toEqual({ greeting: 'Hello from output_data' });
+  });
+
+  it('should parse nested legacy result output_data responses', () => {
+    const resp = new RunResponse({
+      run_id: 'run-5',
+      status: 'completed',
+      result: {
+        output: {
+          output_data: 'Nested output',
+        },
+      },
+      status_code: 200,
+    });
+
+    expect(resp.output).toBe('Nested output');
+  });
+
+  it('should parse error_message and error_code from the current backend response shape', () => {
+    const resp = new RunResponse({
+      run_id: 'run-6',
+      status: 'failed',
+      error_message: 'Invalid input: bad value',
+      error_code: 'FUNCTION_ERROR',
+      status_code: 500,
+    });
+
+    expect(resp.isError).toBe(true);
+    expect(resp.error?.code).toBe('FUNCTION_ERROR');
+    expect(resp.error?.message).toBe('Invalid input: bad value');
+  });
+
   it('should detect pending status', () => {
     for (const status of ['enqueued', 'started', 'running', 'paused', 'awaiting_input'] as const) {
       const resp = new RunResponse({ run_id: 'run-x', status, status_code: 202 });

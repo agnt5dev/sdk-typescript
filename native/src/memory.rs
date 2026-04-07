@@ -3,16 +3,12 @@ use napi_derive::napi;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use agnt5_sdk_core::memory::{
     MemoryMetadata, MemoryResult as CoreMemoryResult, MemoryScope as CoreMemoryScope,
     SemanticMemory, SemanticMemoryConfig,
 };
-use agnt5_sdk_core::graph::{
-    GraphDatabase, GraphNode as CoreGraphNode, GraphRelationship as CoreGraphRelationship,
-    GraphTraversalResult as CoreGraphTraversalResult, RelationshipQuery, TraversalFilters,
-};
-use agnt5_sdk_core::MemoryGraphDatabase;
 
 // =============================================================================
 // SemanticMemory NAPI bindings
@@ -209,6 +205,7 @@ impl JsSemanticMemory {
 // =============================================================================
 
 #[napi(object)]
+#[derive(Clone)]
 pub struct JsGraphNode {
     pub id: String,
     pub node_type: String,
@@ -216,6 +213,7 @@ pub struct JsGraphNode {
 }
 
 #[napi(object)]
+#[derive(Clone)]
 pub struct JsGraphRelationship {
     pub id: String,
     pub from_node: String,
@@ -226,6 +224,7 @@ pub struct JsGraphRelationship {
 }
 
 #[napi(object)]
+#[derive(Clone)]
 pub struct JsGraphTraversalResult {
     pub start_node: String,
     pub nodes: Vec<JsGraphNode>,
@@ -233,64 +232,34 @@ pub struct JsGraphTraversalResult {
     pub depth: i32,
 }
 
-fn core_props_to_string(props: HashMap<String, serde_json::Value>) -> HashMap<String, String> {
-    props.into_iter().map(|(k, v)| (k, v.to_string())).collect()
+struct InMemoryGraph {
+    nodes: HashMap<String, JsGraphNode>,
+    relationships: HashMap<String, JsGraphRelationship>,
 }
 
-fn string_props_to_core(props: HashMap<String, String>) -> HashMap<String, serde_json::Value> {
-    props.into_iter().map(|(k, v)| (k, serde_json::Value::String(v))).collect()
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
-impl From<CoreGraphNode> for JsGraphNode {
-    fn from(n: CoreGraphNode) -> Self {
-        JsGraphNode {
-            id: n.id,
-            node_type: n.node_type,
-            properties: core_props_to_string(n.properties),
-        }
-    }
-}
-
-impl From<CoreGraphRelationship> for JsGraphRelationship {
-    fn from(r: CoreGraphRelationship) -> Self {
-        JsGraphRelationship {
-            id: r.id,
-            from_node: r.from_node,
-            to_node: r.to_node,
-            relationship_type: r.relationship_type,
-            properties: core_props_to_string(r.properties),
-            created_at: r.created_at,
-        }
-    }
-}
-
-impl From<CoreGraphTraversalResult> for JsGraphTraversalResult {
-    fn from(t: CoreGraphTraversalResult) -> Self {
-        JsGraphTraversalResult {
-            start_node: t.start_node,
-            nodes: t.nodes.into_iter().map(JsGraphNode::from).collect(),
-            relationships: t
-                .relationships
-                .into_iter()
-                .map(JsGraphRelationship::from)
-                .collect(),
-            depth: t.depth as i32,
-        }
-    }
-}
-
-/// NAPI wrapper around sdk-core MemoryGraphDatabase (in-memory graph).
+/// NAPI wrapper around a lightweight in-memory graph.
 #[napi]
 pub struct JsMemoryGraph {
-    inner: Arc<MemoryGraphDatabase>,
+    inner: Arc<TokioMutex<InMemoryGraph>>,
 }
 
 #[napi]
 impl JsMemoryGraph {
     #[napi(constructor)]
     pub fn new(scope: String) -> Self {
+        let _ = scope;
         JsMemoryGraph {
-            inner: Arc::new(MemoryGraphDatabase::new(scope)),
+            inner: Arc::new(TokioMutex::new(InMemoryGraph {
+                nodes: HashMap::new(),
+                relationships: HashMap::new(),
+            })),
         }
     }
 
@@ -302,31 +271,32 @@ impl JsMemoryGraph {
         node_type: String,
         properties: Option<HashMap<String, String>>,
     ) -> Result<String> {
-        let core_props = properties.map(string_props_to_core).unwrap_or_default();
-        self.inner
-            .upsert_node(&node_id, &node_type, core_props)
-            .await
-            .map_err(|e| Error::from_reason(format!("upsert_node failed: {}", e)))
+        let mut graph = self.inner.lock().await;
+        graph.nodes.insert(
+            node_id.clone(),
+            JsGraphNode {
+                id: node_id.clone(),
+                node_type,
+                properties: properties.unwrap_or_default(),
+            },
+        );
+        Ok(node_id)
     }
 
     /// Get a node by ID.
     #[napi]
     pub async fn get_node(&self, node_id: String) -> Result<Option<JsGraphNode>> {
-        let node = self
-            .inner
-            .get_node(&node_id)
-            .await
-            .map_err(|e| Error::from_reason(format!("get_node failed: {}", e)))?;
-        Ok(node.map(JsGraphNode::from))
+        let graph = self.inner.lock().await;
+        Ok(graph.nodes.get(&node_id).cloned())
     }
 
     /// Delete a node by ID.
     #[napi]
     pub async fn delete_node(&self, node_id: String) -> Result<bool> {
-        self.inner
-            .delete_node(&node_id)
-            .await
-            .map_err(|e| Error::from_reason(format!("delete_node failed: {}", e)))
+        let mut graph = self.inner.lock().await;
+        let removed_node = graph.nodes.remove(&node_id).is_some();
+        graph.relationships.retain(|_, rel| rel.from_node != node_id && rel.to_node != node_id);
+        Ok(removed_node)
     }
 
     /// Create a relationship between two nodes.
@@ -338,11 +308,24 @@ impl JsMemoryGraph {
         relationship_type: String,
         properties: Option<HashMap<String, String>>,
     ) -> Result<String> {
-        let core_props = properties.map(string_props_to_core).unwrap_or_default();
-        self.inner
-            .create_relationship(&from_node, &to_node, &relationship_type, core_props)
-            .await
-            .map_err(|e| Error::from_reason(format!("create_relationship failed: {}", e)))
+        let mut graph = self.inner.lock().await;
+        if !graph.nodes.contains_key(&from_node) || !graph.nodes.contains_key(&to_node) {
+            return Err(Error::from_reason("create_relationship failed: missing node"));
+        }
+
+        let relationship_id = format!("rel-{}", graph.relationships.len() + 1);
+        graph.relationships.insert(
+            relationship_id.clone(),
+            JsGraphRelationship {
+                id: relationship_id.clone(),
+                from_node,
+                to_node,
+                relationship_type,
+                properties: properties.unwrap_or_default(),
+                created_at: now_millis(),
+            },
+        );
+        Ok(relationship_id)
     }
 
     /// Query relationships with optional filters.
@@ -354,27 +337,24 @@ impl JsMemoryGraph {
         relationship_type: Option<String>,
         limit: Option<i32>,
     ) -> Result<Vec<JsGraphRelationship>> {
-        let query = RelationshipQuery {
-            from_node,
-            to_node,
-            relationship_type,
-            limit: limit.map(|l| l as usize).unwrap_or(100),
-        };
-        let rels = self
-            .inner
-            .query_relationships(query)
-            .await
-            .map_err(|e| Error::from_reason(format!("query_relationships failed: {}", e)))?;
-        Ok(rels.into_iter().map(JsGraphRelationship::from).collect())
+        let graph = self.inner.lock().await;
+        let mut rels: Vec<JsGraphRelationship> = graph
+            .relationships
+            .values()
+            .filter(|rel| from_node.as_ref().map(|v| &rel.from_node == v).unwrap_or(true))
+            .filter(|rel| to_node.as_ref().map(|v| &rel.to_node == v).unwrap_or(true))
+            .filter(|rel| relationship_type.as_ref().map(|v| &rel.relationship_type == v).unwrap_or(true))
+            .cloned()
+            .collect();
+        rels.truncate(limit.map(|v| v.max(0) as usize).unwrap_or(100));
+        Ok(rels)
     }
 
     /// Delete a relationship by ID.
     #[napi]
     pub async fn delete_relationship(&self, relationship_id: String) -> Result<bool> {
-        self.inner
-            .delete_relationship(&relationship_id)
-            .await
-            .map_err(|e| Error::from_reason(format!("delete_relationship failed: {}", e)))
+        let mut graph = self.inner.lock().await;
+        Ok(graph.relationships.remove(&relationship_id).is_some())
     }
 
     /// Traverse the graph from a starting node.
@@ -386,19 +366,52 @@ impl JsMemoryGraph {
         relationship_types: Option<Vec<String>>,
         node_types: Option<Vec<String>>,
     ) -> Result<JsGraphTraversalResult> {
-        let filters = if relationship_types.is_some() || node_types.is_some() {
-            Some(TraversalFilters {
-                relationship_types,
-                node_types,
-            })
-        } else {
-            None
-        };
-        let result = self
-            .inner
-            .traverse(&start_node_id, max_depth as u32, filters)
-            .await
-            .map_err(|e| Error::from_reason(format!("traverse failed: {}", e)))?;
-        Ok(JsGraphTraversalResult::from(result))
+        let graph = self.inner.lock().await;
+        if !graph.nodes.contains_key(&start_node_id) {
+            return Err(Error::from_reason("traverse failed: start node not found"));
+        }
+
+        let max_depth = max_depth.max(0) as usize;
+        let mut queue = std::collections::VecDeque::from([(start_node_id.clone(), 0usize)]);
+        let mut visited = std::collections::HashSet::new();
+        let mut nodes = Vec::new();
+        let mut relationships = Vec::new();
+
+        while let Some((node_id, depth)) = queue.pop_front() {
+            if !visited.insert(node_id.clone()) {
+                continue;
+            }
+
+            if let Some(node) = graph.nodes.get(&node_id) {
+                if node_types.as_ref().map(|types| types.contains(&node.node_type)).unwrap_or(true) {
+                    nodes.push(node.clone());
+                }
+            }
+
+            if depth >= max_depth {
+                continue;
+            }
+
+            for rel in graph.relationships.values() {
+                let rel_allowed = relationship_types
+                    .as_ref()
+                    .map(|types| types.contains(&rel.relationship_type))
+                    .unwrap_or(true);
+                if !rel_allowed {
+                    continue;
+                }
+                if rel.from_node == node_id {
+                    relationships.push(rel.clone());
+                    queue.push_back((rel.to_node.clone(), depth + 1));
+                }
+            }
+        }
+
+        Ok(JsGraphTraversalResult {
+            start_node: start_node_id,
+            nodes,
+            relationships,
+            depth: max_depth as i32,
+        })
     }
 }
