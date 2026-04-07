@@ -21,6 +21,9 @@ mod chat;
 // Language model module
 mod lm;
 
+// MCP client bindings
+mod mcp;
+
 // Memory module (SemanticMemory + GraphMemory)
 mod memory;
 
