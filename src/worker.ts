@@ -2,6 +2,7 @@ import type { WorkerOptions, Context } from './types.js';
 import { FunctionRegistry } from './function.js';
 import { WorkflowRegistry } from './workflow.js';
 import { ToolRegistry } from './tool.js';
+import { ScorerRegistry, isScorer } from './scorer.js';
 import { Agent } from './agent.js';
 import type { AgentResult } from './agent.js';
 import { ChatBot } from './chat.js';
@@ -13,7 +14,7 @@ import {
   generateCid,
   runStarted, runCompleted, runFailed,
   functionStarted, functionCompleted, functionFailed,
-  workflowStarted, workflowCompleted, workflowFailed,
+  workflowStarted, workflowCompleted, workflowFailed, workflowPaused,
   toolStarted, toolCompleted, toolFailed,
 } from './events.js';
 import type { AgentEvent } from './events.js';
@@ -115,14 +116,21 @@ class SimpleContext implements Context {
   // _pauseIndex is the running counter incremented by each waitForUser call.
   // _userResponses is a sparse cache of {pauseIndex -> user response} populated
   // from the resume metadata so the workflow handler can replay past pauses.
-  // FIXME(hitl-replay): only the LATEST pause's response is currently restored.
-  // Multi-step HITL replay (where the workflow re-runs through several past
-  // pauses) needs full step-event accumulation + persistence in pause metadata,
-  // matching what sdk-python's WorkflowEntity does. See
-  // sdk-python/src/agnt5/workflow.py:1611 for the persistence side and
-  // sdk-python/src/agnt5/worker/_executors.py:1311 for the restore side.
+  //
+  // Multi-step replay works by persisting the full history of past responses
+  // into the `step_events` field of the workflow.paused event metadata. On
+  // every resume, loadReplayState hydrates _userResponses from step_events
+  // (historical) + user_response/pause_index (current), so the workflow
+  // re-execution can advance through all prior pauses before reaching a new
+  // one. Mirrors sdk-python's WorkflowEntity._completed_steps persistence.
   private _pauseIndex = 0;
   private _userResponses = new Map<number, string | null>();
+
+  // Populated by Worker.processMessage for workflow dispatches so waitForUser
+  // can emit a properly-parented workflow.paused event. Unset for
+  // function/tool/agent dispatches.
+  private _workflowCid?: string;
+  private _runCid?: string;
 
   constructor(
     public readonly invocationId: string,
@@ -144,6 +152,43 @@ class SimpleContext implements Context {
   loadReplayState(metadata: Record<string, string> | undefined): void {
     if (!metadata) return;
 
+    // First, rehydrate any historical responses from step_events. These are
+    // accumulated by the emit path below and propagated through the gateway's
+    // resume handler (which copies the latest workflow.paused metadata into
+    // the next dispatch). Each entry is {pauseIndex -> decoded response}.
+    const stepEventsStr = metadata.step_events;
+    if (stepEventsStr) {
+      try {
+        const parsed = JSON.parse(stepEventsStr) as Record<string, string | null>;
+        for (const [idxStr, value] of Object.entries(parsed)) {
+          const idx = Number.parseInt(idxStr, 10);
+          if (!Number.isNaN(idx)) {
+            this._userResponses.set(idx, value);
+          }
+        }
+      } catch {
+        // Ignore corrupt step_events — fall back to the current pause only.
+      }
+    }
+
+    // Rehydrate persistent ctx.step() cache from completed_steps metadata.
+    // Any ctx.step() invocation persisted prior to the last pause is replayed
+    // on resume without re-execution; step() emits workflow.step.completed
+    // with cache_hit=true on each hit so the durability projection can prove
+    // replay happened.
+    const completedStepsStr = metadata.completed_steps;
+    if (completedStepsStr) {
+      try {
+        const parsed = JSON.parse(completedStepsStr) as Record<string, any>;
+        for (const [key, value] of Object.entries(parsed)) {
+          this._stepCache.set(key, value);
+        }
+      } catch {
+        // Best effort: ignore corrupt completed_steps
+      }
+    }
+
+    // Then layer the current resume's user_response on top at its pause_index.
     const userResponse = metadata.user_response;
     if (userResponse === undefined) return;
 
@@ -169,6 +214,16 @@ class SimpleContext implements Context {
 
   setNativeWorker(worker: any): void {
     this._nativeWorker = worker;
+  }
+
+  /**
+   * Store the workflow + run correlation IDs so waitForUser can emit
+   * workflow.paused events with the correct parent/child linkage.
+   * Called by Worker.processMessage before invoking a workflow handler.
+   */
+  setWorkflowCorrelation(workflowCid: string, runCid: string): void {
+    this._workflowCid = workflowCid;
+    this._runCid = runCid;
   }
 
   async emit(event: any): Promise<void> {
@@ -240,9 +295,73 @@ class SimpleContext implements Context {
       return this._userResponses.get(pauseIndex)!;
     }
 
-    // First-time path: throw to pause execution. The worker catches and
-    // sends back a `waiting_for_user_input` response, which the runtime
-    // turns into a workflow.paused event.
+    // First-time path: emit workflow.paused, then throw to unwind the handler.
+    //
+    // The runtime's gateway tail treats `workflow.paused` as a terminal event
+    // for /v1/workflows/:name/run and transitions the run to the `paused`
+    // status via apply_paused. Without this emission, the /run endpoint hangs
+    // until the sync deadline. Mirrors sdk-python's wait_for_input which
+    // emits Paused via ctx.emit() before raising WaitingForUserInputException.
+    const stepName = `wait_for_user_${pauseIndex}`;
+    if (this._emitter && this._workflowCid && this._runCid) {
+      const metadata: Record<string, string> = {
+        pause_reason: 'user_input_required',
+        pause_index: String(pauseIndex),
+        step_name: stepName,
+        question,
+      };
+      if (options?.inputType) metadata.input_type = options.inputType;
+      if (options?.allowCustom !== undefined) metadata.allow_custom = String(options.allowCustom);
+      if (options?.skippable !== undefined) metadata.skippable = String(options.skippable);
+      if (options?.options) metadata.options = JSON.stringify(options.options);
+
+      // Persist history of completed pauses so subsequent resumes can replay
+      // the full chain. The gateway's resume handler copies the latest
+      // workflow.paused metadata verbatim onto the next dispatch, so every
+      // entry here will flow back into loadReplayState on the next run.
+      if (this._userResponses.size > 0) {
+        const stepEvents: Record<string, string | null> = {};
+        for (const [idx, resp] of this._userResponses.entries()) {
+          stepEvents[String(idx)] = resp;
+        }
+        metadata.step_events = JSON.stringify(stepEvents);
+      }
+
+      // Also persist ctx.step() results so durable steps replay across the
+      // resume boundary. Without this, _stepCache is instance-scoped to this
+      // dispatch and all prior step results would re-execute on every resume.
+      if (this._stepCache.size > 0) {
+        const completedSteps: Record<string, any> = {};
+        for (const [key, value] of this._stepCache.entries()) {
+          completedSteps[key] = value;
+        }
+        metadata.completed_steps = JSON.stringify(completedSteps);
+      }
+
+      try {
+        await this._emitter.emit(
+          workflowPaused(this._workflowCid, this._runCid, {
+            reason: 'user_input_required',
+            pauseData: {
+              question,
+              input_type: options?.inputType,
+              options: options?.options,
+              pause_index: pauseIndex,
+              step_name: stepName,
+              allow_custom: options?.allowCustom,
+              skippable: options?.skippable,
+            },
+            metadata,
+          }),
+        );
+      } catch (emitErr) {
+        // Best-effort: if the checkpoint write fails, we still want to throw
+        // the pause exception so the handler unwinds. The /run endpoint will
+        // time out rather than hang, and the caller gets a clear error.
+        console.error('Failed to emit workflow.paused event:', emitErr);
+      }
+    }
+
     throw new WaitingForUserInputError({
       runId: this.runId,
       question,
@@ -251,7 +370,7 @@ class SimpleContext implements Context {
       pauseIndex,
       allowCustom: options?.allowCustom,
       skippable: options?.skippable,
-      stepName: `wait_for_user_${pauseIndex}`,
+      stepName,
     });
   }
 
@@ -264,9 +383,31 @@ class SimpleContext implements Context {
   async step<T>(stepName: string, fn: () => T | Promise<T>): Promise<T> {
     const stepKey = `step:${stepName}:${this._stepCounter++}`;
 
-    // Check local cache first (same-run replay)
+    // Cache hit: either same-run (local) or cross-dispatch (rehydrated from
+    // workflow.paused metadata by loadReplayState). On a hit, emit a
+    // workflow.step.completed event with cache_hit=true so downstream
+    // projections and tests can prove the step was replayed rather than
+    // re-executed. Mirrors sdk-python's durable task replay semantics.
     if (this._stepCache.has(stepKey)) {
-      return this._stepCache.get(stepKey);
+      const cached = this._stepCache.get(stepKey);
+      if (this._nativeWorker?.emitCheckpoint) {
+        try {
+          await this._nativeWorker.emitCheckpoint(
+            this.runId,
+            'workflow.step.completed',
+            JSON.stringify({
+              step_key: stepKey,
+              step_name: stepName,
+              output: cached,
+              duration_ms: 0,
+            }),
+            this._stepCounter,
+            { cache_hit: 'true' },
+            Date.now() * 1_000_000,
+          );
+        } catch { /* checkpoint emission is best-effort */ }
+      }
+      return cached;
     }
 
     // Emit step.started checkpoint via NAPI if available
@@ -577,6 +718,10 @@ export class Worker {
 
               const wfCid = generateCid();
 
+              // Expose workflow + run correlation IDs so ctx.waitForUser can
+              // emit a properly-parented workflow.paused event.
+              ctx.setWorkflowCorrelation(wfCid, runCid);
+
               // ── workflow.started ──
               await emitter.emit(workflowStarted(wfCid, runCid, {
                 inputData,
@@ -593,6 +738,14 @@ export class Worker {
                   durationMs,
                 }));
               } catch (wfError) {
+                // HITL: waitForUser already emitted workflow.paused — don't
+                // emit workflow.failed. Let the outer catch short-circuit
+                // the run.failed emission and return a success response to
+                // the coordinator (the run is in the paused status already).
+                if (wfError instanceof WaitingForUserInputError) {
+                  throw wfError;
+                }
+
                 const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
 
                 // ── workflow.failed ──
@@ -684,6 +837,39 @@ export class Worker {
               break;
             }
 
+            case 'scorer': {
+              const scorerConfig = ScorerRegistry.get(message.componentName);
+              if (!scorerConfig) {
+                throw new Error(`Scorer not found: ${message.componentName}`);
+              }
+
+              const scorerRequest: import('./scorer.js').ScorerRequest = {
+                output: inputData.output,
+                expected: inputData.expected,
+                input: inputData.input,
+                config: inputData.config,
+              };
+
+              const scorerCtx: import('./scorer.js').ScorerContext = {
+                runId,
+                correlationId: runCid,
+                attempt,
+                log: (msg: string, extra?: Record<string, any>) => {
+                  console.log(`[SCORER] ${msg}`, extra || {});
+                },
+              };
+
+              const scorerResult = await scorerConfig.handler(scorerCtx, scorerRequest);
+              result = {
+                score: scorerResult.score,
+                passed: scorerResult.passed,
+                explanation: scorerResult.explanation,
+                label: scorerResult.label,
+                metadata: scorerResult.metadata,
+              };
+              break;
+            }
+
             default:
               throw new Error(`Unknown component type: ${message.componentType}`);
           }
@@ -698,19 +884,20 @@ export class Worker {
             outputJson: JSON.stringify(result),
           });
         } catch (error) {
-          // HITL: propagate pause signal to platform (no run.failed for pause)
+          // HITL: workflow.paused has already been journaled by waitForUser
+          // and the run is in the `paused` status. Return a success response
+          // (no `error` field) so the native layer emits a dispatch response
+          // with success=true — this lets the coordinator drain the lease
+          // and decrement worker load without writing any additional run
+          // lifecycle events. Do NOT emit run.completed: the run is paused,
+          // not completed.
           if (error instanceof WaitingForUserInputError) {
             return JSON.stringify({
               invocationId: message.invocationId,
-              error: JSON.stringify({
-                type: 'waiting_for_user_input',
+              outputJson: JSON.stringify({
+                _paused: true,
                 question: error.question,
-                inputType: error.inputType,
-                options: error.options,
                 pauseIndex: error.pauseIndex,
-                allowCustom: error.allowCustom,
-                skippable: error.skippable,
-                stepName: error.stepName,
               }),
             });
           }
@@ -783,8 +970,10 @@ export class Worker {
     }
 
     // Workflows (auto-discover from registry)
-    for (const [name] of WorkflowRegistry.all()) {
-      components.push({ name, componentType: 'workflow', config: {}, metadata: {} });
+    for (const [name, cfg] of WorkflowRegistry.all()) {
+      const metadata: Record<string, string> = {};
+      if (cfg.cron) metadata.cron = cfg.cron;
+      components.push({ name, componentType: 'workflow', config: {}, metadata });
     }
 
     // Tools (auto-discover from registry)
@@ -797,11 +986,19 @@ export class Worker {
       components.push({ name, componentType: 'agent', config: {}, metadata: {} });
     }
 
+    // Scorers (custom only — built-ins are handled by Rust fast path)
+    for (const [name, cfg] of ScorerRegistry.all()) {
+      if (isScorer(cfg.handler)) {
+        components.push({ name, componentType: 'scorer', config: {}, metadata: {} });
+      }
+    }
+
     const counts = {
       function: components.filter(c => c.componentType === 'function').length,
       workflow: components.filter(c => c.componentType === 'workflow').length,
       tool: components.filter(c => c.componentType === 'tool').length,
       agent: components.filter(c => c.componentType === 'agent').length,
+      scorer: components.filter(c => c.componentType === 'scorer').length,
     };
     const summary = Object.entries(counts).filter(([, n]) => n > 0).map(([t, n]) => `${n} ${t}(s)`).join(', ');
     console.log(`📦 Registered components: ${summary || 'none'}`);

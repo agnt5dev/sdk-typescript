@@ -327,6 +327,12 @@ export interface WorkflowFailed extends BaseEvent {
   durationMs: number;
 }
 
+export interface WorkflowPaused extends BaseEvent {
+  eventType: 'workflow.paused';
+  reason: string;
+  pauseData: Record<string, any>;
+}
+
 // ─── Tool lifecycle events (platform dispatch) ──────────────────────
 
 export interface ToolStarted extends BaseEvent {
@@ -369,7 +375,7 @@ export interface OutputStop extends BaseEvent {
 export type LifecycleEvent =
   | RunStarted | RunCompleted | RunFailed
   | FunctionStarted | FunctionCompleted | FunctionFailed
-  | WorkflowStarted | WorkflowCompleted | WorkflowFailed
+  | WorkflowStarted | WorkflowCompleted | WorkflowFailed | WorkflowPaused
   | ToolStarted | ToolCompleted | ToolFailed
   | OutputStart | OutputDelta | OutputStop;
 
@@ -501,6 +507,35 @@ export function workflowFailed(
     errorCode: opts.errorCode,
     errorMessage: opts.errorMessage,
     durationMs: opts.durationMs,
+  };
+}
+
+/**
+ * Workflow paused event — emitted when a workflow pauses for user input.
+ *
+ * The runtime projection treats `workflow.paused` as a terminal event for
+ * the gateway's `/v1/workflows/:name/run` endpoint (see
+ * runtime/crates/gateway/src/handlers/component.rs:160) and transitions the
+ * run's status to `paused` (see
+ * runtime/crates/processor/src/projections/runs.rs:130 apply_paused).
+ *
+ * Metadata carries fields the UI / resume endpoint need (question, options,
+ * pause_index, step_name, etc.) mirroring sdk-python's wait_for_input.
+ */
+export function workflowPaused(
+  correlationId: string,
+  parentCorrelationId: string,
+  opts: {
+    reason: string;
+    pauseData: Record<string, any>;
+    metadata?: Record<string, string>;
+  },
+): WorkflowPaused {
+  return {
+    ...baseFields('workflow.paused', correlationId, parentCorrelationId, opts.metadata || {}),
+    eventType: 'workflow.paused',
+    reason: opts.reason,
+    pauseData: opts.pauseData,
   };
 }
 

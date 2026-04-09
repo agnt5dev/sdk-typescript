@@ -425,6 +425,9 @@ impl Worker {
                     .unwrap_or_else(|_| "{}".to_string());
 
                 let invocation_id = dispatch_request.invocation_id.clone();
+                // Phase 5: echo lease_id from the request back on the response so
+                // the coordinator can fence stale acks. Empty when fencing is off.
+                let lease_id = dispatch_request.lease_id.clone();
 
                 // Create simplified RuntimeMessageData for TypeScript
                 let runtime_msg_data = RuntimeMessageData {
@@ -486,6 +489,7 @@ impl Worker {
                         sequence: 0,
                         attempt: 0,
                         source_timestamp_ns: 0,
+                        lease_id: lease_id.clone(),
                     }
                 } else {
                     // Success response
@@ -504,6 +508,7 @@ impl Worker {
                         sequence: 0,
                         attempt: 0,
                         source_timestamp_ns: 0,
+                        lease_id,
                     }
                 };
 

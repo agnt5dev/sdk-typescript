@@ -448,7 +448,7 @@ export class Client {
    * Get the current status of a run.
    */
   async getStatus(runId: string): Promise<RunResponse> {
-    const url = `${this.gatewayUrl}/v1/runs/${runId}/status`;
+    const url = `${this.gatewayUrl}/v1/status/${runId}`;
 
     const response = await fetch(url, {
       method: 'GET',
@@ -468,7 +468,7 @@ export class Client {
    * Get the result of a completed run.
    */
   async getResult<T = any>(runId: string): Promise<RunResponse<T>> {
-    const url = `${this.gatewayUrl}/v1/runs/${runId}/result`;
+    const url = `${this.gatewayUrl}/v1/result/${runId}`;
 
     const response = await fetch(url, {
       method: 'GET',

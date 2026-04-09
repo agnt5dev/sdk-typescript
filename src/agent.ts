@@ -308,6 +308,33 @@ export class Agent {
   private addTool(t: Tool | any): void {
     if (t instanceof Tool) {
       this.tools.set(t.name, t);
+    } else if (t instanceof Agent) {
+      // Agent-as-tool: wrap the agent in a Tool that invokes its run() method
+      // so a coordinator can delegate to specialist agents by name. Mirrors
+      // sdk-python's pattern of passing Agent instances directly in tools.
+      const subAgent = t;
+      const wrapped = new Tool(
+        subAgent.name,
+        `Delegate a task to the ${subAgent.name} agent. Pass the task as the 'message' argument.`,
+        async (ctx: Context, args: Record<string, any>) => {
+          const message = args.message || args.prompt || JSON.stringify(args);
+          const result = await subAgent.run(message, ctx);
+          return result.output;
+        },
+        {
+          inputSchema: {
+            type: 'object',
+            properties: {
+              message: {
+                type: 'string',
+                description: 'The task or question to delegate to this agent',
+              },
+            },
+            required: ['message'],
+          },
+        },
+      );
+      this.tools.set(subAgent.name, wrapped);
     } else if ('name' in t && 'getSchema' in t) {
       this.tools.set(t.name, t);
     } else if ('_tool' in t) {
@@ -634,6 +661,19 @@ export class Agent {
       // The last yielded value that has 'output' is the AgentResult
       if ('output' in event && 'toolCalls' in event && 'context' in event) {
         result = event as AgentResult;
+        continue;
+      }
+      // Forward lifecycle events (agent.started/completed/failed, iteration.*,
+      // tool_call.started/completed/failed, output.*) to the platform via the
+      // provided context emitter. Without this, agent.run() called from inside
+      // a function or workflow handler silently swallows every tool-level
+      // event and downstream projections/tests can't see them.
+      if (context) {
+        try {
+          await context.emit(event as any);
+        } catch {
+          // Best effort — emission failures should not break the agent
+        }
       }
     }
 
