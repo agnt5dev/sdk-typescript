@@ -173,6 +173,7 @@ impl TryFrom<JsToolDefinition> for ToolDefinition {
 }
 
 #[napi(string_enum)]
+#[allow(dead_code)]
 pub enum JsToolChoice {
     Auto,
     None,
@@ -214,6 +215,7 @@ pub struct JsToolCall {
 // ============================================================================
 
 #[napi(string_enum)]
+#[allow(dead_code)]
 pub enum JsResponseFormat {
     Text,
     Json,

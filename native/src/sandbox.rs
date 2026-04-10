@@ -9,7 +9,6 @@ use agnt5_sdk_core::sandbox::{
     ExecuteCodeRequest, Language, RemoteSandbox, RemoteSandboxConfig, SandboxAuth,
     SandboxBackendKind, SandboxExecutor, SandboxWorkspace, WriteFileRequest,
 };
-use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(feature = "wasm-sandbox")]
