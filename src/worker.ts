@@ -3,7 +3,7 @@ import { FunctionRegistry } from './function.js';
 import { WorkflowRegistry } from './workflow.js';
 import { ToolRegistry } from './tool.js';
 import { ScorerRegistry, isScorer } from './scorer.js';
-import { Agent } from './agent.js';
+import { Agent, Message } from './agent.js';
 import type { AgentResult } from './agent.js';
 import { ChatBot } from './chat.js';
 import { runWithContext } from './async-context.js';
@@ -779,12 +779,16 @@ export class Worker {
                 throw new Error(`Agent not found: ${message.componentName}`);
               }
 
+              // Session history: load prior conversation from entity storage
+              const sessionId = inputData.session_id || message.metadata?.session_id || runId;
+              const history = await this._loadSessionHistory(sessionId, message.componentName, message.metadata);
+
               // Consume the agent stream so internal events (agent.started,
               // iteration.started, tool_call.started, etc.) are forwarded to the platform.
               const userMessage = inputData.prompt || inputData.message || JSON.stringify(inputData);
               let agentResult: AgentResult | undefined;
 
-              for await (const event of agent.stream(userMessage, ctx)) {
+              for await (const event of agent.stream(userMessage, ctx, history)) {
                 if ('output' in event && 'toolCalls' in event && 'context' in event) {
                   agentResult = event as AgentResult;
                 } else {
@@ -797,6 +801,29 @@ export class Worker {
                 throw new Error(`Agent '${message.componentName}' completed without producing a result`);
               }
               result = agentResult.output;
+
+              // Session history: save updated conversation to entity storage
+              const updatedMessages = [
+                ...history,
+                Message.user(userMessage),
+                Message.assistant(typeof result === 'string' ? result : JSON.stringify(result)),
+              ];
+              await this._saveSessionHistory(sessionId, message.componentName, updatedMessages, message.metadata);
+
+              // Emit session.created so GET /v1/sessions/{id} works
+              await emitter.emit({
+                name: 'session.created',
+                eventType: 'session.created',
+                eventId: generateCid(),
+                correlationId: generateCid(),
+                parentCorrelationId: null,
+                timestampNs: BigInt(Date.now()) * 1_000_000n,
+                metadata: {
+                  session_id: sessionId,
+                  component_name: message.componentName,
+                  session_type: 'agent',
+                },
+              } as unknown as AgentEvent);
               break;
             }
 
@@ -922,6 +949,78 @@ export class Worker {
         }
       },
     );
+  }
+
+  /**
+   * Load conversation history from entity storage (mirrors Python AgentContext).
+   */
+  private async _loadSessionHistory(
+    sessionId: string,
+    agentName: string,
+    metadata?: Record<string, string>,
+  ): Promise<Message[]> {
+    const gatewayUrl = process.env.AGNT5_GATEWAY_URL || 'http://localhost:34181';
+    const entityKey = `agent_session_${sessionId}`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (metadata?.tenant_id) headers['X-Tenant-ID'] = metadata.tenant_id;
+    if (metadata?.deployment_id) headers['X-Deployment-ID'] = metadata.deployment_id;
+
+    try {
+      const resp = await fetch(`${gatewayUrl}/v1/entity/AgentSession/${entityKey}/get`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ scope: 'session', scope_id: sessionId }),
+      });
+      if (resp.status === 404) return [];
+      if (!resp.ok) return [];
+      const data = (await resp.json()) as any;
+      const messages = data?.state?.messages || [];
+      return messages.map((m: any) => ({ role: m.role || 'user', content: m.content || '' }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Save conversation history to entity storage (mirrors Python AgentContext).
+   */
+  private async _saveSessionHistory(
+    sessionId: string,
+    agentName: string,
+    messages: Message[],
+    metadata?: Record<string, string>,
+  ): Promise<void> {
+    const gatewayUrl = process.env.AGNT5_GATEWAY_URL || 'http://localhost:34181';
+    const entityKey = `agent_session_${sessionId}`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (metadata?.tenant_id) headers['X-Tenant-ID'] = metadata.tenant_id;
+    if (metadata?.deployment_id) headers['X-Deployment-ID'] = metadata.deployment_id;
+
+    const messagesData = messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      timestamp: Date.now() / 1000,
+    }));
+
+    try {
+      await fetch(`${gatewayUrl}/v1/entity/AgentSession/${entityKey}/set`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          input: {
+            agent_name: agentName,
+            session_id: sessionId,
+            messages: messagesData,
+            updated_at: Date.now() / 1000,
+            turn_count: messagesData.length,
+          },
+          scope: 'session',
+          scope_id: sessionId,
+        }),
+      });
+    } catch {
+      // Best-effort — don't fail the dispatch on save errors
+    }
   }
 
   /**

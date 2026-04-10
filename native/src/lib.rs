@@ -393,7 +393,7 @@ impl Worker {
             let response_map = response_map.clone();
 
             async move {
-                use agnt5_sdk_core::pb::{runtime_message, service_message, DispatchComponentResponse, dispatch_component_response};
+                use agnt5_sdk_core::pb::runtime_message;
 
                 // Extract DispatchComponentRequest from RuntimeMessage.
                 // Other message types (health checks, checkpoint acks, etc.) are
@@ -425,9 +425,6 @@ impl Worker {
                     .unwrap_or_else(|_| "{}".to_string());
 
                 let invocation_id = dispatch_request.invocation_id.clone();
-                // Phase 5: echo lease_id from the request back on the response so
-                // the coordinator can fence stale acks. Empty when fencing is off.
-                let lease_id = dispatch_request.lease_id.clone();
 
                 // Create simplified RuntimeMessageData for TypeScript
                 let runtime_msg_data = RuntimeMessageData {
@@ -454,8 +451,11 @@ impl Worker {
                 // so we use a separate channel (resolveResponse) for the result.
                 handler_clone.call(runtime_msg_data, ThreadsafeFunctionCallMode::NonBlocking);
 
-                // Wait for JS handler to call resolveResponse() (with 5 min timeout)
-                let response_json = tokio::time::timeout(
+                // Wait for JS handler to call resolveResponse() (with 5 min timeout).
+                // We await completion but don't send the response on the bidi stream —
+                // all data flows through WriteCheckpoint to the Engine. The journal
+                // consumer handles load decrement when it sees run.completed/failed.
+                let _response_json = tokio::time::timeout(
                     std::time::Duration::from_secs(300),
                     rx,
                 ).await
@@ -466,59 +466,7 @@ impl Worker {
                         format!("Response channel dropped for invocation {}", invocation_id)
                     ))?;
 
-                // Parse the JSON response
-                let resp: serde_json::Value = serde_json::from_str(&response_json)
-                    .map_err(|e| agnt5_sdk_core::error::SdkError::Internal(
-                        format!("Failed to parse handler response: {}", e)
-                    ))?;
-
-                let invocation_id = resp["invocationId"].as_str().unwrap_or("").to_string();
-                let error_msg = resp["error"].as_str().map(|s| s.to_string());
-                let output_json = resp["outputJson"].as_str().map(|s| s.to_string());
-
-                let dispatch_response = if let Some(err_msg) = error_msg {
-                    // Error response
-                    DispatchComponentResponse {
-                        invocation_id,
-                        success: false,
-                        result: None,
-                        error_message: err_msg,
-                        metadata: HashMap::new(),
-                        event_type: String::new(),
-                        content_index: 0,
-                        sequence: 0,
-                        attempt: 0,
-                        source_timestamp_ns: 0,
-                        lease_id: lease_id.clone(),
-                    }
-                } else {
-                    // Success response
-                    let output_bytes = output_json
-                        .unwrap_or_else(|| "null".to_string())
-                        .into_bytes();
-
-                    DispatchComponentResponse {
-                        invocation_id,
-                        success: true,
-                        result: Some(dispatch_component_response::Result::OutputData(output_bytes)),
-                        error_message: String::new(),
-                        metadata: HashMap::new(),
-                        event_type: String::new(),
-                        content_index: 0,
-                        sequence: 0,
-                        attempt: 0,
-                        source_timestamp_ns: 0,
-                        lease_id,
-                    }
-                };
-
-                let service_msg = ServiceMessage {
-                    worker_id: String::new(), // Will be set by core worker
-                    metadata: HashMap::new(), // Always empty — metadata flows in inner response
-                    message_type: Some(service_message::MessageType::FunctionResponse(dispatch_response)),
-                };
-
-                Ok(Some(service_msg))
+                Ok(None)
             }
         };
 

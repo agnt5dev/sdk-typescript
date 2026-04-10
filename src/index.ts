@@ -14,7 +14,7 @@ export { ContextImpl } from './context.js';
 export { PlatformContext } from './platform-context.js';
 
 // Client exports
-export { Client, EntityProxy, RunResponse, WorkflowProxy, SessionProxy } from './client.js';
+export { Client, RunResponse, WorkflowProxy, SessionProxy } from './client.js';
 export type { ClientOptions, RunOptions, RunStatus, RunErrorDetail, SubmitResponse, ReceivedEvent, EventRecord, EventsResponse } from './client.js';
 
 // Batch exports
@@ -331,6 +331,19 @@ export type {
   JobQueueConfig,
 } from './platform-adapters.js';
 
+// Sandbox exports
+export { Sandbox } from './sandbox.js';
+export type {
+  SandboxOptions,
+  ExecuteCodeResult,
+  WriteFileResult,
+  ReadFileResult,
+  FileInfo,
+  ListFilesResult,
+  HealthResult as SandboxHealthResult,
+  SandboxCapabilities,
+} from './sandbox.js';
+
 // Type exports
 export type {
   Context,
@@ -344,7 +357,6 @@ export type {
   ToolHandler,
   ToolSchema,
   ToolOptions,
-  EntityMethod,
   WorkflowHandler
 } from './types.js';
 

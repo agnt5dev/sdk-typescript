@@ -560,6 +560,12 @@ export class Agent {
               yield toolCallCompleted(tcId, iterCorrelationId, { toolName, toolCallId: tcId });
               toolResults.push({ tool: toolName, result: resultText, error: null });
             } catch (error) {
+              // HITL: WaitingForUserInputError must propagate to pause the
+              // workflow — do NOT treat it as a tool failure or the LLM will
+              // retry the tool in the next iteration.
+              if ((error as any)?.name === 'WaitingForUserInputError') {
+                throw error;
+              }
               yield toolCallFailed(tcId, iterCorrelationId, {
                 toolName,
                 toolCallId: tcId,
