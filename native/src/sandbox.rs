@@ -98,6 +98,8 @@ pub struct SandboxOptions {
     pub bearer_token: Option<String>,
     /// Request timeout in seconds.
     pub timeout_secs: Option<f64>,
+    /// Path prefix for remote API routes (e.g. "/v1/sandbox" for AGNT5 platform).
+    pub api_prefix: Option<String>,
     /// Path to QuickJS WASI binary (for wasm backend).
     pub quickjs_wasm_path: Option<String>,
 }
@@ -122,6 +124,7 @@ impl Sandbox {
             api_key: None,
             bearer_token: None,
             timeout_secs: None,
+            api_prefix: None,
             quickjs_wasm_path: None,
         });
 
@@ -134,7 +137,7 @@ impl Sandbox {
                 let ep = opts.endpoint.ok_or_else(|| {
                     Error::from_reason("endpoint is required for remote backend")
                 })?;
-                let remote = create_remote(ep, opts.sandbox_id, opts.api_key, opts.bearer_token, timeout)?;
+                let remote = create_remote(ep, opts.sandbox_id, opts.api_key, opts.bearer_token, timeout, opts.api_prefix)?;
                 let arc: Arc<RemoteSandbox> = Arc::new(remote);
                 Ok(Sandbox {
                     executor: arc.clone() as BoxedExecutor,
@@ -161,7 +164,7 @@ impl Sandbox {
 
             "auto" => {
                 if let Some(ep) = opts.endpoint {
-                    let remote = create_remote(ep, opts.sandbox_id, opts.api_key, opts.bearer_token, timeout)?;
+                    let remote = create_remote(ep, opts.sandbox_id, opts.api_key, opts.bearer_token, timeout, opts.api_prefix)?;
                     let arc: Arc<RemoteSandbox> = Arc::new(remote);
                     Ok(Sandbox {
                         executor: arc.clone() as BoxedExecutor,
@@ -345,6 +348,7 @@ fn create_remote(
     api_key: Option<String>,
     bearer_token: Option<String>,
     timeout: std::time::Duration,
+    api_prefix: Option<String>,
 ) -> Result<RemoteSandbox> {
     let auth = if let Some(key) = api_key {
         SandboxAuth::ApiKey(key)
@@ -358,6 +362,7 @@ fn create_remote(
         sandbox_id: sandbox_id.unwrap_or_else(|| "default".to_string()),
         auth,
         timeout,
+        api_prefix: api_prefix.unwrap_or_default(),
     };
     RemoteSandbox::new(config)
         .map_err(|e| Error::from_reason(format!("Failed to create RemoteSandbox: {}", e)))
