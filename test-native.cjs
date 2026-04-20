@@ -24,7 +24,7 @@ try {
   console.log('  Service name:', worker.serviceName);
   console.log('  Worker ID:', worker.workerId);
   console.log('  Coordinator endpoint:', worker.coordinatorEndpoint);
-  console.log('  Tenant ID:', worker.tenantId);
+  console.log('  Project ID:', worker.tenantId);
   console.log('  Deployment ID:', worker.deploymentId);
 } catch (e) {
   console.error('✗ Worker creation failed:', e);

@@ -41,7 +41,9 @@ pub struct WorkerOptions {
     pub service_type: Option<String>,
     /// Coordinator endpoint URL
     pub coordinator_endpoint: Option<String>,
-    /// Tenant ID (falls back to AGNT5_TENANT_ID env var)
+    /// Legacy engine routing key (falls back to AGNT5_PROJECT_ID, then
+    /// AGNT5_TENANT_ID). On worker/runtime paths this currently carries
+    /// project identity.
     pub tenant_id: Option<String>,
     /// Deployment ID (falls back to AGNT5_DEPLOYMENT_ID env var)
     pub deployment_id: Option<String>,
@@ -185,14 +187,17 @@ impl Worker {
             config.coordinator_endpoint = endpoint;
         }
 
-        // Build service metadata (tenant_id, deployment_id) for checkpoint emission.
-        // emit_checkpoint_sync merges self.metadata into each checkpoint's metadata,
-        // and the EE requires tenant_id to write to journal_events.
+        // Build service metadata for checkpoint emission. During the migration
+        // window we stamp both canonical `project_id` and legacy `tenant_id`.
         let mut metadata = HashMap::new();
-        if let Some(ref tid) = options.tenant_id {
-            metadata.insert("tenant_id".to_string(), tid.clone());
-        } else if let Ok(tid) = std::env::var("AGNT5_TENANT_ID") {
-            metadata.insert("tenant_id".to_string(), tid);
+        let project_id = options
+            .tenant_id
+            .clone()
+            .or_else(|| std::env::var("AGNT5_PROJECT_ID").ok())
+            .or_else(|| std::env::var("AGNT5_TENANT_ID").ok());
+        if let Some(pid) = project_id {
+            metadata.insert("project_id".to_string(), pid.clone());
+            metadata.insert("tenant_id".to_string(), pid);
         }
         if let Some(ref did) = options.deployment_id {
             metadata.insert("deployment_id".to_string(), did.clone());
@@ -243,10 +248,13 @@ impl Worker {
         self.config.coordinator_endpoint.clone()
     }
 
-    /// Get tenant ID from environment (no longer on WorkerConfig)
+    /// Get the legacy engine routing key from environment. On worker/runtime
+    /// paths this currently carries project identity.
     #[napi(getter)]
     pub fn tenant_id(&self) -> String {
-        std::env::var("AGNT5_TENANT_ID").unwrap_or_default()
+        std::env::var("AGNT5_PROJECT_ID")
+            .or_else(|_| std::env::var("AGNT5_TENANT_ID"))
+            .unwrap_or_default()
     }
 
     /// Get deployment ID from environment (no longer on WorkerConfig)
@@ -313,7 +321,11 @@ impl Worker {
             data: event_data.into_bytes(),
             correlation_id,
             parent_correlation_id,
-            tenant_id: Some(std::env::var("AGNT5_TENANT_ID").unwrap_or_default()),
+            tenant_id: Some(
+                std::env::var("AGNT5_PROJECT_ID")
+                    .or_else(|_| std::env::var("AGNT5_TENANT_ID"))
+                    .unwrap_or_default(),
+            ),
             source_timestamp_ns: source_timestamp_ns as i64,
             metadata,
             queued_at: std::time::Instant::now(),

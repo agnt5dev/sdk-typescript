@@ -328,7 +328,7 @@ export class Client {
     const env = typeof process !== 'undefined' ? process.env : undefined;
     this.gatewayUrl = (options.gatewayUrl || env?.AGNT5_GATEWAY_URL || 'http://localhost:34181').replace(/\/$/, '');
     this.apiKey = options.apiKey || env?.AGNT5_API_KEY;
-    this.tenantId = options.tenantId || env?.AGNT5_TENANT_ID;
+    this.tenantId = options.tenantId || env?.AGNT5_PROJECT_ID || env?.AGNT5_TENANT_ID;
     this.deploymentId = options.deploymentId || env?.AGNT5_DEPLOYMENT_ID;
     this.timeout = options.timeout || 30000;
     this.maxRetries = options.maxRetries ?? 3;
