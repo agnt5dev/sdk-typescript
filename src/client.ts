@@ -23,7 +23,14 @@ export interface ClientOptions {
   gatewayUrl?: string;
   /** API key for authentication (falls back to AGNT5_API_KEY env var) */
   apiKey?: string;
-  /** Tenant ID for routing (falls back to AGNT5_TENANT_ID env var) */
+  /**
+   * Default sub-tenant for all invocations, sent as `X-TENANT-ID`. Use this
+   * to segment traffic for your own customers / end-users — it drives
+   * per-tenant metrics, ingress fairness, and (future) scheduler isolation
+   * on the gateway. Opaque string; must match `[A-Za-z0-9_-]{1,64}`. Falls
+   * back to `AGNT5_TENANT_ID` env var. Per-call override available via
+   * `tenant` on `run` / `submit` options.
+   */
   tenantId?: string;
   /** Deployment ID for routing (falls back to AGNT5_DEPLOYMENT_ID env var) */
   deploymentId?: string;
@@ -42,6 +49,11 @@ export interface RunOptions {
   sessionId?: string;
   /** User ID for user-scoped memory */
   userId?: string;
+  /**
+   * Sub-tenant override for this call (sent as `X-TENANT-ID`). Wins over
+   * the client-level `tenantId` when set. Opaque customer string.
+   */
+  tenant?: string;
   /** Override max retries for this specific request */
   maxRetries?: number;
 }
@@ -324,17 +336,19 @@ export class Client {
   }
 
   /**
-   * Build request headers with authentication and routing
+   * Build request headers with authentication and routing. `tenantOverride`
+   * wins over the client-level `tenantId` when set.
    */
-  private buildHeaders(extra?: Record<string, string>): Record<string, string> {
+  private buildHeaders(extra?: Record<string, string>, tenantOverride?: string): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
     if (this.apiKey) {
       headers['X-API-KEY'] = this.apiKey;
     }
-    if (this.tenantId) {
-      headers['X-Tenant-ID'] = this.tenantId;
+    const effectiveTenant = tenantOverride ?? this.tenantId;
+    if (effectiveTenant) {
+      headers['X-Tenant-ID'] = effectiveTenant;
     }
     if (this.deploymentId) {
       headers['X-Deployment-ID'] = this.deploymentId;
@@ -400,7 +414,7 @@ export class Client {
 
       const response = await fetch(url, {
         method: 'POST',
-        headers: this.buildHeaders(extra),
+        headers: this.buildHeaders(extra, options.tenant),
         body: JSON.stringify(inputData),
         signal: AbortSignal.timeout(this.timeout),
       });
@@ -419,13 +433,13 @@ export class Client {
   /**
    * Submit a component for async execution and return immediately.
    */
-  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType'> = {}): Promise<SubmitResponse> {
+  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant'> = {}): Promise<SubmitResponse> {
     const componentType = options.componentType || 'function';
     const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/submit`;
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: this.buildHeaders(),
+      headers: this.buildHeaders(undefined, options.tenant),
       body: JSON.stringify(inputData),
       signal: AbortSignal.timeout(this.timeout),
     });
