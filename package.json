@@ -1,6 +1,6 @@
 {
   "name": "@agnt5/sdk",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "AGNT5 TypeScript SDK - Durable AI workflows and agents",
   "type": "module",
   "main": "./dist/index.js",
@@ -26,7 +26,7 @@
   "scripts": {
     "build": "npm run build:napi && npm run build:ts",
     "build:full": "npm run build:napi && npm run build:wasm && npm run build:ts",
-    "build:napi": "napi build --platform --release --manifest-path native/Cargo.toml",
+    "build:napi": "napi build --platform --release --manifest-path native/Cargo.toml --output-dir .",
     "build:wasm": "wasm-pack build --target bundler --out-dir ../wasm-pkg ./wasm",
     "build:ts": "tsc",
     "dev": "tsc --watch",

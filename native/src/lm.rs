@@ -11,6 +11,15 @@ use agnt5_sdk_core::lm::{
     OpenRouterProvider, ResponseFormat, StreamChunk, StreamHandle, TokenUsage,
     ToolChoice, ToolDefinition, ReasoningEffort, Modality, BuiltInTool,
     AnthropicConfig, AzureOpenAiConfig, BedrockConfig, GroqConfig, OpenAiConfig, OpenRouterConfig,
+    // Additional providers
+    DeepSeekProvider, DeepSeekConfig,
+    GoogleProvider, GoogleConfig,
+    MistralProvider, MistralConfig,
+    OllamaProvider, OllamaConfig,
+    XaiProvider, XaiConfig,
+    HuggingFaceProvider, HuggingFaceConfig,
+    OpenAiChatProvider, OpenAiChatConfig,
+    LanguageModel as LMTrait,
 };
 use agnt5_sdk_core::error::Result as SdkResult;
 
@@ -26,6 +35,13 @@ enum ProviderKind {
     Anthropic(AnthropicProvider),
     Groq(GroqProvider),
     OpenRouter(OpenRouterProvider),
+    DeepSeek(DeepSeekProvider),
+    Google(GoogleProvider),
+    Mistral(MistralProvider),
+    Ollama(OllamaProvider),
+    Xai(XaiProvider),
+    HuggingFace(HuggingFaceProvider),
+    OpenAiChat(OpenAiChatProvider),
 }
 
 impl ProviderKind {
@@ -37,6 +53,13 @@ impl ProviderKind {
             ProviderKind::Anthropic(provider) => provider.generate(request).await,
             ProviderKind::Groq(provider) => provider.generate(request).await,
             ProviderKind::OpenRouter(provider) => provider.generate(request).await,
+            ProviderKind::DeepSeek(provider) => provider.generate(request).await,
+            ProviderKind::Google(provider) => provider.generate(request).await,
+            ProviderKind::Mistral(provider) => provider.generate(request).await,
+            ProviderKind::Ollama(provider) => provider.generate(request).await,
+            ProviderKind::Xai(provider) => provider.generate(request).await,
+            ProviderKind::HuggingFace(provider) => provider.generate(request).await,
+            ProviderKind::OpenAiChat(provider) => provider.generate(request).await,
         }
     }
 
@@ -48,6 +71,13 @@ impl ProviderKind {
             ProviderKind::Anthropic(provider) => provider.stream(request).await,
             ProviderKind::Groq(provider) => provider.stream(request).await,
             ProviderKind::OpenRouter(provider) => provider.stream(request).await,
+            ProviderKind::DeepSeek(provider) => provider.stream(request).await,
+            ProviderKind::Google(provider) => provider.stream(request).await,
+            ProviderKind::Mistral(provider) => provider.stream(request).await,
+            ProviderKind::Ollama(provider) => provider.stream(request).await,
+            ProviderKind::Xai(provider) => provider.stream(request).await,
+            ProviderKind::HuggingFace(provider) => provider.stream(request).await,
+            ProviderKind::OpenAiChat(provider) => provider.stream(request).await,
         }
     }
 }
@@ -143,6 +173,7 @@ impl TryFrom<JsToolDefinition> for ToolDefinition {
 }
 
 #[napi(string_enum)]
+#[allow(dead_code)]
 pub enum JsToolChoice {
     Auto,
     None,
@@ -184,6 +215,7 @@ pub struct JsToolCall {
 // ============================================================================
 
 #[napi(string_enum)]
+#[allow(dead_code)]
 pub enum JsResponseFormat {
     Text,
     Json,
@@ -605,6 +637,176 @@ impl From<JsOpenRouterConfig> for OpenRouterConfig {
 }
 
 // ============================================================================
+// Additional Provider Configs
+// ============================================================================
+
+#[napi(object)]
+pub struct JsDeepSeekConfig {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+}
+
+impl From<JsDeepSeekConfig> for DeepSeekConfig {
+    fn from(config: JsDeepSeekConfig) -> Self {
+        let api_key = config.api_key
+            .or_else(|| env::var("DEEPSEEK_API_KEY").ok())
+            .unwrap_or_else(|| "".to_string());
+
+        let mut cfg = DeepSeekConfig::new(api_key);
+
+        if let Some(url) = config.base_url {
+            cfg = cfg.with_base_url(url);
+        }
+
+        cfg
+    }
+}
+
+#[napi(object)]
+pub struct JsGoogleConfig {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+}
+
+impl From<JsGoogleConfig> for GoogleConfig {
+    fn from(config: JsGoogleConfig) -> Self {
+        let api_key = config.api_key
+            .or_else(|| env::var("GOOGLE_API_KEY").ok())
+            .or_else(|| env::var("GEMINI_API_KEY").ok())
+            .unwrap_or_else(|| "".to_string());
+
+        let mut cfg = GoogleConfig::new(api_key);
+
+        if let Some(url) = config.base_url {
+            cfg = cfg.with_base_url(url);
+        }
+
+        cfg
+    }
+}
+
+#[napi(object)]
+pub struct JsMistralConfig {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+}
+
+impl From<JsMistralConfig> for MistralConfig {
+    fn from(config: JsMistralConfig) -> Self {
+        let api_key = config.api_key
+            .or_else(|| env::var("MISTRAL_API_KEY").ok())
+            .unwrap_or_else(|| "".to_string());
+
+        let mut cfg = MistralConfig::new(api_key);
+
+        if let Some(url) = config.base_url {
+            cfg = cfg.with_base_url(url);
+        }
+
+        cfg
+    }
+}
+
+#[napi(object)]
+pub struct JsOllamaConfig {
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+}
+
+impl From<JsOllamaConfig> for OllamaConfig {
+    fn from(config: JsOllamaConfig) -> Self {
+        let mut cfg = OllamaConfig::new();
+
+        if let Some(url) = config.base_url
+            .or_else(|| env::var("OLLAMA_BASE_URL").ok())
+            .or_else(|| env::var("OLLAMA_HOST").ok())
+        {
+            cfg = cfg.with_base_url(url);
+        }
+
+        if let Some(key) = config.api_key
+            .or_else(|| env::var("OLLAMA_API_KEY").ok())
+        {
+            cfg = cfg.with_api_key(key);
+        }
+
+        cfg
+    }
+}
+
+#[napi(object)]
+pub struct JsXaiConfig {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+}
+
+impl From<JsXaiConfig> for XaiConfig {
+    fn from(config: JsXaiConfig) -> Self {
+        let api_key = config.api_key
+            .or_else(|| env::var("XAI_API_KEY").ok())
+            .unwrap_or_else(|| "".to_string());
+
+        let mut cfg = XaiConfig::new(api_key);
+
+        if let Some(url) = config.base_url {
+            cfg = cfg.with_base_url(url);
+        }
+
+        cfg
+    }
+}
+
+#[napi(object)]
+pub struct JsHuggingFaceConfig {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+}
+
+impl From<JsHuggingFaceConfig> for HuggingFaceConfig {
+    fn from(config: JsHuggingFaceConfig) -> Self {
+        let api_key = config.api_key
+            .or_else(|| env::var("HUGGINGFACE_API_KEY").ok())
+            .or_else(|| env::var("HF_TOKEN").ok())
+            .unwrap_or_else(|| "".to_string());
+
+        let mut cfg = HuggingFaceConfig::new(api_key);
+
+        if let Some(url) = config.base_url {
+            cfg = cfg.with_base_url(url);
+        }
+
+        cfg
+    }
+}
+
+#[napi(object)]
+pub struct JsOpenAiChatConfig {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub organization: Option<String>,
+}
+
+impl From<JsOpenAiChatConfig> for OpenAiChatConfig {
+    fn from(config: JsOpenAiChatConfig) -> Self {
+        let api_key = config.api_key
+            .or_else(|| env::var("OPENAI_API_KEY").ok())
+            .unwrap_or_else(|| "".to_string());
+
+        let mut cfg = OpenAiChatConfig::new(api_key);
+
+        if let Some(url) = config.base_url {
+            cfg = cfg.with_base_url(url);
+        }
+
+        if let Some(org) = config.organization {
+            cfg = cfg.with_organization(org);
+        }
+
+        cfg
+    }
+}
+
+// ============================================================================
 // Language Model Client
 // ============================================================================
 
@@ -690,6 +892,105 @@ impl LanguageModel {
             .map_err(|e| Error::from_reason(format!("Failed to create OpenRouter provider: {}", e)))?;
         Ok(Self {
             provider: ProviderKind::OpenRouter(provider),
+        })
+    }
+
+    /// Create DeepSeek provider
+    #[napi(factory)]
+    pub fn deepseek(config: Option<JsDeepSeekConfig>) -> Result<Self> {
+        let cfg: DeepSeekConfig = config.map(|c| c.into()).unwrap_or_else(|| {
+            let api_key = env::var("DEEPSEEK_API_KEY").unwrap_or_else(|_| "".to_string());
+            DeepSeekConfig::new(api_key)
+        });
+        let provider = DeepSeekProvider::new(cfg)
+            .map_err(|e| Error::from_reason(format!("Failed to create DeepSeek provider: {}", e)))?;
+        Ok(Self {
+            provider: ProviderKind::DeepSeek(provider),
+        })
+    }
+
+    /// Create Google (Gemini) provider
+    #[napi(factory)]
+    pub fn google(config: Option<JsGoogleConfig>) -> Result<Self> {
+        let cfg: GoogleConfig = config.map(|c| c.into()).unwrap_or_else(|| {
+            let api_key = env::var("GOOGLE_API_KEY")
+                .or_else(|_| env::var("GEMINI_API_KEY"))
+                .unwrap_or_else(|_| "".to_string());
+            GoogleConfig::new(api_key)
+        });
+        let provider = GoogleProvider::new(cfg)
+            .map_err(|e| Error::from_reason(format!("Failed to create Google provider: {}", e)))?;
+        Ok(Self {
+            provider: ProviderKind::Google(provider),
+        })
+    }
+
+    /// Create Mistral provider
+    #[napi(factory)]
+    pub fn mistral(config: Option<JsMistralConfig>) -> Result<Self> {
+        let cfg: MistralConfig = config.map(|c| c.into()).unwrap_or_else(|| {
+            let api_key = env::var("MISTRAL_API_KEY").unwrap_or_else(|_| "".to_string());
+            MistralConfig::new(api_key)
+        });
+        let provider = MistralProvider::new(cfg)
+            .map_err(|e| Error::from_reason(format!("Failed to create Mistral provider: {}", e)))?;
+        Ok(Self {
+            provider: ProviderKind::Mistral(provider),
+        })
+    }
+
+    /// Create Ollama provider (local LLM)
+    #[napi(factory)]
+    pub fn ollama(config: Option<JsOllamaConfig>) -> Result<Self> {
+        let cfg: OllamaConfig = config.map(|c| c.into()).unwrap_or_else(OllamaConfig::new);
+        let provider = OllamaProvider::new(cfg)
+            .map_err(|e| Error::from_reason(format!("Failed to create Ollama provider: {}", e)))?;
+        Ok(Self {
+            provider: ProviderKind::Ollama(provider),
+        })
+    }
+
+    /// Create xAI (Grok) provider
+    #[napi(factory)]
+    pub fn xai(config: Option<JsXaiConfig>) -> Result<Self> {
+        let cfg: XaiConfig = config.map(|c| c.into()).unwrap_or_else(|| {
+            let api_key = env::var("XAI_API_KEY").unwrap_or_else(|_| "".to_string());
+            XaiConfig::new(api_key)
+        });
+        let provider = XaiProvider::new(cfg)
+            .map_err(|e| Error::from_reason(format!("Failed to create xAI provider: {}", e)))?;
+        Ok(Self {
+            provider: ProviderKind::Xai(provider),
+        })
+    }
+
+    /// Create HuggingFace provider
+    #[napi(factory)]
+    pub fn huggingface(config: Option<JsHuggingFaceConfig>) -> Result<Self> {
+        let cfg: HuggingFaceConfig = config.map(|c| c.into()).unwrap_or_else(|| {
+            let api_key = env::var("HUGGINGFACE_API_KEY")
+                .or_else(|_| env::var("HF_TOKEN"))
+                .unwrap_or_else(|_| "".to_string());
+            HuggingFaceConfig::new(api_key)
+        });
+        let provider = HuggingFaceProvider::new(cfg)
+            .map_err(|e| Error::from_reason(format!("Failed to create HuggingFace provider: {}", e)))?;
+        Ok(Self {
+            provider: ProviderKind::HuggingFace(provider),
+        })
+    }
+
+    /// Create OpenAI Chat-compatible provider (for custom OpenAI-compatible APIs)
+    #[napi(factory)]
+    pub fn openai_chat(config: Option<JsOpenAiChatConfig>) -> Result<Self> {
+        let cfg: OpenAiChatConfig = config.map(|c| c.into()).unwrap_or_else(|| {
+            let api_key = env::var("OPENAI_API_KEY").unwrap_or_else(|_| "".to_string());
+            OpenAiChatConfig::new(api_key)
+        });
+        let provider = OpenAiChatProvider::new(cfg)
+            .map_err(|e| Error::from_reason(format!("Failed to create OpenAI Chat provider: {}", e)))?;
+        Ok(Self {
+            provider: ProviderKind::OpenAiChat(provider),
         })
     }
 

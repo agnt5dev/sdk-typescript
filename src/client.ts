@@ -23,6 +23,17 @@ export interface ClientOptions {
   gatewayUrl?: string;
   /** API key for authentication (falls back to AGNT5_API_KEY env var) */
   apiKey?: string;
+  /**
+   * Default sub-tenant for all invocations, sent as `X-TENANT-ID`. Use this
+   * to segment traffic for your own customers / end-users — it drives
+   * per-tenant metrics, ingress fairness, and (future) scheduler isolation
+   * on the gateway. Opaque string; must match `[A-Za-z0-9_-]{1,64}`. Falls
+   * back to `AGNT5_TENANT_ID` env var. Per-call override available via
+   * `tenant` on `run` / `submit` options.
+   */
+  tenantId?: string;
+  /** Deployment ID for routing (falls back to AGNT5_DEPLOYMENT_ID env var) */
+  deploymentId?: string;
   /** Request timeout in milliseconds (default: 30000) */
   timeout?: number;
   /** Max retry attempts for transient failures (default: 3) */
@@ -38,6 +49,11 @@ export interface RunOptions {
   sessionId?: string;
   /** User ID for user-scoped memory */
   userId?: string;
+  /**
+   * Sub-tenant override for this call (sent as `X-TENANT-ID`). Wins over
+   * the client-level `tenantId` when set. Opaque customer string.
+   */
+  tenant?: string;
   /** Override max retries for this specific request */
   maxRetries?: number;
 }
@@ -56,6 +72,7 @@ export type RunStatus =
   | 'cancelled'
   | 'paused'
   | 'awaiting_input'
+  | 'awaiting_user_input'
   | 'timeout'
   | 'unknown';
 
@@ -73,7 +90,10 @@ interface RawRunResponse {
   status_code?: number;
   status?: string;
   output?: any;
+  output_data?: any;
   error?: any;
+  error_message?: string;
+  error_code?: string;
   duration_ms?: number;
   trace_id?: string;
   component?: string;
@@ -83,6 +103,13 @@ interface RawRunResponse {
   failed_at?: string;
   session_id?: string;
   metadata?: Record<string, any>;
+  result?: {
+    output?: {
+      output_data?: any;
+      [key: string]: any;
+    };
+    [key: string]: any;
+  };
 }
 
 /**
@@ -120,7 +147,13 @@ export class RunResponse<T = any> {
     this.runId = raw.run_id || raw.runId || '';
     this.statusCode = raw.status_code ?? (raw.status === 'completed' ? 200 : raw.status === 'failed' ? 500 : 202);
     this.status = (raw.status as RunStatus) || 'unknown';
-    this.output = raw.output as T | undefined;
+    const nestedOutput = raw.result?.output;
+    this.output = (
+      raw.output ??
+      raw.output_data ??
+      nestedOutput?.output_data ??
+      nestedOutput
+    ) as T | undefined;
     this.durationMs = raw.duration_ms;
     this.traceId = raw.trace_id;
     this.component = raw.component;
@@ -132,15 +165,17 @@ export class RunResponse<T = any> {
     this.metadata = raw.metadata;
 
     // Parse error — could be a string or a structured object
-    if (raw.error) {
+    if (raw.error || raw.error_message) {
       if (typeof raw.error === 'string') {
-        this.error = { code: 'EXECUTION_FAILED', message: raw.error };
+        this.error = { code: raw.error_code || 'EXECUTION_FAILED', message: raw.error };
       } else if (typeof raw.error === 'object') {
         this.error = {
-          code: raw.error.code || 'EXECUTION_FAILED',
+          code: raw.error.code || raw.error_code || 'EXECUTION_FAILED',
           message: raw.error.message || String(raw.error),
           details: raw.error.details,
         };
+      } else if (raw.error_message) {
+        this.error = { code: raw.error_code || 'EXECUTION_FAILED', message: raw.error_message };
       }
     }
   }
@@ -283,27 +318,40 @@ export class EntityProxy {
 export class Client {
   private readonly gatewayUrl: string;
   private readonly apiKey: string | undefined;
+  private readonly tenantId: string | undefined;
+  private readonly deploymentId: string | undefined;
   private readonly timeout: number;
   private readonly maxRetries: number;
   private readonly retryDelayMs: number;
 
   constructor(options: ClientOptions = {}) {
-    this.gatewayUrl = (options.gatewayUrl || 'http://localhost:34181').replace(/\/$/, '');
-    this.apiKey = options.apiKey || (typeof process !== 'undefined' ? process.env?.AGNT5_API_KEY : undefined);
+    const env = typeof process !== 'undefined' ? process.env : undefined;
+    this.gatewayUrl = (options.gatewayUrl || env?.AGNT5_GATEWAY_URL || 'http://localhost:34181').replace(/\/$/, '');
+    this.apiKey = options.apiKey || env?.AGNT5_API_KEY;
+    this.tenantId = options.tenantId || env?.AGNT5_PROJECT_ID || env?.AGNT5_TENANT_ID;
+    this.deploymentId = options.deploymentId || env?.AGNT5_DEPLOYMENT_ID;
     this.timeout = options.timeout || 30000;
     this.maxRetries = options.maxRetries ?? 3;
     this.retryDelayMs = options.retryDelayMs || 1000;
   }
 
   /**
-   * Build request headers with authentication
+   * Build request headers with authentication and routing. `tenantOverride`
+   * wins over the client-level `tenantId` when set.
    */
-  private buildHeaders(extra?: Record<string, string>): Record<string, string> {
+  private buildHeaders(extra?: Record<string, string>, tenantOverride?: string): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
     if (this.apiKey) {
       headers['X-API-KEY'] = this.apiKey;
+    }
+    const effectiveTenant = tenantOverride ?? this.tenantId;
+    if (effectiveTenant) {
+      headers['X-Tenant-ID'] = effectiveTenant;
+    }
+    if (this.deploymentId) {
+      headers['X-Deployment-ID'] = this.deploymentId;
     }
     if (extra) {
       Object.assign(headers, extra);
@@ -366,7 +414,7 @@ export class Client {
 
       const response = await fetch(url, {
         method: 'POST',
-        headers: this.buildHeaders(extra),
+        headers: this.buildHeaders(extra, options.tenant),
         body: JSON.stringify(inputData),
         signal: AbortSignal.timeout(this.timeout),
       });
@@ -385,13 +433,13 @@ export class Client {
   /**
    * Submit a component for async execution and return immediately.
    */
-  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType'> = {}): Promise<SubmitResponse> {
+  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant'> = {}): Promise<SubmitResponse> {
     const componentType = options.componentType || 'function';
     const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/submit`;
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: this.buildHeaders(),
+      headers: this.buildHeaders(undefined, options.tenant),
       body: JSON.stringify(inputData),
       signal: AbortSignal.timeout(this.timeout),
     });
@@ -414,7 +462,7 @@ export class Client {
    * Get the current status of a run.
    */
   async getStatus(runId: string): Promise<RunResponse> {
-    const url = `${this.gatewayUrl}/v1/runs/${runId}/status`;
+    const url = `${this.gatewayUrl}/v1/status/${runId}`;
 
     const response = await fetch(url, {
       method: 'GET',
@@ -434,7 +482,7 @@ export class Client {
    * Get the result of a completed run.
    */
   async getResult<T = any>(runId: string): Promise<RunResponse<T>> {
-    const url = `${this.gatewayUrl}/v1/runs/${runId}/result`;
+    const url = `${this.gatewayUrl}/v1/result/${runId}`;
 
     const response = await fetch(url, {
       method: 'GET',
@@ -603,6 +651,73 @@ export class Client {
     return new EntityProxy(this, entityType, key);
   }
 
+  /**
+   * Get all journal events for a completed run.
+   *
+   * @example
+   * ```typescript
+   * const events = await client.getEvents(runId);
+   * for (const event of events.events) {
+   *   console.log(event.eventType, event.data);
+   * }
+   * ```
+   */
+  async getEvents(runId: string): Promise<EventsResponse> {
+    const url = `${this.gatewayUrl}/v1/runs/${runId}/events`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: this.buildHeaders(),
+    });
+
+    if (!response.ok) {
+      throw createErrorFromResponse(response.status, await response.text(), runId);
+    }
+
+    const data = await response.json() as any;
+    const rawItems: any[] = Array.isArray(data?.items)
+      ? data.items
+      : Array.isArray(data?.events)
+        ? data.events
+        : Array.isArray(data)
+          ? data
+          : [];
+    const events: EventRecord[] = rawItems.map((e: any) => ({
+      eventType: e.event_type || e.eventType || '',
+      data: e.data || e.output_data || {},
+      timestamp: e.timestamp || e.created_at,
+      sequence: e.sequence ?? 0,
+      correlationId: e.correlation_id || e.correlationId,
+    }));
+
+    return { events, runId };
+  }
+
+  /**
+   * Get a proxy for invoking a workflow with fluent API.
+   *
+   * @example
+   * ```typescript
+   * const result = await client.workflow('support_bot').chat('Help me', 'session-123');
+   * ```
+   */
+  workflow(workflowName: string): WorkflowProxy {
+    return new WorkflowProxy(this, workflowName);
+  }
+
+  /**
+   * Get a proxy for a session entity.
+   *
+   * @example
+   * ```typescript
+   * const session = client.session('Conversation', 'user-alice');
+   * const response = await session.chat('Hello!');
+   * ```
+   */
+  session(sessionType: string, key: string): SessionProxy {
+    return new SessionProxy(this, sessionType, key);
+  }
+
   // ─── Batch operations ───────────────────────────────────────────────
 
   /**
@@ -746,7 +861,11 @@ export class Client {
     } = {},
   ): Promise<EvalResponse<T>> {
     const componentType = options.componentType || 'function';
-    const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/eval`;
+    // Gateway exposes a single global eval route at POST /v1/eval; the
+    // component identity goes in the body, not the URL. See
+    // runtime/crates/gateway/src/server.rs and handlers/eval.rs
+    // (EvalRequest fields). Mirrors sdk-python/src/agnt5/client.py:709.
+    const url = `${this.gatewayUrl}/v1/eval`;
 
     // Default to exact_match if expected is provided but no scorers
     let scorers = options.scorers;
@@ -754,7 +873,10 @@ export class Client {
       scorers = ['exact_match'];
     }
 
-    const body: Record<string, any> = {};
+    const body: Record<string, any> = {
+      component,
+      component_type: componentType,
+    };
     if (inputData !== undefined) body.input = inputData;
     if (options.expected !== undefined) body.expected = options.expected;
     if (scorers && scorers.length > 0) body.scorers = normalizeScorerSpecs(scorers);
@@ -867,5 +989,89 @@ export class Client {
       results,
       durationMs: totalDurationMs,
     });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Event types
+// ---------------------------------------------------------------------------
+
+export interface EventRecord {
+  eventType: string;
+  data: Record<string, any>;
+  timestamp?: string;
+  sequence: number;
+  correlationId?: string;
+}
+
+export interface EventsResponse {
+  events: EventRecord[];
+  runId: string;
+}
+
+// ---------------------------------------------------------------------------
+// WorkflowProxy
+// ---------------------------------------------------------------------------
+
+export class WorkflowProxy {
+  constructor(
+    private client: Client,
+    private workflowName: string,
+  ) {}
+
+  /** Execute the workflow synchronously */
+  async run<T = any>(
+    input?: Record<string, any>,
+    options?: { sessionId?: string; userId?: string },
+  ): Promise<RunResponse<T>> {
+    return this.client.run<T>(this.workflowName, input, {
+      componentType: 'workflow',
+      sessionId: options?.sessionId,
+      userId: options?.userId,
+    });
+  }
+
+  /** Send a message to a chat-enabled workflow */
+  async chat<T = any>(
+    message: string,
+    sessionId?: string,
+    options?: { userId?: string; extra?: Record<string, any> },
+  ): Promise<RunResponse<T>> {
+    const input = { message, ...(options?.extra || {}) };
+    return this.client.run<T>(this.workflowName, input, {
+      componentType: 'workflow',
+      sessionId,
+      userId: options?.userId,
+    });
+  }
+
+  /** Submit the workflow for async execution */
+  async submit(input?: Record<string, any>): Promise<SubmitResponse> {
+    return this.client.submit(this.workflowName, input, { componentType: 'workflow' });
+  }
+
+  /** Stream events from workflow execution */
+  async *events(
+    input?: Record<string, any>,
+  ): AsyncGenerator<ReceivedEvent> {
+    yield* this.client.events(this.workflowName, input, {
+      componentType: 'workflow',
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SessionProxy
+// ---------------------------------------------------------------------------
+
+export class SessionProxy extends EntityProxy {
+  /** Send a chat message to the session entity */
+  async chat(message: string, extra?: Record<string, any>): Promise<any> {
+    return this.call('chat', { message, ...(extra || {}) });
+  }
+
+  /** Get conversation history from the session entity */
+  async getHistory(): Promise<any> {
+    return this.call('get_history', {});
   }
 }

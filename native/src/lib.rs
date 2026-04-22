@@ -21,6 +21,15 @@ mod chat;
 // Language model module
 mod lm;
 
+// MCP client bindings
+mod mcp;
+
+// Memory module (SemanticMemory + GraphMemory)
+mod memory;
+
+// Sandbox module (WasmSandbox + RemoteSandbox)
+mod sandbox;
+
 /// Worker configuration options
 #[napi(object)]
 pub struct WorkerOptions {
@@ -32,7 +41,9 @@ pub struct WorkerOptions {
     pub service_type: Option<String>,
     /// Coordinator endpoint URL
     pub coordinator_endpoint: Option<String>,
-    /// Tenant ID (falls back to AGNT5_TENANT_ID env var)
+    /// Legacy engine routing key (falls back to AGNT5_PROJECT_ID, then
+    /// AGNT5_TENANT_ID). On worker/runtime paths this currently carries
+    /// project identity.
     pub tenant_id: Option<String>,
     /// Deployment ID (falls back to AGNT5_DEPLOYMENT_ID env var)
     pub deployment_id: Option<String>,
@@ -67,6 +78,21 @@ impl From<ComponentInfoData> for ComponentInfo {
     fn from(data: ComponentInfoData) -> Self {
         use agnt5_sdk_core::pb::ComponentType as PbComponentType;
 
+        let config = data.config.unwrap_or_default();
+        let metadata = data.metadata.unwrap_or_default();
+
+        let max_attempts = config.get("max_attempts").and_then(|v| v.parse::<i32>().ok());
+        let initial_interval_ms = config
+            .get("initial_interval_ms")
+            .and_then(|v| v.parse::<i32>().ok());
+        let max_interval_ms = config
+            .get("max_interval_ms")
+            .and_then(|v| v.parse::<i32>().ok());
+        let backoff_type = config.get("backoff_type").cloned();
+        let backoff_multiplier = config
+            .get("backoff_multiplier")
+            .and_then(|v| v.parse::<f64>().ok());
+
         // Parse component type from string (matches proto ComponentType enum)
         let component_type = match data.component_type.to_lowercase().as_str() {
             "function" => PbComponentType::Function as i32,
@@ -87,14 +113,14 @@ impl From<ComponentInfoData> for ComponentInfo {
             component_type,
             input_schema: None,
             output_schema: None,
-            config: data.config.unwrap_or_default(),
-            metadata: data.metadata.unwrap_or_default(),
+            config,
+            metadata,
             definition: data.definition,
-            max_attempts: None,
-            initial_interval_ms: None,
-            max_interval_ms: None,
-            backoff_type: None,
-            backoff_multiplier: None,
+            max_attempts,
+            initial_interval_ms,
+            max_interval_ms,
+            backoff_type,
+            backoff_multiplier,
         }
     }
 }
@@ -161,14 +187,17 @@ impl Worker {
             config.coordinator_endpoint = endpoint;
         }
 
-        // Build service metadata (tenant_id, deployment_id) for checkpoint emission.
-        // emit_checkpoint_sync merges self.metadata into each checkpoint's metadata,
-        // and the EE requires tenant_id to write to journal_events.
+        // Build service metadata for checkpoint emission. During the migration
+        // window we stamp both canonical `project_id` and legacy `tenant_id`.
         let mut metadata = HashMap::new();
-        if let Some(ref tid) = options.tenant_id {
-            metadata.insert("tenant_id".to_string(), tid.clone());
-        } else if let Ok(tid) = std::env::var("AGNT5_TENANT_ID") {
-            metadata.insert("tenant_id".to_string(), tid);
+        let project_id = options
+            .tenant_id
+            .clone()
+            .or_else(|| std::env::var("AGNT5_PROJECT_ID").ok())
+            .or_else(|| std::env::var("AGNT5_TENANT_ID").ok());
+        if let Some(pid) = project_id {
+            metadata.insert("project_id".to_string(), pid.clone());
+            metadata.insert("tenant_id".to_string(), pid);
         }
         if let Some(ref did) = options.deployment_id {
             metadata.insert("deployment_id".to_string(), did.clone());
@@ -219,10 +248,13 @@ impl Worker {
         self.config.coordinator_endpoint.clone()
     }
 
-    /// Get tenant ID from environment (no longer on WorkerConfig)
+    /// Get the legacy engine routing key from environment. On worker/runtime
+    /// paths this currently carries project identity.
     #[napi(getter)]
     pub fn tenant_id(&self) -> String {
-        std::env::var("AGNT5_TENANT_ID").unwrap_or_default()
+        std::env::var("AGNT5_PROJECT_ID")
+            .or_else(|_| std::env::var("AGNT5_TENANT_ID"))
+            .unwrap_or_default()
     }
 
     /// Get deployment ID from environment (no longer on WorkerConfig)
@@ -289,7 +321,11 @@ impl Worker {
             data: event_data.into_bytes(),
             correlation_id,
             parent_correlation_id,
-            tenant_id: Some(std::env::var("AGNT5_TENANT_ID").unwrap_or_default()),
+            tenant_id: Some(
+                std::env::var("AGNT5_PROJECT_ID")
+                    .or_else(|_| std::env::var("AGNT5_TENANT_ID"))
+                    .unwrap_or_default(),
+            ),
             source_timestamp_ns: source_timestamp_ns as i64,
             metadata,
             queued_at: std::time::Instant::now(),
@@ -369,7 +405,7 @@ impl Worker {
             let response_map = response_map.clone();
 
             async move {
-                use agnt5_sdk_core::pb::{runtime_message, service_message, DispatchComponentResponse, dispatch_component_response};
+                use agnt5_sdk_core::pb::runtime_message;
 
                 // Extract DispatchComponentRequest from RuntimeMessage.
                 // Other message types (health checks, checkpoint acks, etc.) are
@@ -427,8 +463,11 @@ impl Worker {
                 // so we use a separate channel (resolveResponse) for the result.
                 handler_clone.call(runtime_msg_data, ThreadsafeFunctionCallMode::NonBlocking);
 
-                // Wait for JS handler to call resolveResponse() (with 5 min timeout)
-                let response_json = tokio::time::timeout(
+                // Wait for JS handler to call resolveResponse() (with 5 min timeout).
+                // We await completion but don't send the response on the bidi stream —
+                // all data flows through WriteCheckpoint to the Engine. The journal
+                // consumer handles load decrement when it sees run.completed/failed.
+                let _response_json = tokio::time::timeout(
                     std::time::Duration::from_secs(300),
                     rx,
                 ).await
@@ -439,57 +478,7 @@ impl Worker {
                         format!("Response channel dropped for invocation {}", invocation_id)
                     ))?;
 
-                // Parse the JSON response
-                let resp: serde_json::Value = serde_json::from_str(&response_json)
-                    .map_err(|e| agnt5_sdk_core::error::SdkError::Internal(
-                        format!("Failed to parse handler response: {}", e)
-                    ))?;
-
-                let invocation_id = resp["invocationId"].as_str().unwrap_or("").to_string();
-                let error_msg = resp["error"].as_str().map(|s| s.to_string());
-                let output_json = resp["outputJson"].as_str().map(|s| s.to_string());
-
-                let dispatch_response = if let Some(err_msg) = error_msg {
-                    // Error response
-                    DispatchComponentResponse {
-                        invocation_id,
-                        success: false,
-                        result: None,
-                        error_message: err_msg,
-                        metadata: HashMap::new(),
-                        event_type: String::new(),
-                        content_index: 0,
-                        sequence: 0,
-                        attempt: 0,
-                        source_timestamp_ns: 0,
-                    }
-                } else {
-                    // Success response
-                    let output_bytes = output_json
-                        .unwrap_or_else(|| "null".to_string())
-                        .into_bytes();
-
-                    DispatchComponentResponse {
-                        invocation_id,
-                        success: true,
-                        result: Some(dispatch_component_response::Result::OutputData(output_bytes)),
-                        error_message: String::new(),
-                        metadata: HashMap::new(),
-                        event_type: String::new(),
-                        content_index: 0,
-                        sequence: 0,
-                        attempt: 0,
-                        source_timestamp_ns: 0,
-                    }
-                };
-
-                let service_msg = ServiceMessage {
-                    worker_id: String::new(), // Will be set by core worker
-                    metadata: HashMap::new(), // Always empty — metadata flows in inner response
-                    message_type: Some(service_message::MessageType::FunctionResponse(dispatch_response)),
-                };
-
-                Ok(Some(service_msg))
+                Ok(None)
             }
         };
 
@@ -724,28 +713,103 @@ impl StateManager {
 }
 
 // =============================================================================
-// OpenTelemetry Span
+// OpenTelemetry Span (backed by sdk-core)
 // =============================================================================
 
-/// OpenTelemetry Span for distributed tracing
+use opentelemetry::trace::{
+    SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
+};
+use opentelemetry::Context as OtelContext;
+
+/// Initialize OpenTelemetry telemetry (OTLP exporter, metrics, logs).
+/// Call once at worker startup before creating any spans.
+#[napi]
+pub fn init_telemetry(service_name: String, service_version: String) -> Result<()> {
+    agnt5_sdk_core::init_telemetry(&service_name, &service_version)
+        .map_err(|e| Error::from_reason(format!("Failed to init telemetry: {}", e)))
+}
+
+/// Shut down OpenTelemetry gracefully, flushing any pending spans.
+#[napi]
+pub fn shutdown_telemetry() {
+    agnt5_sdk_core::shutdown_telemetry();
+}
+
+/// OpenTelemetry Span backed by sdk-core's BoxedSpan.
+/// Provides real distributed tracing via OTLP export.
 #[napi]
 pub struct Span {
-    // For now, we'll use a simple wrapper
-    // In the future, this will wrap sdk-core's telemetry::Span
+    inner: StdMutex<Option<opentelemetry::global::BoxedSpan>>,
     name: String,
-    attributes: Arc<StdMutex<HashMap<String, String>>>,
-    ended: Arc<StdMutex<bool>>,
+    trace_id: String,
+    span_id: String,
+    attributes: StdMutex<HashMap<String, String>>,
 }
 
 #[napi]
 impl Span {
-    /// Create a new span with the given name
+    /// Create a new span with the given name and component type.
+    /// Optionally pass parent trace/span IDs for proper parent-child linking.
     #[napi(factory)]
-    pub fn create(name: String) -> Self {
+    pub fn create(
+        name: String,
+        component_type: Option<String>,
+        parent_trace_id: Option<String>,
+        parent_span_id: Option<String>,
+        attributes: Option<HashMap<String, String>>,
+    ) -> Self {
+        let comp_type = component_type.unwrap_or_else(|| "operation".to_string());
+
+        // Build parent context from trace/span IDs if provided
+        let parent_context = match (&parent_trace_id, &parent_span_id) {
+            (Some(tid), Some(sid)) => {
+                let trace_id = TraceId::from_hex(tid).unwrap_or(TraceId::INVALID);
+                let span_id = SpanId::from_hex(sid).unwrap_or(SpanId::INVALID);
+                if trace_id != TraceId::INVALID && span_id != SpanId::INVALID {
+                    let span_context = SpanContext::new(
+                        trace_id,
+                        span_id,
+                        TraceFlags::SAMPLED,
+                        true, // is_remote
+                        TraceState::default(),
+                    );
+                    Some(OtelContext::new().with_remote_span_context(span_context))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        let metadata = attributes.unwrap_or_default();
+
+        let span = agnt5_sdk_core::create_component_span(
+            &name,
+            &comp_type,
+            "", // service_name — set via init_telemetry global
+            "", // worker_id
+            "", // run_id
+            parent_context,
+            Some(&metadata),
+        );
+
+        // Extract trace_id and span_id from the created span
+        let (trace_id, span_id) = {
+            use opentelemetry::trace::Span as OtelSpan;
+            let ctx = span.span_context();
+            if ctx.is_valid() {
+                (ctx.trace_id().to_string(), ctx.span_id().to_string())
+            } else {
+                (String::new(), String::new())
+            }
+        };
+
         Span {
+            inner: StdMutex::new(Some(span)),
             name,
-            attributes: Arc::new(StdMutex::new(HashMap::new())),
-            ended: Arc::new(StdMutex::new(false)),
+            trace_id,
+            span_id,
+            attributes: StdMutex::new(HashMap::new()),
         }
     }
 
@@ -755,64 +819,99 @@ impl Span {
         self.name.clone()
     }
 
+    /// Get the trace ID (hex string)
+    #[napi(getter)]
+    pub fn trace_id(&self) -> String {
+        self.trace_id.clone()
+    }
+
+    /// Get the span ID (hex string)
+    #[napi(getter)]
+    pub fn span_id(&self) -> String {
+        self.span_id.clone()
+    }
+
     /// Set a string attribute on the span
     #[napi]
     pub fn set_attribute(&self, key: String, value: String) -> Result<()> {
-        let mut attrs = self.attributes.lock()
-            .map_err(|e| Error::from_reason(format!("Failed to lock attributes: {}", e)))?;
-        attrs.insert(key, value);
+        let mut guard = self.inner.lock()
+            .map_err(|e| Error::from_reason(format!("Span mutex poisoned: {}", e)))?;
+        if let Some(ref mut span) = *guard {
+            use opentelemetry::trace::Span as OtelSpan;
+            span.set_attribute(opentelemetry::KeyValue::new(key.clone(), value.clone()));
+        }
+        // Track locally for getAttributes()
+        if let Ok(mut attrs) = self.attributes.lock() {
+            attrs.insert(key, value);
+        }
         Ok(())
     }
 
-    /// Get all attributes
+    /// Get all attributes set on this span
     #[napi]
     pub fn get_attributes(&self) -> Result<HashMap<String, String>> {
         let attrs = self.attributes.lock()
-            .map_err(|e| Error::from_reason(format!("Failed to lock attributes: {}", e)))?;
+            .map_err(|e| Error::from_reason(format!("Span attrs mutex poisoned: {}", e)))?;
         Ok(attrs.clone())
     }
 
     /// Add an event to the span
     #[napi]
     pub fn add_event(&self, name: String, attributes: Option<HashMap<String, String>>) -> Result<()> {
-        // For now, just log it
-        // TODO: connect to sdk-core's telemetry
-        let attrs_str = attributes
-            .map(|a| format!("{:?}", a))
-            .unwrap_or_else(|| "{}".to_string());
-        log::info!("Span event: {} on span '{}' with attributes: {}", name, self.name, attrs_str);
+        let mut guard = self.inner.lock()
+            .map_err(|e| Error::from_reason(format!("Span mutex poisoned: {}", e)))?;
+        if let Some(ref mut span) = *guard {
+            use opentelemetry::trace::Span as OtelSpan;
+            let attrs: Vec<opentelemetry::KeyValue> = attributes
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, v)| opentelemetry::KeyValue::new(k, v))
+                .collect();
+            span.add_event(name, attrs);
+        }
         Ok(())
     }
 
     /// Record an error on the span
     #[napi]
     pub fn record_error(&self, error: String) -> Result<()> {
-        log::error!("Span error on '{}': {}", self.name, error);
-        self.set_attribute("error".to_string(), "true".to_string())?;
-        self.set_attribute("error.message".to_string(), error)?;
+        let mut guard = self.inner.lock()
+            .map_err(|e| Error::from_reason(format!("Span mutex poisoned: {}", e)))?;
+        if let Some(ref mut span) = *guard {
+            use opentelemetry::trace::Span as OtelSpan;
+            span.set_attribute(opentelemetry::KeyValue::new("error", true));
+            span.set_attribute(opentelemetry::KeyValue::new("error.message", error.clone()));
+            span.set_status(opentelemetry::trace::Status::error(error.clone()));
+        }
+        // Track locally for getAttributes()
+        if let Ok(mut attrs) = self.attributes.lock() {
+            attrs.insert("error".to_string(), "true".to_string());
+            attrs.insert("error.message".to_string(), error);
+        }
         Ok(())
     }
 
-    /// End the span
+    /// End the span. Takes ownership of the inner span and drops it.
+    /// Throws if the span has already been ended.
     #[napi]
     pub fn end(&self) -> Result<()> {
-        let mut ended = self.ended.lock()
-            .map_err(|e| Error::from_reason(format!("Failed to lock ended flag: {}", e)))?;
-
-        if *ended {
-            return Err(Error::from_reason("Span already ended"));
+        let mut guard = self.inner.lock()
+            .map_err(|e| Error::from_reason(format!("Span mutex poisoned: {}", e)))?;
+        match guard.take() {
+            Some(mut span) => {
+                use opentelemetry::trace::Span as OtelSpan;
+                span.end();
+                Ok(())
+            }
+            None => Err(Error::from_reason("Span already ended")),
         }
-
-        *ended = true;
-        log::info!("Span ended: {}", self.name);
-        Ok(())
     }
 
-    /// Check if span is ended
+    /// Check if span has been ended
     #[napi]
     pub fn is_ended(&self) -> Result<bool> {
-        let ended = self.ended.lock()
-            .map_err(|e| Error::from_reason(format!("Failed to lock ended flag: {}", e)))?;
-        Ok(*ended)
+        let guard = self.inner.lock()
+            .map_err(|e| Error::from_reason(format!("Span mutex poisoned: {}", e)))?;
+        Ok(guard.is_none())
     }
 }

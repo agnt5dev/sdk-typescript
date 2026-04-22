@@ -9,8 +9,36 @@
  */
 
 import { randomUUID } from 'crypto';
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import type { StateAdapter } from './state.js';
 import { MemoryStateAdapter } from './state.js';
+
+// ─── NAPI binding loader (shared) ────────────────────────────────────
+
+let _napiBindings: any = null;
+let _napiChecked = false;
+
+function getNapiBindings(): any {
+  if (_napiChecked) return _napiBindings;
+  _napiChecked = true;
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const require = createRequire(import.meta.url);
+    const paths = [
+      join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),
+      join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),
+      join(__dirname, '../../native/agnt5-sdk-native.linux-x64-gnu.node'),
+      join(__dirname, '../native/agnt5-sdk-native.linux-x64-gnu.node'),
+    ];
+    for (const p of paths) {
+      try { _napiBindings = require(p); return _napiBindings; } catch { continue; }
+    }
+  } catch { /* NAPI unavailable */ }
+  return null;
+}
 
 // ─── Scopes ──────────────────────────────────────────────────────────
 
@@ -298,6 +326,97 @@ export class SemanticMemory {
   async forget(memoryId: string): Promise<boolean> {
     return this._adapter.forget(this._collection, memoryId);
   }
+
+  /**
+   * Create a SemanticMemory backed by real embeddings + vector DB via NAPI.
+   *
+   * Auto-detects embedder and vector DB from environment variables:
+   * - OPENAI_API_KEY → OpenAI embeddings
+   * - QDRANT_URL, PINECONE_API_KEY, etc. → vector DB
+   *
+   * Falls back to InMemorySemanticAdapter if NAPI is unavailable.
+   */
+  static async fromEnv(scope: MemoryScopeType, scopeId: string): Promise<SemanticMemory> {
+    const bindings = getNapiBindings();
+    if (bindings?.JsSemanticMemory) {
+      try {
+        const nativeMem = await bindings.JsSemanticMemory.fromEnv(scope, scopeId);
+        return new SemanticMemory(scope, scopeId, new NapiSemanticAdapter(nativeMem));
+      } catch {
+        // Fall through to in-memory
+      }
+    }
+    return new SemanticMemory(scope, scopeId);
+  }
+}
+
+/**
+ * SemanticMemoryAdapter backed by NAPI (real embeddings + vector DB).
+ * Used internally by SemanticMemory.fromEnv().
+ */
+class NapiSemanticAdapter implements SemanticMemoryAdapter {
+  private native: any;
+
+  constructor(nativeInstance: any) {
+    this.native = nativeInstance;
+  }
+
+  async store(_collection: string, content: string, metadata?: MemoryMetadata): Promise<string> {
+    if (metadata) {
+      return this.native.storeWithMetadata(content, {
+        source: metadata.source ?? null,
+        createdAt: metadata.createdAt ?? null,
+        extra: Object.keys(metadata.extra).length > 0 ? metadata.extra : null,
+      });
+    }
+    return this.native.store(content);
+  }
+
+  async storeBatch(_collection: string, contents: string[], metadata?: MemoryMetadata[]): Promise<string[]> {
+    // NAPI doesn't expose storeBatch yet — fall back to sequential
+    const ids: string[] = [];
+    for (let i = 0; i < contents.length; i++) {
+      const id = await this.store(_collection, contents[i], metadata?.[i]);
+      ids.push(id);
+    }
+    return ids;
+  }
+
+  async search(_collection: string, query: string, limit: number, minScore?: number): Promise<MemoryResult[]> {
+    const results = minScore != null
+      ? await this.native.searchWithOptions(query, limit, minScore)
+      : await this.native.search(query, limit);
+
+    return results.map((r: any) => ({
+      id: r.id,
+      content: r.content,
+      score: r.score,
+      metadata: {
+        source: r.source ?? undefined,
+        createdAt: r.createdAt ?? undefined,
+        extra: r.extra ?? {},
+      },
+    }));
+  }
+
+  async get(_collection: string, memoryId: string): Promise<MemoryResult | null> {
+    const r = await this.native.get(memoryId);
+    if (!r) return null;
+    return {
+      id: r.id,
+      content: r.content,
+      score: r.score,
+      metadata: {
+        source: r.source ?? undefined,
+        createdAt: r.createdAt ?? undefined,
+        extra: r.extra ?? {},
+      },
+    };
+  }
+
+  async forget(_collection: string, memoryId: string): Promise<boolean> {
+    return this.native.forget(memoryId);
+  }
 }
 
 // ─── Graph Memory ────────────────────────────────────────────────────
@@ -348,9 +467,26 @@ export class GraphMemory {
   // Indices for fast lookup
   private _fromIndex = new Map<string, Set<string>>(); // nodeId -> Set<relId>
   private _toIndex = new Map<string, Set<string>>();   // nodeId -> Set<relId>
+  // NAPI-backed graph (when available)
+  private _native: any = null;
 
   constructor(scope: string) {
     this._scope = scope;
+  }
+
+  /**
+   * Create a GraphMemory backed by the Rust core via NAPI.
+   * Falls back to in-memory JS implementation if NAPI is unavailable.
+   */
+  static fromNapi(scope: string): GraphMemory {
+    const gm = new GraphMemory(scope);
+    const bindings = getNapiBindings();
+    if (bindings?.JsMemoryGraph) {
+      try {
+        gm._native = new bindings.JsMemoryGraph(scope);
+      } catch { /* fall back to JS impl */ }
+    }
+    return gm;
   }
 
   get scope(): string {
@@ -359,6 +495,9 @@ export class GraphMemory {
 
   /** Create or update a node */
   async upsertNode(nodeId: string, nodeType: string, properties?: Record<string, string>): Promise<string> {
+    if (this._native) {
+      return this._native.upsertNode(nodeId, nodeType, properties ?? null);
+    }
     const existing = this._nodes.get(nodeId);
     if (existing) {
       existing.nodeType = nodeType;
@@ -377,11 +516,19 @@ export class GraphMemory {
 
   /** Get a node by ID */
   async getNode(nodeId: string): Promise<GraphNode | null> {
+    if (this._native) {
+      const n = await this._native.getNode(nodeId);
+      if (!n) return null;
+      return { id: n.id, nodeType: n.nodeType, properties: n.properties ?? {} };
+    }
     return this._nodes.get(nodeId) || null;
   }
 
   /** Delete a node and all its relationships */
   async deleteNode(nodeId: string): Promise<boolean> {
+    if (this._native) {
+      return this._native.deleteNode(nodeId);
+    }
     if (!this._nodes.has(nodeId)) return false;
 
     // Remove all relationships involving this node
@@ -416,6 +563,9 @@ export class GraphMemory {
     relationshipType: string,
     properties?: Record<string, string>,
   ): Promise<string> {
+    if (this._native) {
+      return this._native.createRelationship(fromNode, toNode, relationshipType, properties ?? null);
+    }
     const id = randomUUID();
     const rel: GraphRelationship = {
       id,
@@ -445,6 +595,22 @@ export class GraphMemory {
     relationshipType?: string;
     limit?: number;
   }): Promise<GraphRelationship[]> {
+    if (this._native) {
+      const rels = await this._native.queryRelationships(
+        opts?.fromNode ?? null,
+        opts?.toNode ?? null,
+        opts?.relationshipType ?? null,
+        opts?.limit ?? null,
+      );
+      return rels.map((r: any) => ({
+        id: r.id,
+        fromNode: r.fromNode,
+        toNode: r.toNode,
+        relationshipType: r.relationshipType,
+        properties: r.properties ?? {},
+        createdAt: r.createdAt,
+      }));
+    }
     let results: GraphRelationship[] = [];
 
     if (opts?.fromNode) {
@@ -477,6 +643,9 @@ export class GraphMemory {
 
   /** Delete a relationship by ID */
   async deleteRelationship(relationshipId: string): Promise<boolean> {
+    if (this._native) {
+      return this._native.deleteRelationship(relationshipId);
+    }
     const rel = this._relationships.get(relationshipId);
     if (!rel) return false;
 
@@ -500,6 +669,26 @@ export class GraphMemory {
     relationshipTypes?: string[],
     nodeTypes?: string[],
   ): Promise<GraphTraversalResult> {
+    if (this._native) {
+      const result = await this._native.traverse(
+        startNode,
+        depth,
+        relationshipTypes ?? null,
+        nodeTypes ?? null,
+      );
+      return {
+        startNode: result.startNode,
+        nodes: result.nodes.map((n: any) => ({
+          id: n.id, nodeType: n.nodeType, properties: n.properties ?? {},
+        })),
+        relationships: result.relationships.map((r: any) => ({
+          id: r.id, fromNode: r.fromNode, toNode: r.toNode,
+          relationshipType: r.relationshipType,
+          properties: r.properties ?? {}, createdAt: r.createdAt,
+        })),
+        depth: result.depth,
+      };
+    }
     const visitedNodes = new Set<string>();
     const collectedNodes: GraphNode[] = [];
     const collectedRels: GraphRelationship[] = [];

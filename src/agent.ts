@@ -162,6 +162,48 @@ export function handoff(
 }
 
 /**
+ * Global registry for looking up agents by name.
+ *
+ * Provides discovery for multi-agent systems where agents need to find each
+ * other, and for the worker to enumerate registered agents.
+ *
+ * @example
+ * ```typescript
+ * const researcher = new Agent({ name: 'researcher', ... });
+ * // Agent is auto-registered in constructor
+ *
+ * // Look up later
+ * const found = AgentRegistry.get('researcher');
+ * ```
+ */
+export class AgentRegistry {
+  private static agents = new Map<string, Agent>();
+
+  static register(agent: Agent): void {
+    if (this.agents.has(agent.name)) {
+      console.warn(`Overwriting existing agent '${agent.name}'`);
+    }
+    this.agents.set(agent.name, agent);
+  }
+
+  static get(name: string): Agent | undefined {
+    return this.agents.get(name);
+  }
+
+  static all(): Map<string, Agent> {
+    return new Map(this.agents);
+  }
+
+  static listNames(): string[] {
+    return Array.from(this.agents.keys());
+  }
+
+  static clear(): void {
+    this.agents.clear();
+  }
+}
+
+/**
  * Agent configuration options
  */
 export interface AgentOptions {
@@ -231,7 +273,7 @@ export class Agent {
     this.name = options.name;
     this.model = options.model;
     this.instructions = options.instructions;
-    this.modelName = options.modelName || 'gpt-4o-mini';
+    this.modelName = options.modelName || 'openai/gpt-4o-mini';
     this.temperature = options.temperature ?? 0.7;
     this.maxIterations = options.maxIterations || 10;
 
@@ -255,6 +297,9 @@ export class Agent {
         this.tools.set(transferTool.name, transferTool);
       }
     }
+
+    // Auto-register in global registry
+    AgentRegistry.register(this);
   }
 
   /**
@@ -263,6 +308,33 @@ export class Agent {
   private addTool(t: Tool | any): void {
     if (t instanceof Tool) {
       this.tools.set(t.name, t);
+    } else if (t instanceof Agent) {
+      // Agent-as-tool: wrap the agent in a Tool that invokes its run() method
+      // so a coordinator can delegate to specialist agents by name. Mirrors
+      // sdk-python's pattern of passing Agent instances directly in tools.
+      const subAgent = t;
+      const wrapped = new Tool(
+        subAgent.name,
+        `Delegate a task to the ${subAgent.name} agent. Pass the task as the 'message' argument.`,
+        async (ctx: Context, args: Record<string, any>) => {
+          const message = args.message || args.prompt || JSON.stringify(args);
+          const result = await subAgent.run(message, ctx);
+          return result.output;
+        },
+        {
+          inputSchema: {
+            type: 'object',
+            properties: {
+              message: {
+                type: 'string',
+                description: 'The task or question to delegate to this agent',
+              },
+            },
+            required: ['message'],
+          },
+        },
+      );
+      this.tools.set(subAgent.name, wrapped);
     } else if ('name' in t && 'getSchema' in t) {
       this.tools.set(t.name, t);
     } else if ('_tool' in t) {
@@ -488,6 +560,12 @@ export class Agent {
               yield toolCallCompleted(tcId, iterCorrelationId, { toolName, toolCallId: tcId });
               toolResults.push({ tool: toolName, result: resultText, error: null });
             } catch (error) {
+              // HITL: WaitingForUserInputError must propagate to pause the
+              // workflow — do NOT treat it as a tool failure or the LLM will
+              // retry the tool in the next iteration.
+              if ((error as any)?.name === 'WaitingForUserInputError') {
+                throw error;
+              }
               yield toolCallFailed(tcId, iterCorrelationId, {
                 toolName,
                 toolCallId: tcId,
@@ -589,6 +667,19 @@ export class Agent {
       // The last yielded value that has 'output' is the AgentResult
       if ('output' in event && 'toolCalls' in event && 'context' in event) {
         result = event as AgentResult;
+        continue;
+      }
+      // Forward lifecycle events (agent.started/completed/failed, iteration.*,
+      // tool_call.started/completed/failed, output.*) to the platform via the
+      // provided context emitter. Without this, agent.run() called from inside
+      // a function or workflow handler silently swallows every tool-level
+      // event and downstream projections/tests can't see them.
+      if (context) {
+        try {
+          await context.emit(event as any);
+        } catch {
+          // Best effort — emission failures should not break the agent
+        }
       }
     }
 

@@ -8,6 +8,13 @@
  * - AWS Bedrock
  * - Groq
  * - OpenRouter
+ * - DeepSeek
+ * - Google (Gemini)
+ * - Mistral
+ * - Ollama (local LLM)
+ * - xAI (Grok)
+ * - HuggingFace
+ * - OpenAI Chat (custom OpenAI-compatible APIs)
  */
 
 import { createRequire } from 'module';
@@ -169,6 +176,42 @@ export interface OpenRouterConfig {
   baseUrl?: string;
 }
 
+export interface DeepSeekConfig {
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+export interface GoogleConfig {
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+export interface MistralConfig {
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+export interface OllamaConfig {
+  baseUrl?: string;
+  apiKey?: string;
+}
+
+export interface XaiConfig {
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+export interface HuggingFaceConfig {
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+export interface OpenAiChatConfig {
+  apiKey?: string;
+  baseUrl?: string;
+  organization?: string;
+}
+
 // ============================================================================
 // LM Class (TypeScript wrapper)
 // ============================================================================
@@ -279,6 +322,48 @@ export class LM {
   static openrouter(config?: OpenRouterConfig): LM {
     const bindings = loadNativeBindings();
     return new LM(bindings.LanguageModel.openrouter(config));
+  }
+
+  /** Create DeepSeek provider */
+  static deepseek(config?: DeepSeekConfig): LM {
+    const bindings = loadNativeBindings();
+    return new LM(bindings.LanguageModel.deepseek(config));
+  }
+
+  /** Create Google (Gemini) provider */
+  static google(config?: GoogleConfig): LM {
+    const bindings = loadNativeBindings();
+    return new LM(bindings.LanguageModel.google(config));
+  }
+
+  /** Create Mistral provider */
+  static mistral(config?: MistralConfig): LM {
+    const bindings = loadNativeBindings();
+    return new LM(bindings.LanguageModel.mistral(config));
+  }
+
+  /** Create Ollama provider (local LLM) */
+  static ollama(config?: OllamaConfig): LM {
+    const bindings = loadNativeBindings();
+    return new LM(bindings.LanguageModel.ollama(config));
+  }
+
+  /** Create xAI (Grok) provider */
+  static xai(config?: XaiConfig): LM {
+    const bindings = loadNativeBindings();
+    return new LM(bindings.LanguageModel.xai(config));
+  }
+
+  /** Create HuggingFace provider */
+  static huggingface(config?: HuggingFaceConfig): LM {
+    const bindings = loadNativeBindings();
+    return new LM(bindings.LanguageModel.huggingface(config));
+  }
+
+  /** Create OpenAI Chat-compatible provider (for custom OpenAI-compatible APIs) */
+  static openaiChat(config?: OpenAiChatConfig): LM {
+    const bindings = loadNativeBindings();
+    return new LM(bindings.LanguageModel.openaiChat(config));
   }
 
   /**

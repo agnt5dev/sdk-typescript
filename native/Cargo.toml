@@ -1,6 +1,6 @@
 [package]
 name = "agnt5-sdk-native"
-version = "0.1.0"
+version = "0.2.1"
 edition = "2021"
 publish = false
 
@@ -43,6 +43,10 @@ hex = "0.4"
 
 # Futures and streams
 futures-util = "0.3"
+
+[features]
+default = ["wasm-sandbox"]
+wasm-sandbox = ["agnt5-sdk-core/wasm-sandbox"]
 
 [build-dependencies]
 napi-build = "2"

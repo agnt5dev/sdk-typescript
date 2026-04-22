@@ -14,6 +14,8 @@ import { ContextImpl } from './context.js';
 export interface WorkflowConfig {
   name: string;
   handler: WorkflowHandler;
+  /** Cron expression for scheduled execution (e.g., "0 0/6 * * *") */
+  cron?: string;
 }
 
 /**
@@ -67,6 +69,8 @@ export class WorkflowRegistry {
 export interface WorkflowOptions {
   /** Custom workflow name (defaults to function name) */
   name?: string;
+  /** Cron expression for scheduled execution (e.g., "0 0/6 * * *") */
+  cron?: string;
 }
 
 /**
@@ -128,7 +132,8 @@ export function workflow<TInput = any, TOutput = any>(
   // Register workflow
   const config: WorkflowConfig = {
     name: workflowName,
-    handler
+    handler,
+    cron: options.cron,
   };
   WorkflowRegistry.register(config);
 

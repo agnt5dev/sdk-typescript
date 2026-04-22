@@ -365,6 +365,190 @@ export class LLMJudge {
   }
 }
 
+// ─── Trace Assertions ────────────────────────────────────────────
+
+/** Result of checking a single assertion */
+export interface AssertionResult {
+  name: string;
+  passed: boolean;
+  explanation: string;
+}
+
+/** Trace scorer result */
+export interface TraceScorerResult {
+  score: number;
+  passed: boolean;
+  label: string;
+  explanation: string;
+}
+
+/**
+ * Assertion types for glassbox trace evaluation.
+ *
+ * Mirrors the Rust sdk-core TraceAssertion enum.
+ *
+ * @example
+ * ```typescript
+ * const assertions = [
+ *   TraceAssertion.maxTokens(1000),
+ *   TraceAssertion.maxLmCalls(5),
+ *   TraceAssertion.noErrors(),
+ * ];
+ * const result = traceScorer(trace, assertions);
+ * ```
+ */
+export class TraceAssertion {
+  private constructor(
+    private readonly _check: (trace: TraceEvent[]) => AssertionResult,
+  ) {}
+
+  check(trace: TraceEvent[]): AssertionResult {
+    return this._check(trace);
+  }
+
+  /** Assert total tokens used is at most `max`. */
+  static maxTokens(max: number): TraceAssertion {
+    return new TraceAssertion((trace) => {
+      const total = trace
+        .filter(e => e.eventType === 'lm.call.completed')
+        .reduce((sum, e) => sum + (e.data.total_tokens ?? 0), 0);
+      return {
+        name: `max_tokens(${max})`,
+        passed: total <= max,
+        explanation: `Token usage: ${total} (max: ${max})`,
+      };
+    });
+  }
+
+  /** Assert number of LLM calls is at most `max`. */
+  static maxLmCalls(max: number): TraceAssertion {
+    return new TraceAssertion((trace) => {
+      const count = trace.filter(e => e.eventType === 'lm.call.completed').length;
+      return {
+        name: `max_lm_calls(${max})`,
+        passed: count <= max,
+        explanation: `LLM calls: ${count} (max: ${max})`,
+      };
+    });
+  }
+
+  /** Assert events occur in the specified order (subsequence match). */
+  static eventSequence(events: string[]): TraceAssertion {
+    return new TraceAssertion((trace) => {
+      const types = trace.map(e => e.eventType);
+      let j = 0;
+      for (const expected of events) {
+        while (j < types.length && types[j] !== expected) j++;
+        if (j >= types.length) {
+          return {
+            name: 'event_sequence',
+            passed: false,
+            explanation: `Missing event '${expected}' in sequence`,
+          };
+        }
+        j++;
+      }
+      return { name: 'event_sequence', passed: true, explanation: 'All events found in expected order' };
+    });
+  }
+
+  /** Assert a specific step was memoized (retrieved from cache). */
+  static stepMemoized(stepName: string): TraceAssertion {
+    return new TraceAssertion((trace) => {
+      const memoized = trace
+        .filter(e => e.eventType === 'workflow.step.completed' && e.name === stepName)
+        .some(e => e.data.is_memoized === true);
+      return {
+        name: `step_memoized(${stepName})`,
+        passed: memoized,
+        explanation: memoized
+          ? `Step '${stepName}' was memoized`
+          : `Step '${stepName}' was NOT memoized`,
+      };
+    });
+  }
+
+  /** Assert no error events occurred. */
+  static noErrors(): TraceAssertion {
+    const errorTypes = ['run.failed', 'workflow.step.failed', 'agent.failed', 'lm.call.failed', 'function.failed'];
+    return new TraceAssertion((trace) => {
+      const errors = trace.filter(e => errorTypes.includes(e.eventType));
+      return {
+        name: 'no_errors',
+        passed: errors.length === 0,
+        explanation: errors.length === 0 ? 'No error events found' : `Found ${errors.length} error event(s)`,
+      };
+    });
+  }
+
+  /** Assert total duration is under `maxMs` milliseconds. */
+  static durationUnder(maxMs: number): TraceAssertion {
+    return new TraceAssertion((trace) => {
+      if (trace.length === 0) {
+        return { name: `duration_under(${maxMs}ms)`, passed: true, explanation: 'Duration: 0ms (no events)' };
+      }
+      const first = Math.min(...trace.map(e => e.timestampNs));
+      const last = Math.max(...trace.map(e => e.timestampNs));
+      const durationMs = Math.floor((last - first) / 1_000_000);
+      return {
+        name: `duration_under(${maxMs}ms)`,
+        passed: durationMs <= maxMs,
+        explanation: `Duration: ${durationMs}ms (max: ${maxMs}ms)`,
+      };
+    });
+  }
+
+  /** Assert a specific event type occurred at least `min` times. */
+  static eventCount(eventType: string, min: number): TraceAssertion {
+    return new TraceAssertion((trace) => {
+      const count = trace.filter(e => e.eventType === eventType).length;
+      return {
+        name: `event_count(${eventType}, min=${min})`,
+        passed: count >= min,
+        explanation: `Event '${eventType}' occurred ${count} times (min: ${min})`,
+      };
+    });
+  }
+}
+
+/**
+ * Score a trace against multiple assertions.
+ *
+ * @returns TraceScorerResult with aggregate score (proportion of assertions passed)
+ *
+ * @example
+ * ```typescript
+ * const trace = await client.getEvents(runId);
+ * const result = traceScorer(trace.events, [
+ *   TraceAssertion.maxTokens(1000),
+ *   TraceAssertion.noErrors(),
+ * ]);
+ * console.log(`Score: ${result.score}, Passed: ${result.passed}`);
+ * ```
+ */
+export function traceScorer(trace: TraceEvent[], assertions: TraceAssertion[]): TraceScorerResult {
+  if (assertions.length === 0) {
+    return { score: 1.0, passed: true, label: 'pass', explanation: 'No assertions to check' };
+  }
+
+  const results = assertions.map(a => a.check(trace));
+  const passedCount = results.filter(r => r.passed).length;
+  const score = passedCount / results.length;
+  const allPassed = results.every(r => r.passed);
+
+  const failed = results.filter(r => !r.passed);
+  const explanation = failed.length === 0
+    ? 'All assertions passed'
+    : 'Failed assertions:\n' + failed.map(r => `- ${r.name}: ${r.explanation}`).join('\n');
+
+  return {
+    score,
+    passed: allPassed,
+    label: allPassed ? 'pass' : 'fail',
+    explanation,
+  };
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 /**
