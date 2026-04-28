@@ -501,8 +501,7 @@ export class Worker {
         process.env.AGNT5_COORDINATOR_ENDPOINT ||
         'http://localhost:34186',
       tenantId: this.options.tenantId ||
-        process.env.AGNT5_PROJECT_ID ||
-        process.env.AGNT5_TENANT_ID,
+        process.env.AGNT5_PROJECT_ID,
       deploymentId: this.options.deploymentId ||
         process.env.AGNT5_DEPLOYMENT_ID,
     });

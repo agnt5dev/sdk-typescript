@@ -34,7 +34,7 @@ async function main() {
     serviceVersion: '0.1.0',
     serviceType: 'function',
     coordinatorEndpoint: coordinatorUrl,
-    tenantId: process.env.AGNT5_TENANT_ID || 'default',
+    tenantId: process.env.AGNT5_PROJECT_ID || 'default',
     deploymentId: process.env.AGNT5_DEPLOYMENT_ID || 'local',
   });
 
