@@ -41,9 +41,9 @@ pub struct WorkerOptions {
     pub service_type: Option<String>,
     /// Coordinator endpoint URL
     pub coordinator_endpoint: Option<String>,
-    /// Legacy engine routing key (falls back to AGNT5_PROJECT_ID, then
-    /// AGNT5_TENANT_ID). On worker/runtime paths this currently carries
-    /// project identity.
+    /// Legacy engine routing key (falls back to AGNT5_PROJECT_ID). On
+    /// worker/runtime paths this currently carries project identity; the
+    /// metadata key flips to sub-tenant in Phase B of the identity cleanup.
     pub tenant_id: Option<String>,
     /// Deployment ID (falls back to AGNT5_DEPLOYMENT_ID env var)
     pub deployment_id: Option<String>,
@@ -187,17 +187,16 @@ impl Worker {
             config.coordinator_endpoint = endpoint;
         }
 
-        // Build service metadata for checkpoint emission. During the migration
-        // window we stamp both canonical `project_id` and legacy `tenant_id`.
+        // Build service metadata for checkpoint emission. `tenant_id` (the
+        // metadata key) is reserved for the customer sub-tenant carried per
+        // request; static worker metadata only stamps `project_id`.
         let mut metadata = HashMap::new();
         let project_id = options
             .tenant_id
             .clone()
-            .or_else(|| std::env::var("AGNT5_PROJECT_ID").ok())
-            .or_else(|| std::env::var("AGNT5_TENANT_ID").ok());
+            .or_else(|| std::env::var("AGNT5_PROJECT_ID").ok());
         if let Some(pid) = project_id {
-            metadata.insert("project_id".to_string(), pid.clone());
-            metadata.insert("tenant_id".to_string(), pid);
+            metadata.insert("project_id".to_string(), pid);
         }
         if let Some(ref did) = options.deployment_id {
             metadata.insert("deployment_id".to_string(), did.clone());
@@ -249,12 +248,11 @@ impl Worker {
     }
 
     /// Get the legacy engine routing key from environment. On worker/runtime
-    /// paths this currently carries project identity.
+    /// paths this currently carries project identity (read from
+    /// `AGNT5_PROJECT_ID`).
     #[napi(getter)]
     pub fn tenant_id(&self) -> String {
-        std::env::var("AGNT5_PROJECT_ID")
-            .or_else(|_| std::env::var("AGNT5_TENANT_ID"))
-            .unwrap_or_default()
+        std::env::var("AGNT5_PROJECT_ID").unwrap_or_default()
     }
 
     /// Get deployment ID from environment (no longer on WorkerConfig)
@@ -321,11 +319,7 @@ impl Worker {
             data: event_data.into_bytes(),
             correlation_id,
             parent_correlation_id,
-            tenant_id: Some(
-                std::env::var("AGNT5_PROJECT_ID")
-                    .or_else(|_| std::env::var("AGNT5_TENANT_ID"))
-                    .unwrap_or_default(),
-            ),
+            tenant_id: Some(std::env::var("AGNT5_PROJECT_ID").unwrap_or_default()),
             source_timestamp_ns: source_timestamp_ns as i64,
             metadata,
             queued_at: std::time::Instant::now(),
