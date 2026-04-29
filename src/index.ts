@@ -81,8 +81,8 @@ export { MCPServer, MCPServerError, Prompt, Resource } from './mcp-server.js';
 
 
 // Workflow exports
-export { workflow, WorkflowRegistry } from './workflow.js';
-export type { WorkflowConfig, WorkflowOptions } from './workflow.js';
+export { event, workflow, WorkflowRegistry } from './workflow.js';
+export type { EventTriggerOptions, TriggerSpec, WorkflowConfig, WorkflowOptions } from './workflow.js';
 export {
   parallel,
   gather,
@@ -103,14 +103,20 @@ export { ChatBot } from './chat.js';
 export type { SlackConfig, DiscordConfig, TeamsConfig, TelegramConfig, PlatformConfig, ChatEvent, ChatMessage, ChatUser, ChatEventHandler } from './chat.js';
 
 // Agent exports
-export { Agent, AgentRegistry, MessageRole, Message, Handoff, handoff } from './agent.js';
+export { Agent, AgentRegistry, MessageRole, Message, Handoff, handoff, callbackOverride } from './agent.js';
 export type {
+  AgentCallbackContext,
+  AgentCallbacks,
   Message as IMessage,
   ToolCall,
+  ToolCallbackContext,
   TokenUsage,
+  ModelCallbackContext,
   GenerationConfig,
   GenerateRequest,
   GenerateResponse,
+  MaybePromise,
+  CallbackOverride,
   LanguageModel,
   AgentResult,
   AgentOptions

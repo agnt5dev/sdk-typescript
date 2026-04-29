@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { workflow, WorkflowRegistry } from '../workflow.js';
+import { event, workflow, WorkflowRegistry } from '../workflow.js';
 import { ContextImpl } from '../context.js';
 
 describe('Workflow', () => {
@@ -16,6 +16,21 @@ describe('Workflow', () => {
     const registered = WorkflowRegistry.get('test_workflow');
     expect(registered).toBeDefined();
     expect(registered?.name).toBe('test_workflow');
+  });
+
+  it('should register event triggers', () => {
+    workflow(
+      'user_created',
+      async (_ctx) => undefined,
+      { triggers: [event('user.created')] }
+    );
+
+    const registered = WorkflowRegistry.get('user_created');
+    expect(registered?.triggers).toHaveLength(1);
+    expect(registered?.triggers?.[0]).toMatchObject({
+      triggerType: 'event',
+      eventName: 'user.created',
+    });
   });
 
   it('should execute workflow with context', async () => {

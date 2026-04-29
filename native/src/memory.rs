@@ -2,8 +2,8 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex as TokioMutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex as TokioMutex;
 
 use agnt5_sdk_core::memory::{
     MemoryMetadata, MemoryResult as CoreMemoryResult, MemoryScope as CoreMemoryScope,
@@ -295,7 +295,9 @@ impl JsMemoryGraph {
     pub async fn delete_node(&self, node_id: String) -> Result<bool> {
         let mut graph = self.inner.lock().await;
         let removed_node = graph.nodes.remove(&node_id).is_some();
-        graph.relationships.retain(|_, rel| rel.from_node != node_id && rel.to_node != node_id);
+        graph
+            .relationships
+            .retain(|_, rel| rel.from_node != node_id && rel.to_node != node_id);
         Ok(removed_node)
     }
 
@@ -310,7 +312,9 @@ impl JsMemoryGraph {
     ) -> Result<String> {
         let mut graph = self.inner.lock().await;
         if !graph.nodes.contains_key(&from_node) || !graph.nodes.contains_key(&to_node) {
-            return Err(Error::from_reason("create_relationship failed: missing node"));
+            return Err(Error::from_reason(
+                "create_relationship failed: missing node",
+            ));
         }
 
         let relationship_id = format!("rel-{}", graph.relationships.len() + 1);
@@ -341,9 +345,19 @@ impl JsMemoryGraph {
         let mut rels: Vec<JsGraphRelationship> = graph
             .relationships
             .values()
-            .filter(|rel| from_node.as_ref().map(|v| &rel.from_node == v).unwrap_or(true))
+            .filter(|rel| {
+                from_node
+                    .as_ref()
+                    .map(|v| &rel.from_node == v)
+                    .unwrap_or(true)
+            })
             .filter(|rel| to_node.as_ref().map(|v| &rel.to_node == v).unwrap_or(true))
-            .filter(|rel| relationship_type.as_ref().map(|v| &rel.relationship_type == v).unwrap_or(true))
+            .filter(|rel| {
+                relationship_type
+                    .as_ref()
+                    .map(|v| &rel.relationship_type == v)
+                    .unwrap_or(true)
+            })
             .cloned()
             .collect();
         rels.truncate(limit.map(|v| v.max(0) as usize).unwrap_or(100));
@@ -383,7 +397,11 @@ impl JsMemoryGraph {
             }
 
             if let Some(node) = graph.nodes.get(&node_id) {
-                if node_types.as_ref().map(|types| types.contains(&node.node_type)).unwrap_or(true) {
+                if node_types
+                    .as_ref()
+                    .map(|types| types.contains(&node.node_type))
+                    .unwrap_or(true)
+                {
                     nodes.push(node.clone());
                 }
             }

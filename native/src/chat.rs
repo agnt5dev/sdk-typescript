@@ -284,8 +284,7 @@ pub fn verify_webhook(
 #[napi]
 pub fn parse_event(platform: JsPlatform, body: Buffer) -> Result<JsChatEvent> {
     let p: chat::Platform = platform.into();
-    let event = chat::parse_event(&p, &body)
-        .map_err(|e| Error::from_reason(e.to_string()))?;
+    let event = chat::parse_event(&p, &body).map_err(|e| Error::from_reason(e.to_string()))?;
     Ok(JsChatEvent::from(&event))
 }
 
@@ -297,13 +296,7 @@ pub fn slack_post_message(
     text: String,
     thread_ts: Option<String>,
 ) -> JsPlatformRequest {
-    chat::request_builder::slack_post_message(
-        &token,
-        &channel,
-        &text,
-        thread_ts.as_deref(),
-    )
-    .into()
+    chat::request_builder::slack_post_message(&token, &channel, &text, thread_ts.as_deref()).into()
 }
 
 /// Build a Slack chat.update request (for streaming post-then-edit).

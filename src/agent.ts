@@ -127,6 +127,71 @@ export interface AgentResult {
   handoffMetadata: Record<string, any>;
 }
 
+export type MaybePromise<T> = T | Promise<T>;
+
+export interface CallbackOverride<T = any> {
+  readonly __agnt5CallbackOverride: true;
+  readonly value: T;
+}
+
+export function callbackOverride<T>(value: T): CallbackOverride<T> {
+  return { __agnt5CallbackOverride: true, value };
+}
+
+export interface AgentCallbackContext {
+  agent: Agent;
+  context: Context;
+  userMessage: string;
+  history?: Message[];
+}
+
+export interface ModelCallbackContext {
+  agent: Agent;
+  context: Context;
+  iteration: number;
+  messages: Message[];
+  toolDefs: ToolSchema[];
+}
+
+export interface ToolCallbackContext {
+  agent: Agent;
+  context: Context;
+  iteration: number;
+  toolName: string;
+  toolCallId: string;
+  toolCall: ToolCall;
+  args: Record<string, any>;
+  tool?: Tool;
+}
+
+export interface AgentCallbacks {
+  beforeAgent?: (
+    ctx: AgentCallbackContext,
+  ) => MaybePromise<AgentResult | string | Record<string, any> | CallbackOverride | void>;
+  afterAgent?: (
+    ctx: AgentCallbackContext,
+    result: AgentResult,
+  ) => MaybePromise<AgentResult | string | Record<string, any> | CallbackOverride | void>;
+  beforeModel?: (
+    ctx: ModelCallbackContext,
+    request: GenerateRequest | LMGenerateRequest,
+  ) => MaybePromise<GenerateResponse | LMGenerateResponse | CallbackOverride | void>;
+  afterModel?: (
+    ctx: ModelCallbackContext,
+    request: GenerateRequest | LMGenerateRequest,
+    response: GenerateResponse,
+  ) => MaybePromise<GenerateResponse | LMGenerateResponse | CallbackOverride | void>;
+  beforeTool?: (
+    ctx: ToolCallbackContext,
+    call: ToolCall,
+  ) => MaybePromise<any | CallbackOverride | void>;
+  afterTool?: (
+    ctx: ToolCallbackContext,
+    call: ToolCall,
+    result: any,
+  ) => MaybePromise<any | CallbackOverride | void>;
+}
+
 /**
  * Handoff configuration for agent-to-agent delegation
  */
@@ -223,6 +288,8 @@ export interface AgentOptions {
   temperature?: number;
   /** Maximum reasoning iterations */
   maxIterations?: number;
+  /** Execution callbacks for agent/model/tool interception */
+  callbacks?: AgentCallbacks;
 }
 
 /**
@@ -268,6 +335,7 @@ export class Agent {
   private tools: Map<string, Tool> = new Map();
   private handoffs: Handoff[] = [];
   private isNewLM: boolean;
+  private callbacks: AgentCallbacks;
 
   constructor(options: AgentOptions) {
     this.name = options.name;
@@ -276,6 +344,7 @@ export class Agent {
     this.modelName = options.modelName || 'openai/gpt-4o-mini';
     this.temperature = options.temperature ?? 0.7;
     this.maxIterations = options.maxIterations || 10;
+    this.callbacks = options.callbacks || {};
 
     // Detect if it's the new LM class (has static factory methods)
     this.isNewLM = 'generate' in options.model && !('stream' in (options.model as any).constructor);
@@ -395,14 +464,65 @@ export class Agent {
     };
   }
 
-  /**
-   * Generate using the model (handles both old and new LM types)
-   */
-  private async generateWithModel(messages: Message[], toolDefs: ToolSchema[]): Promise<GenerateResponse> {
+  private isCallbackOverride(value: any): value is CallbackOverride {
+    return Boolean(value && typeof value === 'object' && value.__agnt5CallbackOverride === true);
+  }
+
+  private callbackValue(value: any): { hasValue: boolean; value: any } {
+    if (this.isCallbackOverride(value)) {
+      return { hasValue: true, value: value.value };
+    }
+    if (value === undefined) {
+      return { hasValue: false, value: undefined };
+    }
+    return { hasValue: true, value };
+  }
+
+  private agentResultFromCallback(value: any, ctx: Context): AgentResult {
+    if (value && typeof value === 'object' && 'output' in value && 'toolCalls' in value && 'context' in value) {
+      return value as AgentResult;
+    }
+
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const outputValue = 'output' in value ? value.output : value;
+      return {
+        output: typeof outputValue === 'string' ? outputValue : JSON.stringify(outputValue),
+        toolCalls: value.toolCalls || value.tool_calls || [],
+        context: ctx,
+        handoffTo: value.handoffTo || value.handoff_to || null,
+        handoffMetadata: value.handoffTo || value.handoff_to ? value : {},
+      };
+    }
+
+    return {
+      output: typeof value === 'string' ? value : JSON.stringify(value),
+      toolCalls: [],
+      context: ctx,
+      handoffTo: null,
+      handoffMetadata: {},
+    };
+  }
+
+  private normalizeGenerateResponse(response: GenerateResponse | LMGenerateResponse | any): GenerateResponse {
+    if (!response || typeof response !== 'object') {
+      throw new TypeError('model callbacks must return a generate response object');
+    }
+
+    return {
+      text: response.text ?? '',
+      usage: response.usage ? {
+        promptTokens: response.usage.promptTokens ?? response.usage.prompt_tokens ?? 0,
+        completionTokens: response.usage.completionTokens ?? response.usage.completion_tokens ?? 0,
+        totalTokens: response.usage.totalTokens ?? response.usage.total_tokens ?? 0,
+      } : undefined,
+      finishReason: response.finishReason ?? response.finish_reason,
+      toolCalls: response.toolCalls ?? response.tool_calls,
+    };
+  }
+
+  private buildModelRequest(messages: Message[], toolDefs: ToolSchema[]): GenerateRequest | LMGenerateRequest {
     if (this.isNewLM) {
-      // New LM class - use new types
-      const lm = this.model as LM;
-      const request: LMGenerateRequest = {
+      return {
         model: this.modelName,
         systemPrompt: this.instructions,
         messages: messages as LMMessage[],
@@ -410,36 +530,137 @@ export class Agent {
         config: {
           temperature: this.temperature,
         },
-      };
-
-      const response = await lm.generate(request);
-
-      // Convert response to old format
-      return {
-        text: response.text,
-        usage: response.usage ? {
-          promptTokens: response.usage.promptTokens || 0,
-          completionTokens: response.usage.completionTokens || 0,
-          totalTokens: response.usage.totalTokens || 0,
-        } : undefined,
-        finishReason: response.finishReason,
-        toolCalls: response.toolCalls,
-      };
-    } else {
-      // Legacy LanguageModel - use old types
-      const legacyModel = this.model as LanguageModel;
-      const request: GenerateRequest = {
-        model: this.modelName,
-        systemPrompt: this.instructions,
-        messages,
-        tools: toolDefs.length > 0 ? toolDefs : undefined,
-        config: {
-          temperature: this.temperature,
-        },
-      };
-
-      return await legacyModel.generate(request);
+      } satisfies LMGenerateRequest;
     }
+
+    return {
+      model: this.modelName,
+      systemPrompt: this.instructions,
+      messages,
+      tools: toolDefs.length > 0 ? toolDefs : undefined,
+      config: {
+        temperature: this.temperature,
+      },
+    } satisfies GenerateRequest;
+  }
+
+  private async dispatchModelRequest(request: GenerateRequest | LMGenerateRequest): Promise<GenerateResponse> {
+    if (this.isNewLM) {
+      const lm = this.model as LM;
+      return this.normalizeGenerateResponse(await lm.generate(request as LMGenerateRequest));
+    }
+
+    const legacyModel = this.model as LanguageModel;
+    return this.normalizeGenerateResponse(await legacyModel.generate(request as GenerateRequest));
+  }
+
+  /**
+   * Generate using the model (handles both old and new LM types)
+   */
+  private async generateWithModel(
+    messages: Message[],
+    toolDefs: ToolSchema[],
+    callbackContext?: { context: Context; iteration: number },
+  ): Promise<GenerateResponse> {
+    const request = this.buildModelRequest(messages, toolDefs);
+
+    if (!callbackContext) {
+      return this.dispatchModelRequest(request);
+    }
+
+    const modelCtx: ModelCallbackContext = {
+      agent: this,
+      context: callbackContext.context,
+      iteration: callbackContext.iteration,
+      messages,
+      toolDefs,
+    };
+
+    let response: GenerateResponse | undefined;
+    if (this.callbacks.beforeModel) {
+      const raw = await this.callbacks.beforeModel(modelCtx, request);
+      const resolved = this.callbackValue(raw);
+      if (resolved.hasValue) {
+        response = this.normalizeGenerateResponse(resolved.value);
+      }
+    }
+
+    if (!response) {
+      response = await this.dispatchModelRequest(request);
+    }
+
+    if (this.callbacks.afterModel) {
+      const raw = await this.callbacks.afterModel(modelCtx, request, response);
+      const resolved = this.callbackValue(raw);
+      if (resolved.hasValue) {
+        response = this.normalizeGenerateResponse(resolved.value);
+      }
+    }
+
+    return response;
+  }
+
+  private async runBeforeAgentCallback(
+    ctx: Context,
+    userMessage: string,
+    history?: Message[],
+  ): Promise<AgentResult | undefined> {
+    if (!this.callbacks.beforeAgent) return undefined;
+
+    const raw = await this.callbacks.beforeAgent({
+      agent: this,
+      context: ctx,
+      userMessage,
+      history,
+    });
+    const resolved = this.callbackValue(raw);
+    return resolved.hasValue ? this.agentResultFromCallback(resolved.value, ctx) : undefined;
+  }
+
+  private async runAfterAgentCallback(
+    ctx: Context,
+    userMessage: string,
+    history: Message[] | undefined,
+    result: AgentResult,
+  ): Promise<AgentResult> {
+    if (!this.callbacks.afterAgent) return result;
+
+    const raw = await this.callbacks.afterAgent({
+      agent: this,
+      context: ctx,
+      userMessage,
+      history,
+    }, result);
+    const resolved = this.callbackValue(raw);
+    return resolved.hasValue ? this.agentResultFromCallback(resolved.value, ctx) : result;
+  }
+
+  private async invokeToolWithCallbacks(
+    toolCtx: ToolCallbackContext,
+  ): Promise<any> {
+    if (this.callbacks.beforeTool) {
+      const raw = await this.callbacks.beforeTool(toolCtx, toolCtx.toolCall);
+      const resolved = this.callbackValue(raw);
+      if (resolved.hasValue) {
+        return resolved.value;
+      }
+    }
+
+    if (!toolCtx.tool) {
+      throw new Error(`Tool '${toolCtx.toolName}' not found`);
+    }
+
+    let result = await toolCtx.tool.invoke(toolCtx.context, toolCtx.args);
+
+    if (this.callbacks.afterTool) {
+      const raw = await this.callbacks.afterTool(toolCtx, toolCtx.toolCall, result);
+      const resolved = this.callbackValue(raw);
+      if (resolved.hasValue) {
+        result = resolved.value;
+      }
+    }
+
+    return result;
   }
 
   /**
@@ -487,6 +708,18 @@ export class Agent {
     let completedIterations = 0;
 
     try {
+      const beforeAgentResult = await this.runBeforeAgentCallback(ctx, userMessage, history);
+      if (beforeAgentResult) {
+        yield agentCompleted(this.name, agentCorrelationId, {
+          iterations: 0,
+          toolCallsCount: beforeAgentResult.toolCalls.length,
+          handoffTo: beforeAgentResult.handoffTo,
+          outputLength: beforeAgentResult.output.length,
+        });
+        yield beforeAgentResult;
+        return;
+      }
+
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
         const iterCorrelationId = randomUUID();
 
@@ -498,7 +731,10 @@ export class Agent {
 
         // Build tool definitions and call LLM
         const toolDefs = Array.from(this.tools.values()).map(t => t.getSchema());
-        const response = await this.generateWithModel(messages, toolDefs);
+        const response = await this.generateWithModel(messages, toolDefs, {
+          context: ctx,
+          iteration: iteration + 1,
+        });
 
         messages.push(Message.assistant(response.text));
 
@@ -529,26 +765,36 @@ export class Agent {
                 continue;
               }
 
-              const result = await tool.invoke(ctx, toolArgs);
+              const result = await this.invokeToolWithCallbacks({
+                agent: this,
+                context: ctx,
+                iteration: iteration + 1,
+                toolName,
+                toolCallId: tc.id || tcId,
+                toolCall: { ...tc, id: tc.id || tcId },
+                args: toolArgs,
+                tool,
+              });
 
               // ── Handoff detection ──
               if (result && typeof result === 'object' && (result as any)._handoff) {
                 yield toolCallCompleted(tcId, iterCorrelationId, { toolName, toolCallId: tcId });
 
                 completedIterations = iteration + 1;
-                const handoffResult: AgentResult = {
+                let handoffResult: AgentResult = {
                   output: (result as any).output,
                   toolCalls: [...allToolCalls, ...((result as any).tool_calls || [])],
                   context: ctx,
                   handoffTo: (result as any).to_agent,
                   handoffMetadata: result as Record<string, any>,
                 };
+                handoffResult = await this.runAfterAgentCallback(ctx, userMessage, history, handoffResult);
 
                 // ── AgentCompleted (with handoff) ──
                 yield agentCompleted(this.name, agentCorrelationId, {
                   iterations: completedIterations,
                   toolCallsCount: allToolCalls.length,
-                  handoffTo: (result as any).to_agent,
+                  handoffTo: handoffResult.handoffTo,
                   outputLength: handoffResult.output.length,
                 });
 
@@ -600,21 +846,22 @@ export class Agent {
             toolCallsCount: 0,
           });
 
-          // ── AgentCompleted ──
-          yield agentCompleted(this.name, agentCorrelationId, {
-            iterations: completedIterations,
-            toolCallsCount: allToolCalls.length,
-            handoffTo: null,
-            outputLength: response.text.length,
-          });
-
-          yield {
+          let agentResult: AgentResult = {
             output: response.text,
             toolCalls: allToolCalls,
             context: ctx,
             handoffTo: null,
             handoffMetadata: {},
-          } satisfies AgentResult;
+          };
+          agentResult = await this.runAfterAgentCallback(ctx, userMessage, history, agentResult);
+          // ── AgentCompleted ──
+          yield agentCompleted(this.name, agentCorrelationId, {
+            iterations: completedIterations,
+            toolCallsCount: agentResult.toolCalls.length,
+            handoffTo: agentResult.handoffTo,
+            outputLength: agentResult.output.length,
+          });
+          yield agentResult;
           return;
         }
       }
@@ -623,20 +870,23 @@ export class Agent {
       completedIterations = this.maxIterations;
       const finalOutput = messages[messages.length - 1]?.content || 'No output generated';
 
-      yield agentCompleted(this.name, agentCorrelationId, {
-        iterations: completedIterations,
-        toolCallsCount: allToolCalls.length,
-        handoffTo: null,
-        outputLength: finalOutput.length,
-      });
-
-      yield {
+      let agentResult: AgentResult = {
         output: finalOutput,
         toolCalls: allToolCalls,
         context: ctx,
         handoffTo: null,
         handoffMetadata: {},
-      } satisfies AgentResult;
+      };
+      agentResult = await this.runAfterAgentCallback(ctx, userMessage, history, agentResult);
+
+      yield agentCompleted(this.name, agentCorrelationId, {
+        iterations: completedIterations,
+        toolCallsCount: agentResult.toolCalls.length,
+        handoffTo: agentResult.handoffTo,
+        outputLength: agentResult.output.length,
+      });
+
+      yield agentResult;
     } catch (error) {
       yield agentFailed(this.name, agentCorrelationId, {
         iterations: completedIterations,

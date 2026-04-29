@@ -200,7 +200,10 @@ fn parse_server_config(config: Value) -> Result<ServerConfig> {
                     .collect::<HashMap<_, _>>()
             })
             .unwrap_or_default();
-        let cwd = obj.get("cwd").and_then(Value::as_str).map(ToOwned::to_owned);
+        let cwd = obj
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
 
         return Ok(ServerConfig::Stdio(StdioConfig {
             command: command.to_string(),

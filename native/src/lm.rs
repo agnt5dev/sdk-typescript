@@ -1,27 +1,56 @@
-use napi::bindgen_prelude::*;
-use napi_derive::napi;
-use napi::threadsafe_function::{ThreadsafeFunction, ErrorStrategy};
-use std::env;
 use futures_util::StreamExt;
+use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction};
+use napi_derive::napi;
 use serde_json::Value;
+use std::env;
 
-use agnt5_sdk_core::lm::{
-    AnthropicProvider, AzureOpenAiProvider, BedrockProvider, GenerateRequest, GenerateResponse,
-    GenerationConfig, GroqProvider, JsonSchemaFormat, Message, MessageRole, OpenAiProvider,
-    OpenRouterProvider, ResponseFormat, StreamChunk, StreamHandle, TokenUsage,
-    ToolChoice, ToolDefinition, ReasoningEffort, Modality, BuiltInTool,
-    AnthropicConfig, AzureOpenAiConfig, BedrockConfig, GroqConfig, OpenAiConfig, OpenRouterConfig,
-    // Additional providers
-    DeepSeekProvider, DeepSeekConfig,
-    GoogleProvider, GoogleConfig,
-    MistralProvider, MistralConfig,
-    OllamaProvider, OllamaConfig,
-    XaiProvider, XaiConfig,
-    HuggingFaceProvider, HuggingFaceConfig,
-    OpenAiChatProvider, OpenAiChatConfig,
-    LanguageModel as LMTrait,
-};
 use agnt5_sdk_core::error::Result as SdkResult;
+use agnt5_sdk_core::lm::{
+    AnthropicConfig,
+    AnthropicProvider,
+    AzureOpenAiConfig,
+    AzureOpenAiProvider,
+    BedrockConfig,
+    BedrockProvider,
+    BuiltInTool,
+    DeepSeekConfig,
+    // Additional providers
+    DeepSeekProvider,
+    GenerateRequest,
+    GenerateResponse,
+    GenerationConfig,
+    GoogleConfig,
+    GoogleProvider,
+    GroqConfig,
+    GroqProvider,
+    HuggingFaceConfig,
+    HuggingFaceProvider,
+    JsonSchemaFormat,
+    LanguageModel as LMTrait,
+    Message,
+    MessageRole,
+    MistralConfig,
+    MistralProvider,
+    Modality,
+    OllamaConfig,
+    OllamaProvider,
+    OpenAiChatConfig,
+    OpenAiChatProvider,
+    OpenAiConfig,
+    OpenAiProvider,
+    OpenRouterConfig,
+    OpenRouterProvider,
+    ReasoningEffort,
+    ResponseFormat,
+    StreamChunk,
+    StreamHandle,
+    TokenUsage,
+    ToolChoice,
+    ToolDefinition,
+    XaiConfig,
+    XaiProvider,
+};
 
 // ============================================================================
 // Provider Enum
@@ -156,12 +185,14 @@ impl TryFrom<JsToolDefinition> for ToolDefinition {
     type Error = Error;
 
     fn try_from(tool: JsToolDefinition) -> Result<Self> {
-        let parameters = if let Some(params_str) = tool.parameters {
-            Some(serde_json::from_str::<Value>(&params_str)
-                .map_err(|e| Error::from_reason(format!("Invalid tool parameters JSON: {}", e)))?)
-        } else {
-            None
-        };
+        let parameters =
+            if let Some(params_str) = tool.parameters {
+                Some(serde_json::from_str::<Value>(&params_str).map_err(|e| {
+                    Error::from_reason(format!("Invalid tool parameters JSON: {}", e))
+                })?)
+            } else {
+                None
+            };
 
         Ok(ToolDefinition {
             name: tool.name,
@@ -238,9 +269,11 @@ impl TryFrom<JsResponseFormatOption> for ResponseFormat {
             "text" => Ok(ResponseFormat::Text),
             "json" => Ok(ResponseFormat::Json),
             "json_schema" => {
-                let name = format.schema_name
-                    .ok_or_else(|| Error::from_reason("schema_name required for json_schema format"))?;
-                let schema_str = format.schema
+                let name = format.schema_name.ok_or_else(|| {
+                    Error::from_reason("schema_name required for json_schema format")
+                })?;
+                let schema_str = format
+                    .schema
                     .ok_or_else(|| Error::from_reason("schema required for json_schema format"))?;
                 let schema = serde_json::from_str::<Value>(&schema_str)
                     .map_err(|e| Error::from_reason(format!("Invalid schema JSON: {}", e)))?;
@@ -328,36 +361,38 @@ impl TryFrom<JsGenerationConfig> for GenerationConfig {
             ResponseFormat::default()
         };
 
-        let reasoning_effort = config.reasoning_effort.map(|effort| {
-            match effort.as_str() {
-                "minimal" => ReasoningEffort::Minimal,
-                "medium" => ReasoningEffort::Medium,
-                "high" => ReasoningEffort::High,
-                _ => ReasoningEffort::Medium,
-            }
+        let reasoning_effort = config.reasoning_effort.map(|effort| match effort.as_str() {
+            "minimal" => ReasoningEffort::Minimal,
+            "medium" => ReasoningEffort::Medium,
+            "high" => ReasoningEffort::High,
+            _ => ReasoningEffort::Medium,
         });
 
         let modalities = config.modalities.map(|mods| {
-            mods.iter().filter_map(|m| {
-                match m.as_str() {
+            mods.iter()
+                .filter_map(|m| match m.as_str() {
                     "text" => Some(Modality::Text),
                     "audio" => Some(Modality::Audio),
                     "image" => Some(Modality::Image),
                     _ => None,
-                }
-            }).collect()
+                })
+                .collect()
         });
 
-        let built_in_tools = config.built_in_tools.map(|tools| {
-            tools.iter().filter_map(|t| {
-                match t.as_str() {
-                    "web_search" => Some(BuiltInTool::WebSearch),
-                    "code_interpreter" => Some(BuiltInTool::CodeInterpreter),
-                    "file_search" => Some(BuiltInTool::FileSearch),
-                    _ => None,
-                }
-            }).collect()
-        }).unwrap_or_default();
+        let built_in_tools = config
+            .built_in_tools
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(|t| match t.as_str() {
+                        "web_search" => Some(BuiltInTool::WebSearch),
+                        "code_interpreter" => Some(BuiltInTool::CodeInterpreter),
+                        "file_search" => Some(BuiltInTool::FileSearch),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
         Ok(GenerationConfig {
             temperature: config.temperature.map(|t| t as f32),
@@ -394,7 +429,8 @@ impl TryFrom<JsGenerateRequest> for GenerateRequest {
         let messages: Vec<Message> = req.messages.into_iter().map(|m| m.into()).collect();
 
         let tools: Vec<ToolDefinition> = if let Some(js_tools) = req.tools {
-            js_tools.into_iter()
+            js_tools
+                .into_iter()
                 .map(|t| t.try_into())
                 .collect::<Result<Vec<_>>>()?
         } else {
@@ -455,14 +491,20 @@ pub struct JsGenerateResponse {
 impl From<GenerateResponse> for JsGenerateResponse {
     fn from(resp: GenerateResponse) -> Self {
         let tool_calls = resp.tool_calls.map(|calls| {
-            calls.into_iter().map(|call| JsToolCall {
-                id: call.id,
-                name: call.name,
-                arguments: call.arguments,
-            }).collect()
+            calls
+                .into_iter()
+                .map(|call| JsToolCall {
+                    id: call.id,
+                    name: call.name,
+                    arguments: call.arguments,
+                })
+                .collect()
         });
 
-        let raw = resp.raw.map(|value| serde_json::to_string(&value).ok()).flatten();
+        let raw = resp
+            .raw
+            .map(|value| serde_json::to_string(&value).ok())
+            .flatten();
 
         JsGenerateResponse {
             id: resp.id,
@@ -497,13 +539,17 @@ pub struct JsOpenAiConfig {
 
 impl From<JsOpenAiConfig> for OpenAiConfig {
     fn from(config: JsOpenAiConfig) -> Self {
-        let api_key = config.api_key
+        let api_key = config
+            .api_key
             .or_else(|| env::var("OPENAI_API_KEY").ok())
             .unwrap_or_else(|| "".to_string());
 
         let mut cfg = OpenAiConfig::new(api_key);
 
-        if let Some(org) = config.organization_id.or_else(|| env::var("OPENAI_ORG_ID").ok()) {
+        if let Some(org) = config
+            .organization_id
+            .or_else(|| env::var("OPENAI_ORG_ID").ok())
+        {
             cfg.organization = Some(org);
         }
 
@@ -523,7 +569,8 @@ pub struct JsAnthropicConfig {
 
 impl From<JsAnthropicConfig> for AnthropicConfig {
     fn from(config: JsAnthropicConfig) -> Self {
-        let api_key = config.api_key
+        let api_key = config
+            .api_key
             .or_else(|| env::var("ANTHROPIC_API_KEY").ok())
             .unwrap_or_else(|| "".to_string());
 
@@ -546,7 +593,8 @@ pub struct JsAzureOpenAiConfig {
 
 impl From<JsAzureOpenAiConfig> for AzureOpenAiConfig {
     fn from(config: JsAzureOpenAiConfig) -> Self {
-        let api_key = config.api_key
+        let api_key = config
+            .api_key
             .or_else(|| env::var("AZURE_OPENAI_API_KEY").ok())
             .unwrap_or_else(|| "".to_string());
 
@@ -600,7 +648,8 @@ pub struct JsGroqConfig {
 
 impl From<JsGroqConfig> for GroqConfig {
     fn from(config: JsGroqConfig) -> Self {
-        let api_key = config.api_key
+        let api_key = config
+            .api_key
             .or_else(|| env::var("GROQ_API_KEY").ok())
             .unwrap_or_else(|| "".to_string());
 
@@ -622,7 +671,8 @@ pub struct JsOpenRouterConfig {
 
 impl From<JsOpenRouterConfig> for OpenRouterConfig {
     fn from(config: JsOpenRouterConfig) -> Self {
-        let api_key = config.api_key
+        let api_key = config
+            .api_key
             .or_else(|| env::var("OPENROUTER_API_KEY").ok())
             .unwrap_or_else(|| "".to_string());
 
@@ -648,7 +698,8 @@ pub struct JsDeepSeekConfig {
 
 impl From<JsDeepSeekConfig> for DeepSeekConfig {
     fn from(config: JsDeepSeekConfig) -> Self {
-        let api_key = config.api_key
+        let api_key = config
+            .api_key
             .or_else(|| env::var("DEEPSEEK_API_KEY").ok())
             .unwrap_or_else(|| "".to_string());
 
@@ -670,7 +721,8 @@ pub struct JsGoogleConfig {
 
 impl From<JsGoogleConfig> for GoogleConfig {
     fn from(config: JsGoogleConfig) -> Self {
-        let api_key = config.api_key
+        let api_key = config
+            .api_key
             .or_else(|| env::var("GOOGLE_API_KEY").ok())
             .or_else(|| env::var("GEMINI_API_KEY").ok())
             .unwrap_or_else(|| "".to_string());
@@ -693,7 +745,8 @@ pub struct JsMistralConfig {
 
 impl From<JsMistralConfig> for MistralConfig {
     fn from(config: JsMistralConfig) -> Self {
-        let api_key = config.api_key
+        let api_key = config
+            .api_key
             .or_else(|| env::var("MISTRAL_API_KEY").ok())
             .unwrap_or_else(|| "".to_string());
 
@@ -717,16 +770,15 @@ impl From<JsOllamaConfig> for OllamaConfig {
     fn from(config: JsOllamaConfig) -> Self {
         let mut cfg = OllamaConfig::new();
 
-        if let Some(url) = config.base_url
+        if let Some(url) = config
+            .base_url
             .or_else(|| env::var("OLLAMA_BASE_URL").ok())
             .or_else(|| env::var("OLLAMA_HOST").ok())
         {
             cfg = cfg.with_base_url(url);
         }
 
-        if let Some(key) = config.api_key
-            .or_else(|| env::var("OLLAMA_API_KEY").ok())
-        {
+        if let Some(key) = config.api_key.or_else(|| env::var("OLLAMA_API_KEY").ok()) {
             cfg = cfg.with_api_key(key);
         }
 
@@ -742,7 +794,8 @@ pub struct JsXaiConfig {
 
 impl From<JsXaiConfig> for XaiConfig {
     fn from(config: JsXaiConfig) -> Self {
-        let api_key = config.api_key
+        let api_key = config
+            .api_key
             .or_else(|| env::var("XAI_API_KEY").ok())
             .unwrap_or_else(|| "".to_string());
 
@@ -764,7 +817,8 @@ pub struct JsHuggingFaceConfig {
 
 impl From<JsHuggingFaceConfig> for HuggingFaceConfig {
     fn from(config: JsHuggingFaceConfig) -> Self {
-        let api_key = config.api_key
+        let api_key = config
+            .api_key
             .or_else(|| env::var("HUGGINGFACE_API_KEY").ok())
             .or_else(|| env::var("HF_TOKEN").ok())
             .unwrap_or_else(|| "".to_string());
@@ -788,7 +842,8 @@ pub struct JsOpenAiChatConfig {
 
 impl From<JsOpenAiChatConfig> for OpenAiChatConfig {
     fn from(config: JsOpenAiChatConfig) -> Self {
-        let api_key = config.api_key
+        let api_key = config
+            .api_key
             .or_else(|| env::var("OPENAI_API_KEY").ok())
             .unwrap_or_else(|| "".to_string());
 
@@ -838,8 +893,9 @@ impl LanguageModel {
             let api_key = env::var("ANTHROPIC_API_KEY").unwrap_or_else(|_| "".to_string());
             AnthropicConfig::new(api_key)
         });
-        let provider = AnthropicProvider::new(cfg)
-            .map_err(|e| Error::from_reason(format!("Failed to create Anthropic provider: {}", e)))?;
+        let provider = AnthropicProvider::new(cfg).map_err(|e| {
+            Error::from_reason(format!("Failed to create Anthropic provider: {}", e))
+        })?;
         Ok(Self {
             provider: ProviderKind::Anthropic(provider),
         })
@@ -849,8 +905,9 @@ impl LanguageModel {
     #[napi(factory)]
     pub fn azure(config: JsAzureOpenAiConfig) -> Result<Self> {
         let cfg: AzureOpenAiConfig = config.into();
-        let provider = AzureOpenAiProvider::new(cfg)
-            .map_err(|e| Error::from_reason(format!("Failed to create Azure OpenAI provider: {}", e)))?;
+        let provider = AzureOpenAiProvider::new(cfg).map_err(|e| {
+            Error::from_reason(format!("Failed to create Azure OpenAI provider: {}", e))
+        })?;
         Ok(Self {
             provider: ProviderKind::Azure(provider),
         })
@@ -888,8 +945,9 @@ impl LanguageModel {
             let api_key = env::var("OPENROUTER_API_KEY").unwrap_or_else(|_| "".to_string());
             OpenRouterConfig::new(api_key)
         });
-        let provider = OpenRouterProvider::new(cfg)
-            .map_err(|e| Error::from_reason(format!("Failed to create OpenRouter provider: {}", e)))?;
+        let provider = OpenRouterProvider::new(cfg).map_err(|e| {
+            Error::from_reason(format!("Failed to create OpenRouter provider: {}", e))
+        })?;
         Ok(Self {
             provider: ProviderKind::OpenRouter(provider),
         })
@@ -902,8 +960,9 @@ impl LanguageModel {
             let api_key = env::var("DEEPSEEK_API_KEY").unwrap_or_else(|_| "".to_string());
             DeepSeekConfig::new(api_key)
         });
-        let provider = DeepSeekProvider::new(cfg)
-            .map_err(|e| Error::from_reason(format!("Failed to create DeepSeek provider: {}", e)))?;
+        let provider = DeepSeekProvider::new(cfg).map_err(|e| {
+            Error::from_reason(format!("Failed to create DeepSeek provider: {}", e))
+        })?;
         Ok(Self {
             provider: ProviderKind::DeepSeek(provider),
         })
@@ -973,8 +1032,9 @@ impl LanguageModel {
                 .unwrap_or_else(|_| "".to_string());
             HuggingFaceConfig::new(api_key)
         });
-        let provider = HuggingFaceProvider::new(cfg)
-            .map_err(|e| Error::from_reason(format!("Failed to create HuggingFace provider: {}", e)))?;
+        let provider = HuggingFaceProvider::new(cfg).map_err(|e| {
+            Error::from_reason(format!("Failed to create HuggingFace provider: {}", e))
+        })?;
         Ok(Self {
             provider: ProviderKind::HuggingFace(provider),
         })
@@ -987,8 +1047,9 @@ impl LanguageModel {
             let api_key = env::var("OPENAI_API_KEY").unwrap_or_else(|_| "".to_string());
             OpenAiChatConfig::new(api_key)
         });
-        let provider = OpenAiChatProvider::new(cfg)
-            .map_err(|e| Error::from_reason(format!("Failed to create OpenAI Chat provider: {}", e)))?;
+        let provider = OpenAiChatProvider::new(cfg).map_err(|e| {
+            Error::from_reason(format!("Failed to create OpenAI Chat provider: {}", e))
+        })?;
         Ok(Self {
             provider: ProviderKind::OpenAiChat(provider),
         })
@@ -998,7 +1059,10 @@ impl LanguageModel {
     #[napi]
     pub async fn generate(&self, request: JsGenerateRequest) -> Result<JsGenerateResponse> {
         let req: GenerateRequest = request.try_into()?;
-        let response = self.provider.generate(req).await
+        let response = self
+            .provider
+            .generate(req)
+            .await
             .map_err(|e| Error::from_reason(format!("Generate failed: {}", e)))?;
         Ok(response.into())
     }
@@ -1011,7 +1075,10 @@ impl LanguageModel {
         callback: ThreadsafeFunction<JsStreamChunk, ErrorStrategy::Fatal>,
     ) -> Result<()> {
         let req: GenerateRequest = request.try_into()?;
-        let mut stream_handle = self.provider.stream(req).await
+        let mut stream_handle = self
+            .provider
+            .stream(req)
+            .await
             .map_err(|e| Error::from_reason(format!("Stream failed: {}", e)))?;
 
         // Spawn task to process stream
@@ -1024,7 +1091,10 @@ impl LanguageModel {
                             content: Some(content),
                             response: None,
                         };
-                        let status = callback.call(js_chunk, napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking);
+                        let status = callback.call(
+                            js_chunk,
+                            napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+                        );
                         if status != napi::Status::Ok {
                             break;
                         }
@@ -1035,11 +1105,14 @@ impl LanguageModel {
                             content: None,
                             response: Some(response.into()),
                         };
-                        let _ = callback.call(js_chunk, napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking);
+                        let _ = callback.call(
+                            js_chunk,
+                            napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+                        );
                         break;
                     }
-                    Ok(StreamChunk::ContentBlockStart { .. }) |
-                    Ok(StreamChunk::ContentBlockStop { .. }) => {
+                    Ok(StreamChunk::ContentBlockStart { .. })
+                    | Ok(StreamChunk::ContentBlockStop { .. }) => {
                         // Content block markers — skip for now
                         continue;
                     }

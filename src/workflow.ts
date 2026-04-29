@@ -16,6 +16,42 @@ export interface WorkflowConfig {
   handler: WorkflowHandler;
   /** Cron expression for scheduled execution (e.g., "0 0/6 * * *") */
   cron?: string;
+  /** Typed trigger declarations attached to this workflow registration. */
+  triggers?: TriggerSpec[];
+}
+
+export interface TriggerSpec {
+  triggerId?: string;
+  triggerType: 'event' | 'cron' | 'webhook';
+  eventName?: string;
+  filterExpression?: string;
+  inputMapping?: string;
+  batchWindowMs?: number;
+  delayExpression?: string;
+}
+
+export interface EventTriggerOptions {
+  triggerId?: string;
+  filterExpression?: string;
+  inputMapping?: string;
+  batchWindowMs?: number;
+  delayExpression?: string;
+}
+
+export function event(name: string, options: EventTriggerOptions = {}): TriggerSpec {
+  const eventName = name.trim();
+  if (!eventName) {
+    throw new Error('event trigger name is required');
+  }
+  return {
+    triggerId: options.triggerId,
+    triggerType: 'event',
+    eventName,
+    filterExpression: options.filterExpression,
+    inputMapping: options.inputMapping,
+    batchWindowMs: options.batchWindowMs,
+    delayExpression: options.delayExpression,
+  };
 }
 
 /**
@@ -71,6 +107,8 @@ export interface WorkflowOptions {
   name?: string;
   /** Cron expression for scheduled execution (e.g., "0 0/6 * * *") */
   cron?: string;
+  /** Typed trigger declarations such as event('user.created') */
+  triggers?: TriggerSpec[];
 }
 
 /**
@@ -134,6 +172,7 @@ export function workflow<TInput = any, TOutput = any>(
     name: workflowName,
     handler,
     cron: options.cron,
+    triggers: options.triggers,
   };
   WorkflowRegistry.register(config);
 

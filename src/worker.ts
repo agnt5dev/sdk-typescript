@@ -1,6 +1,7 @@
 import type { WorkerOptions, Context } from './types.js';
 import { FunctionRegistry } from './function.js';
 import { WorkflowRegistry } from './workflow.js';
+import type { TriggerSpec } from './workflow.js';
 import { ToolRegistry } from './tool.js';
 import { ScorerRegistry, isScorer } from './scorer.js';
 import { Agent, Message } from './agent.js';
@@ -1040,7 +1041,13 @@ export class Worker {
 `);
 
     // Collect all registered components
-    const components: Array<{ name: string; componentType: string; config: Record<string, string>; metadata: Record<string, string> }> = [];
+    const components: Array<{
+      name: string;
+      componentType: string;
+      config: Record<string, string>;
+      metadata: Record<string, string>;
+      triggers?: TriggerSpec[];
+    }> = [];
 
     // Functions
     for (const [name, fnConfig] of FunctionRegistry.getAll()) {
@@ -1072,7 +1079,13 @@ export class Worker {
     for (const [name, cfg] of WorkflowRegistry.all()) {
       const metadata: Record<string, string> = {};
       if (cfg.cron) metadata.cron = cfg.cron;
-      components.push({ name, componentType: 'workflow', config: {}, metadata });
+      components.push({
+        name,
+        componentType: 'workflow',
+        config: {},
+        metadata,
+        triggers: cfg.triggers,
+      });
     }
 
     // Tools (auto-discover from registry)

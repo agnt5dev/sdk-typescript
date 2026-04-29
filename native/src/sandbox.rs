@@ -128,15 +128,21 @@ impl Sandbox {
         });
 
         let backend_str = opts.backend.as_deref().unwrap_or("auto");
-        let timeout =
-            std::time::Duration::from_secs(opts.timeout_secs.unwrap_or(300.0) as u64);
+        let timeout = std::time::Duration::from_secs(opts.timeout_secs.unwrap_or(300.0) as u64);
 
         match backend_str {
             "remote" => {
-                let ep = opts.endpoint.ok_or_else(|| {
-                    Error::from_reason("endpoint is required for remote backend")
-                })?;
-                let remote = create_remote(ep, opts.sandbox_id, opts.api_key, opts.bearer_token, timeout, opts.api_prefix)?;
+                let ep = opts
+                    .endpoint
+                    .ok_or_else(|| Error::from_reason("endpoint is required for remote backend"))?;
+                let remote = create_remote(
+                    ep,
+                    opts.sandbox_id,
+                    opts.api_key,
+                    opts.bearer_token,
+                    timeout,
+                    opts.api_prefix,
+                )?;
                 let arc: Arc<RemoteSandbox> = Arc::new(remote);
                 Ok(Sandbox {
                     executor: arc.clone() as BoxedExecutor,
@@ -163,7 +169,14 @@ impl Sandbox {
 
             "auto" => {
                 if let Some(ep) = opts.endpoint {
-                    let remote = create_remote(ep, opts.sandbox_id, opts.api_key, opts.bearer_token, timeout, opts.api_prefix)?;
+                    let remote = create_remote(
+                        ep,
+                        opts.sandbox_id,
+                        opts.api_key,
+                        opts.bearer_token,
+                        timeout,
+                        opts.api_prefix,
+                    )?;
                     let arc: Arc<RemoteSandbox> = Arc::new(remote);
                     Ok(Sandbox {
                         executor: arc.clone() as BoxedExecutor,
@@ -229,9 +242,11 @@ impl Sandbox {
             env: None,
             work_dir: None,
         };
-        let result = self.executor.execute_code(req).await.map_err(|e| {
-            Error::from_reason(format!("execute_code failed: {}", e))
-        })?;
+        let result = self
+            .executor
+            .execute_code(req)
+            .await
+            .map_err(|e| Error::from_reason(format!("execute_code failed: {}", e)))?;
         Ok(SandboxExecuteResult {
             stdout: result.stdout,
             stderr: result.stderr,
@@ -248,9 +263,11 @@ impl Sandbox {
             content: content.to_vec(),
             mode: 0o644,
         };
-        let result = self.workspace.write_file(req).await.map_err(|e| {
-            Error::from_reason(format!("write_file failed: {}", e))
-        })?;
+        let result = self
+            .workspace
+            .write_file(req)
+            .await
+            .map_err(|e| Error::from_reason(format!("write_file failed: {}", e)))?;
         Ok(SandboxWriteResult {
             success: result.success,
             path: result.path,
@@ -261,9 +278,11 @@ impl Sandbox {
 
     #[napi]
     pub async fn read_file(&self, path: String) -> Result<SandboxReadResult> {
-        let result = self.workspace.read_file(&path).await.map_err(|e| {
-            Error::from_reason(format!("read_file failed: {}", e))
-        })?;
+        let result = self
+            .workspace
+            .read_file(&path)
+            .await
+            .map_err(|e| Error::from_reason(format!("read_file failed: {}", e)))?;
         Ok(SandboxReadResult {
             path: result.path,
             content: Buffer::from(result.content),
@@ -314,9 +333,11 @@ impl Sandbox {
 
     #[napi]
     pub async fn health(&self) -> Result<SandboxHealthResult> {
-        let result = self.executor.health().await.map_err(|e| {
-            Error::from_reason(format!("health check failed: {}", e))
-        })?;
+        let result = self
+            .executor
+            .health()
+            .await
+            .map_err(|e| Error::from_reason(format!("health check failed: {}", e)))?;
         Ok(SandboxHealthResult {
             status: result.status,
             sandbox_id: result.sandbox_id,
