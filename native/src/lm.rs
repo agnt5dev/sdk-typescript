@@ -386,13 +386,7 @@ impl TryFrom<JsGenerationConfig> for GenerationConfig {
             .map(|tools| {
                 tools
                     .iter()
-                    .filter_map(|t| match t.as_str() {
-                        "web_search" => Some(BuiltInTool::WebSearch),
-                        "code_interpreter" => Some(BuiltInTool::CodeInterpreter),
-                        "file_search" => Some(BuiltInTool::FileSearch),
-                        "web_fetch" => Some(BuiltInTool::WebFetch),
-                        _ => None,
-                    })
+                    .filter_map(|t| BuiltInTool::from_provider_name(t.as_str()))
                     .collect()
             })
             .unwrap_or_default();
