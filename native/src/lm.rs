@@ -328,6 +328,7 @@ pub enum JsBuiltInTool {
     WebSearch,
     CodeInterpreter,
     FileSearch,
+    WebFetch,
 }
 
 impl From<JsBuiltInTool> for BuiltInTool {
@@ -336,6 +337,7 @@ impl From<JsBuiltInTool> for BuiltInTool {
             JsBuiltInTool::WebSearch => BuiltInTool::WebSearch,
             JsBuiltInTool::CodeInterpreter => BuiltInTool::CodeInterpreter,
             JsBuiltInTool::FileSearch => BuiltInTool::FileSearch,
+            JsBuiltInTool::WebFetch => BuiltInTool::WebFetch,
         }
     }
 }
@@ -388,6 +390,7 @@ impl TryFrom<JsGenerationConfig> for GenerationConfig {
                         "web_search" => Some(BuiltInTool::WebSearch),
                         "code_interpreter" => Some(BuiltInTool::CodeInterpreter),
                         "file_search" => Some(BuiltInTool::FileSearch),
+                        "web_fetch" => Some(BuiltInTool::WebFetch),
                         _ => None,
                     })
                     .collect()
