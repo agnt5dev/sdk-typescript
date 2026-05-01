@@ -1078,48 +1078,51 @@ impl LanguageModel {
             .await
             .map_err(|e| Error::from_reason(format!("Stream failed: {}", e)))?;
 
-        // Spawn task to process stream
-        tokio::spawn(async move {
-            while let Some(chunk_result) = stream_handle.next().await {
-                match chunk_result {
-                    Ok(StreamChunk::Delta { content, .. }) => {
-                        let js_chunk = JsStreamChunk {
-                            chunk_type: "delta".to_string(),
-                            content: Some(content),
-                            response: None,
-                        };
-                        let status = callback.call(
-                            js_chunk,
-                            napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
-                        );
-                        if status != napi::Status::Ok {
-                            break;
-                        }
-                    }
-                    Ok(StreamChunk::Completed(response)) => {
-                        let js_chunk = JsStreamChunk {
-                            chunk_type: "completed".to_string(),
-                            content: None,
-                            response: Some(response.into()),
-                        };
-                        let _ = callback.call(
-                            js_chunk,
-                            napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
-                        );
-                        break;
-                    }
-                    Ok(StreamChunk::ContentBlockStart { .. })
-                    | Ok(StreamChunk::ContentBlockStop { .. }) => {
-                        // Content block markers — skip for now
-                        continue;
-                    }
-                    Err(e) => {
-                        eprintln!("Stream error: {}", e);
-                        break;
+        while let Some(chunk_result) = stream_handle.next().await {
+            match chunk_result {
+                Ok(StreamChunk::Delta { content, .. }) => {
+                    let js_chunk = JsStreamChunk {
+                        chunk_type: "delta".to_string(),
+                        content: Some(content),
+                        response: None,
+                    };
+                    let status = callback.call(
+                        js_chunk,
+                        napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+                    );
+                    if status != napi::Status::Ok {
+                        return Err(Error::from_reason(format!(
+                            "Stream callback failed with status: {status:?}"
+                        )));
                     }
                 }
+                Ok(StreamChunk::Completed(response)) => {
+                    let js_chunk = JsStreamChunk {
+                        chunk_type: "completed".to_string(),
+                        content: None,
+                        response: Some(response.into()),
+                    };
+                    let status = callback.call(
+                        js_chunk,
+                        napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+                    );
+                    if status != napi::Status::Ok {
+                        return Err(Error::from_reason(format!(
+                            "Stream callback failed with status: {status:?}"
+                        )));
+                    }
+                    break;
+                }
+                Ok(StreamChunk::ContentBlockStart { .. })
+                | Ok(StreamChunk::ContentBlockStop { .. }) => {
+                    // Content block markers — skip for now
+                    continue;
+                }
+                Err(e) => {
+                    return Err(Error::from_reason(format!("Stream failed: {}", e)));
+                }
             }
-        });
+        }
 
         Ok(())
     }

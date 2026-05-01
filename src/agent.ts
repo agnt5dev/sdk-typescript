@@ -7,6 +7,7 @@
 import type { Context, ToolSchema } from './types.js';
 import { Tool } from './tool.js';
 import { ContextImpl } from './context.js';
+import { validateModelForProvider } from './lm.js';
 import type { LM } from './lm.js';
 import type {
   Message as LMMessage,
@@ -341,7 +342,11 @@ export class Agent {
     this.name = options.name;
     this.model = options.model;
     this.instructions = options.instructions;
-    this.modelName = options.modelName || 'openai/gpt-4o-mini';
+    const requestedModelName = options.modelName || 'openai/gpt-4o-mini';
+    const providerName = (options.model as any).providerName;
+    this.modelName = requestedModelName.includes('/') || providerName
+      ? validateModelForProvider(requestedModelName, providerName)
+      : requestedModelName;
     this.temperature = options.temperature ?? 0.7;
     this.maxIterations = options.maxIterations || 10;
     this.callbacks = options.callbacks || {};

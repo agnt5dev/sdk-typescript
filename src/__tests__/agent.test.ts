@@ -38,6 +38,19 @@ describe('Agent', () => {
     expect(agent.temperature).toBe(0.5);
   });
 
+  it('should reject unsupported provider prefixes in modelName', () => {
+    const mockModel = new MockLanguageModel([
+      { text: 'Hello!', finishReason: 'stop' }
+    ]);
+
+    expect(() => new Agent({
+      name: 'bad-provider-agent',
+      model: mockModel,
+      instructions: 'Be helpful',
+      modelName: 'open/gpt-5-mini',
+    })).toThrow("Unsupported model provider 'open'");
+  });
+
   it('should run agent and return output', async () => {
     const mockModel = new MockLanguageModel([
       { text: 'This is my response', finishReason: 'stop' }

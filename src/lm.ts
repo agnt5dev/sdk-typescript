@@ -20,6 +20,7 @@
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { ConfigurationError } from './errors.js';
 import type { JSONSchema } from './types.js';
 
 // Native bindings (loaded dynamically)
@@ -141,6 +142,99 @@ export interface GenerateRequest {
   config?: GenerationConfig;
 }
 
+export const SUPPORTED_MODEL_PROVIDERS = Object.freeze([
+  'anthropic',
+  'azure',
+  'bedrock',
+  'deepseek',
+  'gemini',
+  'google',
+  'groq',
+  'hf',
+  'huggingface',
+  'mistral',
+  'ollama',
+  'openai',
+  'openai_chat',
+  'openrouter',
+  'xai',
+]);
+
+const SUPPORTED_MODEL_PROVIDER_SET = new Set<string>(SUPPORTED_MODEL_PROVIDERS);
+const GATEWAY_PROVIDERS = new Set(['openrouter']);
+
+const PROVIDER_ALIASES: Record<string, string[]> = {
+  google: ['google', 'gemini'],
+  huggingface: ['huggingface', 'hf'],
+  openai_chat: ['openai_chat'],
+};
+
+export interface ParsedModelIdentifier {
+  provider: string;
+  modelName: string;
+}
+
+function providerList(): string {
+  return SUPPORTED_MODEL_PROVIDERS.join(', ');
+}
+
+export function parseModelIdentifier(
+  model: string,
+  options: { allowUnknownProvider?: boolean } = {},
+): ParsedModelIdentifier {
+  if (typeof model !== 'string' || model.trim() === '') {
+    throw new ConfigurationError("Model must be a non-empty string in 'provider/model' format");
+  }
+
+  if (!model.includes('/')) {
+    throw new ConfigurationError(
+      `Model must include provider prefix (e.g., 'openai/${model}'). ` +
+      `Supported providers: ${providerList()}`,
+    );
+  }
+
+  const [rawProvider, ...modelParts] = model.split('/');
+  const provider = rawProvider.trim().toLowerCase();
+  const modelName = modelParts.join('/').trim();
+
+  if (!provider || !modelName) {
+    throw new ConfigurationError(
+      "Model must be in 'provider/model' format with both provider and model name",
+    );
+  }
+
+  if (!options.allowUnknownProvider && !SUPPORTED_MODEL_PROVIDER_SET.has(provider)) {
+    throw new ConfigurationError(
+      `Unsupported model provider '${provider}' in model '${model}'. ` +
+      `Did you mean 'openai/${modelName}'? ` +
+      `Supported providers: ${providerList()}`,
+    );
+  }
+
+  return { provider, modelName };
+}
+
+export function validateModelForProvider(model: string, sdkProvider?: string): string {
+  const normalizedSdkProvider = sdkProvider?.toLowerCase();
+  const parsed = parseModelIdentifier(model, {
+    allowUnknownProvider: normalizedSdkProvider
+      ? GATEWAY_PROVIDERS.has(normalizedSdkProvider)
+      : false,
+  });
+
+  if (normalizedSdkProvider && !GATEWAY_PROVIDERS.has(normalizedSdkProvider)) {
+    const allowedPrefixes = PROVIDER_ALIASES[normalizedSdkProvider] ?? [normalizedSdkProvider];
+    if (!allowedPrefixes.includes(parsed.provider)) {
+      throw new ConfigurationError(
+        `Provider '${normalizedSdkProvider}' does not match model prefix '${parsed.provider}'. ` +
+        `Use '${allowedPrefixes[0]}/${parsed.modelName}' or choose the matching LM provider.`,
+      );
+    }
+  }
+
+  return `${parsed.provider}/${parsed.modelName}`;
+}
+
 // Provider configs
 export interface OpenAIConfig {
   apiKey?: string;
@@ -218,9 +312,11 @@ export interface OpenAiChatConfig {
 
 export class LM {
   private model: any; // Native LanguageModel instance
+  readonly providerName: string;
 
-  private constructor(model: any) {
+  private constructor(model: any, providerName: string) {
     this.model = model;
+    this.providerName = providerName;
   }
 
   /**
@@ -237,7 +333,7 @@ export class LM {
    */
   static openai(config?: OpenAIConfig): LM {
     const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.openai(config));
+    return new LM(bindings.LanguageModel.openai(config), 'openai');
   }
 
   /**
@@ -254,7 +350,7 @@ export class LM {
    */
   static anthropic(config?: AnthropicConfig): LM {
     const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.anthropic(config));
+    return new LM(bindings.LanguageModel.anthropic(config), 'anthropic');
   }
 
   /**
@@ -270,7 +366,7 @@ export class LM {
    */
   static azure(config: AzureOpenAIConfig): LM {
     const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.azure(config));
+    return new LM(bindings.LanguageModel.azure(config), 'azure');
   }
 
   /**
@@ -287,7 +383,7 @@ export class LM {
    */
   static bedrock(config: BedrockConfig): LM {
     const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.bedrock(config));
+    return new LM(bindings.LanguageModel.bedrock(config), 'bedrock');
   }
 
   /**
@@ -304,7 +400,7 @@ export class LM {
    */
   static groq(config?: GroqConfig): LM {
     const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.groq(config));
+    return new LM(bindings.LanguageModel.groq(config), 'groq');
   }
 
   /**
@@ -321,49 +417,49 @@ export class LM {
    */
   static openrouter(config?: OpenRouterConfig): LM {
     const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.openrouter(config));
+    return new LM(bindings.LanguageModel.openrouter(config), 'openrouter');
   }
 
   /** Create DeepSeek provider */
   static deepseek(config?: DeepSeekConfig): LM {
     const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.deepseek(config));
+    return new LM(bindings.LanguageModel.deepseek(config), 'deepseek');
   }
 
   /** Create Google (Gemini) provider */
   static google(config?: GoogleConfig): LM {
     const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.google(config));
+    return new LM(bindings.LanguageModel.google(config), 'google');
   }
 
   /** Create Mistral provider */
   static mistral(config?: MistralConfig): LM {
     const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.mistral(config));
+    return new LM(bindings.LanguageModel.mistral(config), 'mistral');
   }
 
   /** Create Ollama provider (local LLM) */
   static ollama(config?: OllamaConfig): LM {
     const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.ollama(config));
+    return new LM(bindings.LanguageModel.ollama(config), 'ollama');
   }
 
   /** Create xAI (Grok) provider */
   static xai(config?: XaiConfig): LM {
     const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.xai(config));
+    return new LM(bindings.LanguageModel.xai(config), 'xai');
   }
 
   /** Create HuggingFace provider */
   static huggingface(config?: HuggingFaceConfig): LM {
     const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.huggingface(config));
+    return new LM(bindings.LanguageModel.huggingface(config), 'huggingface');
   }
 
   /** Create OpenAI Chat-compatible provider (for custom OpenAI-compatible APIs) */
   static openaiChat(config?: OpenAiChatConfig): LM {
     const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.openaiChat(config));
+    return new LM(bindings.LanguageModel.openaiChat(config), 'openai_chat');
   }
 
   /**
@@ -386,7 +482,10 @@ export class LM {
    * ```
    */
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
-    return await this.model.generate(request);
+    return await this.model.generate({
+      ...request,
+      model: validateModelForProvider(request.model, this.providerName),
+    });
   }
 
   /**
@@ -410,7 +509,10 @@ export class LM {
     request: GenerateRequest,
     callback: (chunk: StreamChunk) => void
   ): Promise<void> {
-    return await this.model.stream(request, callback);
+    return await this.model.stream({
+      ...request,
+      model: validateModelForProvider(request.model, this.providerName),
+    }, callback);
   }
 }
 
