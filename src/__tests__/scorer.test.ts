@@ -10,6 +10,7 @@ import {
   contains,
   jsonValid,
   jsonSchema,
+  llmJudge,
   numericRange,
   regexMatch,
   levenshtein,
@@ -216,6 +217,123 @@ describe('Built-in scorers', () => {
     const r = numericRange({ output: 1, config: {} });
     expect(r.label).toBe('config_error');
   });
+
+  // ─── llm_judge ─────────────────────────────────────────────────────
+  // The judge needs an LM. Tests inject a stub via the ScorerContext
+  // (`ctx.llmJudgeLm`) so we don't depend on real provider credentials.
+  it('llmJudge: should parse a valid JSON judge response', async () => {
+    const stubLm = {
+      generate: async () => ({
+        text: '{"score": 0.9, "passed": true, "explanation": "Looks correct"}',
+      }),
+    };
+    const result = await llmJudge(
+      {
+        output: 'The capital of France is Paris.',
+        config: { criteria: 'Factually correct?', provider: 'openai', model: 'gpt-4o-mini' },
+      },
+      { runId: 'r', correlationId: 'c', attempt: 0, log: () => {}, llmJudgeLm: stubLm } as any,
+    );
+    expect(result.score).toBe(0.9);
+    expect(result.passed).toBe(true);
+    expect(result.explanation).toBe('Looks correct');
+  });
+
+  it('llmJudge: should extract JSON from markdown-fenced response', async () => {
+    const stubLm = {
+      generate: async () => ({
+        text: '```json\n{"score": 0.5, "explanation": "Mediocre"}\n```',
+      }),
+    };
+    const result = await llmJudge(
+      {
+        output: 'whatever',
+        config: { criteria: 'Anything?', provider: 'openai', model: 'gpt-4o-mini' },
+      },
+      { runId: 'r', correlationId: 'c', attempt: 0, log: () => {}, llmJudgeLm: stubLm } as any,
+    );
+    expect(result.score).toBe(0.5);
+    // 0.5 < default pass threshold (0.7) and no explicit `passed` → false.
+    expect(result.passed).toBe(false);
+  });
+
+  it('llmJudge: should clamp score to [0, 1]', async () => {
+    const stubLm = {
+      generate: async () => ({ text: '{"score": 1.5, "passed": true}' }),
+    };
+    const result = await llmJudge(
+      {
+        output: 'x',
+        config: { criteria: 'c', provider: 'openai', model: 'gpt-4o-mini' },
+      },
+      { runId: 'r', correlationId: 'c', attempt: 0, log: () => {}, llmJudgeLm: stubLm } as any,
+    );
+    expect(result.score).toBe(1.0);
+  });
+
+  it('llmJudge: should infer passed from score when LLM omits it', async () => {
+    const stubLm = {
+      generate: async () => ({ text: '{"score": 0.8}' }),
+    };
+    const result = await llmJudge(
+      {
+        output: 'x',
+        config: { criteria: 'c', provider: 'openai', model: 'gpt-4o-mini' },
+      },
+      { runId: 'r', correlationId: 'c', attempt: 0, log: () => {}, llmJudgeLm: stubLm } as any,
+    );
+    expect(result.passed).toBe(true); // 0.8 >= 0.7 default threshold
+  });
+
+  it('llmJudge: should label parse_error on invalid JSON', async () => {
+    const stubLm = {
+      generate: async () => ({ text: 'not json' }),
+    };
+    const result = await llmJudge(
+      {
+        output: 'x',
+        config: { criteria: 'c', provider: 'openai', model: 'gpt-4o-mini' },
+      },
+      { runId: 'r', correlationId: 'c', attempt: 0, log: () => {}, llmJudgeLm: stubLm } as any,
+    );
+    expect(result.score).toBe(0.0);
+    expect(result.label).toBe('parse_error');
+    expect(result.metadata?.raw_response).toBe('not json');
+  });
+
+  it('llmJudge: should label error when LM throws', async () => {
+    const stubLm = {
+      generate: async () => {
+        throw new Error('rate limited');
+      },
+    };
+    const result = await llmJudge(
+      {
+        output: 'x',
+        config: { criteria: 'c', provider: 'openai', model: 'gpt-4o-mini' },
+      },
+      { runId: 'r', correlationId: 'c', attempt: 0, log: () => {}, llmJudgeLm: stubLm } as any,
+    );
+    expect(result.score).toBe(0.0);
+    expect(result.label).toBe('error');
+    expect(result.explanation).toContain('rate limited');
+  });
+
+  it('llmJudge: should label config_error when criteria missing', async () => {
+    const result = await llmJudge({
+      output: 'x',
+      config: { provider: 'openai', model: 'gpt-4o-mini' },
+    });
+    expect(result.label).toBe('config_error');
+  });
+
+  it('llmJudge: should label config_error when model missing', async () => {
+    const result = await llmJudge({
+      output: 'x',
+      config: { criteria: 'c', provider: 'openai' },
+    });
+    expect(result.label).toBe('config_error');
+  });
 });
 
 describe('Scorer decorator & registry', () => {
@@ -250,6 +368,7 @@ describe('Scorer decorator & registry', () => {
     expect(names).toContain('numeric_range');
     expect(names).toContain('regex_match');
     expect(names).toContain('levenshtein');
+    expect(names).toContain('llm_judge');
   });
 });
 

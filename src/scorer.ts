@@ -410,6 +410,207 @@ export function levenshtein(request: ScorerRequest): ScorerResult {
   });
 }
 
+// ─── LLM-as-judge ────────────────────────────────────────────────────
+
+/**
+ * Default system prompt for `llm_judge`. Mirrors the Rust + Python
+ * implementations so a judge scored in any language produces the same
+ * baseline output. Override via `config.system_prompt`.
+ */
+const LLM_JUDGE_DEFAULT_SYSTEM_PROMPT = `You are an expert evaluator. Your task is to evaluate the given output based on the provided criteria.
+
+Respond with a JSON object containing:
+- "score": a number between 0.0 and 1.0
+- "passed": boolean (true if score >= 0.7)
+- "explanation": brief explanation of your evaluation
+
+Respond ONLY with the JSON object, no other text.`;
+
+/**
+ * LLM-as-judge scorer: ask an LM to score the output against criteria.
+ *
+ * Async. Reads `config`:
+ *   - `criteria`: string (required) — evaluation rubric.
+ *   - `provider`: 'openai' | 'anthropic' | 'google' | 'mistral' | … —
+ *     selects the LM provider (default 'openai'). Credentials are read
+ *     from the provider's env vars; pass an `LM` via
+ *     `ctx.llmJudgeLm` to override.
+ *   - `model`: model name (e.g. 'gpt-4o-mini'), required.
+ *   - `system_prompt`: optional override for the judge system prompt.
+ *   - `temperature`: number, default 0.0.
+ *   - `include_input`: bool, default false — include `request.input` in
+ *     the prompt.
+ *
+ * Mirrors `sdk-core::eval::llm_judge` and `agnt5.eval.llm_judge` —
+ * same default temperature, same default prompt, same JSON-response
+ * parsing rules, same parse_error label on bad output.
+ */
+export async function llmJudge(
+  request: ScorerRequest,
+  ctx?: ScorerContext,
+): Promise<ScorerResult> {
+  const cfg = request.config ?? {};
+  const criteria = typeof cfg.criteria === 'string' ? cfg.criteria : '';
+  if (!criteria) {
+    return new ScorerResult({
+      score: 0.0,
+      passed: false,
+      label: 'config_error',
+      explanation: 'llm_judge requires `config.criteria`',
+    });
+  }
+  const providerName = typeof cfg.provider === 'string' ? cfg.provider : 'openai';
+  const modelName = typeof cfg.model === 'string' ? cfg.model : '';
+  if (!modelName) {
+    return new ScorerResult({
+      score: 0.0,
+      passed: false,
+      label: 'config_error',
+      explanation: 'llm_judge requires `config.model`',
+    });
+  }
+  const systemPrompt =
+    typeof cfg.system_prompt === 'string' ? cfg.system_prompt : LLM_JUDGE_DEFAULT_SYSTEM_PROMPT;
+  const temperature = typeof cfg.temperature === 'number' ? cfg.temperature : 0.0;
+  const includeInput = cfg.include_input === true;
+
+  // Build the user prompt the same way Rust/Python do — keeps judge
+  // verdicts comparable across languages.
+  let userContent = `## Evaluation Criteria\n${criteria}\n\n`;
+  if (includeInput && request.input !== undefined && request.input !== null) {
+    userContent += `## Input\n${formatJudgeValue(request.input)}\n\n`;
+  }
+  userContent += `## Output to Evaluate\n${formatJudgeValue(request.output)}\n\n`;
+  if (request.expected !== undefined && request.expected !== null) {
+    userContent += `## Expected Output (Reference)\n${formatJudgeValue(request.expected)}\n\n`;
+  }
+  userContent += 'Please evaluate the output and respond with a JSON object.';
+
+  // Tests / advanced usage can inject an LM via the context. Default
+  // path constructs one per call from env credentials.
+  let lm = (ctx as { llmJudgeLm?: { generate: (req: any) => Promise<any> } } | undefined)?.llmJudgeLm;
+  if (!lm) {
+    try {
+      lm = makeLmForProvider(providerName);
+    } catch (e) {
+      return new ScorerResult({
+        score: 0.0,
+        passed: false,
+        label: 'config_error',
+        explanation: `llm_judge: unsupported provider '${providerName}': ${(e as Error).message}`,
+      });
+    }
+  }
+
+  let response: { text: string };
+  try {
+    response = await lm.generate({
+      model: modelName,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userContent },
+      ],
+      temperature,
+    });
+  } catch (e) {
+    return new ScorerResult({
+      score: 0.0,
+      passed: false,
+      label: 'error',
+      explanation: `LLM call failed: ${(e as Error).message}`,
+    });
+  }
+  return parseLlmJudgeResponse(response.text ?? '');
+}
+
+function formatJudgeValue(v: any): string {
+  if (typeof v === 'string') return v;
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
+}
+
+function makeLmForProvider(providerName: string): { generate: (req: any) => Promise<any> } {
+  // Lazy import keeps `scorer.ts` usable in environments (wasm/edge)
+  // where the native LM bindings aren't loaded.
+  const lmModule = require('./lm.js') as typeof import('./lm.js');
+  const { LM } = lmModule;
+  switch (providerName.toLowerCase()) {
+    case 'openai':
+      return LM.openai();
+    case 'anthropic':
+      return LM.anthropic();
+    case 'google':
+      return LM.google();
+    case 'mistral':
+      return LM.mistral();
+    case 'groq':
+      return LM.groq();
+    case 'deepseek':
+      return LM.deepseek();
+    case 'openrouter':
+      return LM.openrouter();
+    case 'ollama':
+      return LM.ollama();
+    default:
+      throw new Error(`provider '${providerName}' is not in the supported set`);
+  }
+}
+
+function parseLlmJudgeResponse(content: string): ScorerResult {
+  const jsonStr = extractJudgeJson(content);
+  let parsed: any;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch (e) {
+    return new ScorerResult({
+      score: 0.0,
+      passed: false,
+      label: 'parse_error',
+      explanation: `Could not parse LLM response: ${content}`,
+      metadata: { raw_response: content, error: (e as Error).message },
+    });
+  }
+  const rawScore = typeof parsed.score === 'number' ? parsed.score : 0;
+  const score = Math.max(0, Math.min(1, rawScore));
+  const passed =
+    typeof parsed.passed === 'boolean' ? parsed.passed : score >= 0.7;
+  const explanation =
+    typeof parsed.explanation === 'string' ? parsed.explanation : undefined;
+  const label = typeof parsed.label === 'string' ? parsed.label : undefined;
+  // Metadata keeps any extra keys the LLM produced, dropping the ones
+  // we've already promoted to top-level fields.
+  const extras: Record<string, any> = {};
+  for (const [k, v] of Object.entries(parsed)) {
+    if (k !== 'score' && k !== 'passed' && k !== 'explanation' && k !== 'label') {
+      extras[k] = v;
+    }
+  }
+  return new ScorerResult({
+    score,
+    passed,
+    label,
+    explanation,
+    metadata: Object.keys(extras).length > 0 ? extras : undefined,
+  });
+}
+
+function extractJudgeJson(raw: string): string {
+  const s = raw.trim();
+  // Markdown-fenced JSON blocks.
+  const fenceMatch = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (fenceMatch) return fenceMatch[1].trim();
+  // First balanced-looking JSON object.
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start !== -1 && end !== -1 && end >= start) {
+    return s.slice(start, end + 1);
+  }
+  return s;
+}
+
 // Register built-in scorers
 ScorerRegistry.register({ name: 'exact_match', handler: (_ctx, req) => exactMatch(req), description: 'Exact string match', isAsync: false });
 ScorerRegistry.register({ name: 'contains', handler: (_ctx, req) => contains(req), description: 'Substring containment check', isAsync: false });
@@ -418,6 +619,7 @@ ScorerRegistry.register({ name: 'json_schema', handler: (_ctx, req) => jsonSchem
 ScorerRegistry.register({ name: 'numeric_range', handler: (_ctx, req) => numericRange(req), description: 'Numeric output is in [min, max]', isAsync: false });
 ScorerRegistry.register({ name: 'regex_match', handler: (_ctx, req) => regexMatch(req), description: 'Regex pattern match', isAsync: false });
 ScorerRegistry.register({ name: 'levenshtein', handler: (_ctx, req) => levenshtein(req), description: 'Levenshtein edit distance', isAsync: false });
+ScorerRegistry.register({ name: 'llm_judge', handler: (ctx, req) => llmJudge(req, ctx), description: 'LLM-as-judge: ask an LM to score the output against criteria', isAsync: true });
 
 // ─── Runner ──────────────────────────────────────────────────────────
 
