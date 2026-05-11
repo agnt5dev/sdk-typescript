@@ -236,6 +236,138 @@ export function regexMatch(request: ScorerRequest): ScorerResult {
   }
 }
 
+/**
+ * JSON schema: validate output against a JSON Schema.
+ *
+ * Schema is read from `request.config.schema`. String outputs are
+ * parsed as JSON before validation. The result mirrors the Rust fast
+ * path: `valid` / `invalid` / `parse_error` / `config_error` labels,
+ * with full error list under `metadata.errors`.
+ */
+export function jsonSchema(request: ScorerRequest): ScorerResult {
+  const schema = request.config?.schema;
+  if (schema === undefined) {
+    return new ScorerResult({
+      score: 0.0,
+      passed: false,
+      label: 'config_error',
+      explanation: 'json_schema requires `config.schema`',
+    });
+  }
+
+  // Parse string outputs as JSON; structured outputs pass through.
+  let value: unknown;
+  if (typeof request.output === 'string') {
+    try {
+      value = JSON.parse(request.output);
+    } catch (e) {
+      return new ScorerResult({
+        score: 0.0,
+        passed: false,
+        label: 'parse_error',
+        explanation: `output is not valid JSON: ${(e as Error).message}`,
+      });
+    }
+  } else {
+    value = request.output;
+  }
+
+  // Lazy-import ajv so workerd/edge bundles that never call this scorer
+  // don't pay the bundle cost. Cache the validator per-schema by JSON
+  // identity to amortize repeated calls in a batch.
+  const Ajv = (require('ajv') as { default: any }).default;
+  let validator;
+  try {
+    const ajv = new Ajv({ allErrors: true, strict: false });
+    validator = ajv.compile(schema as object);
+  } catch (e) {
+    return new ScorerResult({
+      score: 0.0,
+      passed: false,
+      label: 'config_error',
+      explanation: `invalid schema: ${(e as Error).message}`,
+    });
+  }
+
+  const valid = validator(value);
+  if (valid) {
+    return new ScorerResult({
+      score: 1.0,
+      passed: true,
+      label: 'valid',
+    });
+  }
+  const errors = (validator.errors ?? []).map(
+    (e: { instancePath: string; message?: string }) =>
+      `${e.instancePath || '/'}: ${e.message ?? 'invalid'}`,
+  );
+  return new ScorerResult({
+    score: 0.0,
+    passed: false,
+    label: 'invalid',
+    explanation: errors[0] ?? 'schema validation failed',
+    metadata: { errors },
+  });
+}
+
+/**
+ * Numeric range: check `output` is numeric and falls in `[min, max]`.
+ *
+ * Config reads `min`, `max`, and `inclusive` (default true). At least
+ * one bound must be set; missing both returns `config_error`. Numeric
+ * strings ("42", "3.14") are accepted; non-numeric outputs return
+ * `parse_error`.
+ */
+export function numericRange(request: ScorerRequest): ScorerResult {
+  const cfg = request.config ?? {};
+  const min = typeof cfg.min === 'number' ? cfg.min : undefined;
+  const max = typeof cfg.max === 'number' ? cfg.max : undefined;
+  const inclusive = cfg.inclusive === false ? false : true;
+
+  if (min === undefined && max === undefined) {
+    return new ScorerResult({
+      score: 0.0,
+      passed: false,
+      label: 'config_error',
+      explanation: 'numeric_range requires at least one of `min` or `max`',
+    });
+  }
+
+  let value: number;
+  if (typeof request.output === 'number') {
+    value = request.output;
+  } else if (typeof request.output === 'string') {
+    const parsed = Number(request.output.trim());
+    if (Number.isNaN(parsed)) {
+      return new ScorerResult({
+        score: 0.0,
+        passed: false,
+        label: 'parse_error',
+        explanation: `output is not numeric: ${request.output}`,
+      });
+    }
+    value = parsed;
+  } else {
+    return new ScorerResult({
+      score: 0.0,
+      passed: false,
+      label: 'parse_error',
+      explanation: `output is not numeric: ${JSON.stringify(request.output)}`,
+    });
+  }
+
+  const aboveMin = min === undefined ? true : inclusive ? value >= min : value > min;
+  const belowMax = max === undefined ? true : inclusive ? value <= max : value < max;
+  const inRange = aboveMin && belowMax;
+
+  return new ScorerResult({
+    score: inRange ? 1.0 : 0.0,
+    passed: inRange,
+    label: inRange ? 'in_range' : 'out_of_range',
+    explanation: `value=${value}, min=${min ?? 'none'}, max=${max ?? 'none'}, inclusive=${inclusive}`,
+  });
+}
+
 /** Levenshtein distance: normalized similarity score */
 export function levenshtein(request: ScorerRequest): ScorerResult {
   const output = String(request.output ?? '');
@@ -282,6 +414,8 @@ export function levenshtein(request: ScorerRequest): ScorerResult {
 ScorerRegistry.register({ name: 'exact_match', handler: (_ctx, req) => exactMatch(req), description: 'Exact string match', isAsync: false });
 ScorerRegistry.register({ name: 'contains', handler: (_ctx, req) => contains(req), description: 'Substring containment check', isAsync: false });
 ScorerRegistry.register({ name: 'json_valid', handler: (_ctx, req) => jsonValid(req), description: 'Valid JSON check', isAsync: false });
+ScorerRegistry.register({ name: 'json_schema', handler: (_ctx, req) => jsonSchema(req), description: 'Validate against a JSON Schema', isAsync: false });
+ScorerRegistry.register({ name: 'numeric_range', handler: (_ctx, req) => numericRange(req), description: 'Numeric output is in [min, max]', isAsync: false });
 ScorerRegistry.register({ name: 'regex_match', handler: (_ctx, req) => regexMatch(req), description: 'Regex pattern match', isAsync: false });
 ScorerRegistry.register({ name: 'levenshtein', handler: (_ctx, req) => levenshtein(req), description: 'Levenshtein edit distance', isAsync: false });
 

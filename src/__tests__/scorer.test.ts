@@ -9,6 +9,8 @@ import {
   exactMatch,
   contains,
   jsonValid,
+  jsonSchema,
+  numericRange,
   regexMatch,
   levenshtein,
   getTotalTokens,
@@ -105,6 +107,115 @@ describe('Built-in scorers', () => {
     expect(result.score).toBeLessThan(0.5);
     expect(result.passed).toBe(false);
   });
+
+  // ─── json_schema ───────────────────────────────────────────────────
+  it('jsonSchema: should pass for valid object', () => {
+    const result = jsonSchema({
+      output: { name: 'Ada' },
+      config: {
+        schema: {
+          type: 'object',
+          required: ['name'],
+          properties: { name: { type: 'string' } },
+        },
+      },
+    });
+    expect(result.passed).toBe(true);
+    expect(result.score).toBe(1.0);
+    expect(result.label).toBe('valid');
+  });
+
+  it('jsonSchema: should fail for invalid object with errors', () => {
+    const result = jsonSchema({
+      output: { name: 'Ada', age: -1 },
+      config: {
+        schema: {
+          type: 'object',
+          required: ['name', 'age'],
+          properties: {
+            name: { type: 'string' },
+            age: { type: 'integer', minimum: 0 },
+          },
+        },
+      },
+    });
+    expect(result.passed).toBe(false);
+    expect(result.score).toBe(0.0);
+    expect(result.label).toBe('invalid');
+    const errors = (result.metadata?.errors ?? []) as string[];
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('jsonSchema: should parse string output as JSON', () => {
+    const result = jsonSchema({
+      output: '[1, 2, 3]',
+      config: { schema: { type: 'array', items: { type: 'integer' } } },
+    });
+    expect(result.passed).toBe(true);
+  });
+
+  it('jsonSchema: should label parse_error for unparseable string', () => {
+    const result = jsonSchema({
+      output: '{not json',
+      config: { schema: { type: 'object' } },
+    });
+    expect(result.passed).toBe(false);
+    expect(result.label).toBe('parse_error');
+  });
+
+  it('jsonSchema: should label config_error for missing schema', () => {
+    const result = jsonSchema({ output: { x: 1 } });
+    expect(result.label).toBe('config_error');
+  });
+
+  // ─── numeric_range ─────────────────────────────────────────────────
+  it('numericRange: should pass for value in [min, max] inclusive', () => {
+    expect(numericRange({ output: 5, config: { min: 1, max: 10 } }).passed).toBe(true);
+    expect(numericRange({ output: 1, config: { min: 1, max: 10 } }).passed).toBe(true);
+    expect(numericRange({ output: 10, config: { min: 1, max: 10 } }).passed).toBe(true);
+  });
+
+  it('numericRange: should fail boundary values when exclusive', () => {
+    expect(
+      numericRange({ output: 10, config: { min: 1, max: 10, inclusive: false } }).passed,
+    ).toBe(false);
+    expect(
+      numericRange({ output: 1, config: { min: 1, max: 10, inclusive: false } }).passed,
+    ).toBe(false);
+    expect(
+      numericRange({ output: 5, config: { min: 1, max: 10, inclusive: false } }).passed,
+    ).toBe(true);
+  });
+
+  it('numericRange: should fail out-of-range', () => {
+    const below = numericRange({ output: 0, config: { min: 1, max: 10 } });
+    expect(below.passed).toBe(false);
+    expect(below.label).toBe('out_of_range');
+    const above = numericRange({ output: 11, config: { min: 1, max: 10 } });
+    expect(above.passed).toBe(false);
+  });
+
+  it('numericRange: should accept one-sided bounds', () => {
+    expect(numericRange({ output: 100, config: { min: 50 } }).passed).toBe(true);
+    expect(numericRange({ output: 49, config: { min: 50 } }).passed).toBe(false);
+    expect(numericRange({ output: 0.4, config: { max: 0.5 } }).passed).toBe(true);
+    expect(numericRange({ output: 0.6, config: { max: 0.5 } }).passed).toBe(false);
+  });
+
+  it('numericRange: should parse numeric strings', () => {
+    expect(numericRange({ output: '3.14', config: { min: 0, max: 5 } }).passed).toBe(true);
+  });
+
+  it('numericRange: should label parse_error for non-numeric output', () => {
+    const r = numericRange({ output: 'not a number', config: { min: 0, max: 5 } });
+    expect(r.passed).toBe(false);
+    expect(r.label).toBe('parse_error');
+  });
+
+  it('numericRange: should label config_error when neither bound is set', () => {
+    const r = numericRange({ output: 1, config: {} });
+    expect(r.label).toBe('config_error');
+  });
 });
 
 describe('Scorer decorator & registry', () => {
@@ -135,6 +246,8 @@ describe('Scorer decorator & registry', () => {
     expect(names).toContain('exact_match');
     expect(names).toContain('contains');
     expect(names).toContain('json_valid');
+    expect(names).toContain('json_schema');
+    expect(names).toContain('numeric_range');
     expect(names).toContain('regex_match');
     expect(names).toContain('levenshtein');
   });

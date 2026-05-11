@@ -36,6 +36,7 @@
     "version": "napi version"
   },
   "dependencies": {
+    "ajv": "^8.17.1",
     "better-sqlite3": "^11.0.0"
   },
   "devDependencies": {
