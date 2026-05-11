@@ -61,14 +61,29 @@ describe('Built-in scorers', () => {
     expect(result.score).toBe(0.0);
   });
 
-  it('contains: should pass when output contains expected', () => {
-    const result = contains({ output: 'hello world', expected: 'world' });
+  it('contains: should pass when output contains config.pattern', () => {
+    const result = contains({ output: 'hello world', config: { pattern: 'world' } });
     expect(result.passed).toBe(true);
   });
 
-  it('contains: should fail when output does not contain expected', () => {
-    const result = contains({ output: 'hello', expected: 'world' });
+  it('contains: should fail when output does not contain config.pattern', () => {
+    const result = contains({ output: 'hello', config: { pattern: 'world' } });
     expect(result.passed).toBe(false);
+  });
+
+  it('contains: should honor case_sensitive=false', () => {
+    const result = contains({
+      output: 'Hello World',
+      config: { pattern: 'WORLD', case_sensitive: false },
+    });
+    expect(result.passed).toBe(true);
+  });
+
+  it('contains: legacy expected-field still works as a fallback', () => {
+    // Back-compat path until callers migrate. Will be removed once
+    // external usage moves to config.pattern.
+    const result = contains({ output: 'hello world', expected: 'world' });
+    expect(result.passed).toBe(true);
   });
 
   it('jsonValid: should pass for valid JSON', () => {
@@ -81,14 +96,30 @@ describe('Built-in scorers', () => {
     expect(result.passed).toBe(false);
   });
 
-  it('regexMatch: should match patterns', () => {
-    expect(regexMatch({ output: 'abc123', expected: '\\d+' }).passed).toBe(true);
-    expect(regexMatch({ output: 'abcdef', expected: '^\\d+$' }).passed).toBe(false);
+  it('jsonValid: structured object is already valid (matches Rust)', () => {
+    expect(jsonValid({ output: { k: 'v' } }).passed).toBe(true);
+    expect(jsonValid({ output: [1, 2, 3] }).passed).toBe(true);
+    expect(jsonValid({ output: 42 }).passed).toBe(true);
+    expect(jsonValid({ output: null }).passed).toBe(true);
+  });
+
+  it('regexMatch: should match patterns from config.pattern', () => {
+    expect(
+      regexMatch({ output: 'abc123', config: { pattern: '\\d+' } }).passed,
+    ).toBe(true);
+    expect(
+      regexMatch({ output: 'abcdef', config: { pattern: '^\\d+$' } }).passed,
+    ).toBe(false);
   });
 
   it('regexMatch: should handle invalid regex gracefully', () => {
-    const result = regexMatch({ output: 'test', expected: '[invalid' });
+    const result = regexMatch({ output: 'test', config: { pattern: '[invalid' } });
     expect(result.passed).toBe(false);
+  });
+
+  it('regexMatch: legacy expected-field still works as a fallback', () => {
+    const result = regexMatch({ output: 'abc123', expected: '\\d+' });
+    expect(result.passed).toBe(true);
   });
 
   it('levenshtein: should return 1.0 for exact match', () => {

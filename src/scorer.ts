@@ -6,6 +6,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import Ajv from 'ajv';
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -192,33 +193,62 @@ export function exactMatch(request: ScorerRequest): ScorerResult {
   });
 }
 
-/** Contains: output includes expected substring */
+/**
+ * Contains: output includes a configured pattern.
+ *
+ * Reads `request.config.pattern` (canonical, matches Rust + Python).
+ * Falls back to `request.expected` for backward compatibility with
+ * older TS callers; that path will be removed once external usage
+ * migrates. `config.case_sensitive` defaults to true.
+ */
 export function contains(request: ScorerRequest): ScorerResult {
   const output = String(request.output ?? '');
-  const expected = String(request.expected ?? '');
-  const found = output.includes(expected);
+  const pattern = String(
+    request.config?.pattern ?? request.expected ?? '',
+  );
+  const caseSensitive = request.config?.case_sensitive !== false;
+  const haystack = caseSensitive ? output : output.toLowerCase();
+  const needle = caseSensitive ? pattern : pattern.toLowerCase();
+  const found = haystack.includes(needle);
   return new ScorerResult({
     score: found ? 1.0 : 0.0,
     passed: found,
-    explanation: found ? `Output contains "${expected}"` : `Output does not contain "${expected}"`,
+    explanation: found ? `Output contains "${pattern}"` : `Output does not contain "${pattern}"`,
   });
 }
 
-/** JSON valid: output is valid JSON */
+/**
+ * JSON valid: output is valid JSON.
+ *
+ * Matches the Rust impl (`sdk-core::eval::deterministic::json_valid`):
+ * a structured JSON value (object / array / number / bool / null) is
+ * already valid by definition. Only string outputs are parsed.
+ */
 export function jsonValid(request: ScorerRequest): ScorerResult {
-  const output = String(request.output ?? '');
-  try {
-    JSON.parse(output);
-    return new ScorerResult({ score: 1.0, passed: true, explanation: 'Valid JSON' });
-  } catch {
-    return new ScorerResult({ score: 0.0, passed: false, explanation: 'Invalid JSON' });
+  if (typeof request.output === 'string') {
+    try {
+      JSON.parse(request.output);
+      return new ScorerResult({ score: 1.0, passed: true, explanation: 'Valid JSON' });
+    } catch {
+      return new ScorerResult({ score: 0.0, passed: false, explanation: 'Invalid JSON' });
+    }
   }
+  // Anything that isn't a string is already a structured JSON Value —
+  // including objects, arrays, numbers, booleans, and null.
+  return new ScorerResult({ score: 1.0, passed: true, explanation: 'Valid JSON' });
 }
 
-/** Regex match: output matches the expected regex pattern */
+/**
+ * Regex match: output matches a regex pattern.
+ *
+ * Reads `request.config.pattern` (canonical). Falls back to
+ * `request.expected` for backward compatibility.
+ */
 export function regexMatch(request: ScorerRequest): ScorerResult {
   const output = String(request.output ?? '');
-  const pattern = String(request.expected ?? '');
+  const pattern = String(
+    request.config?.pattern ?? request.expected ?? '',
+  );
   try {
     const re = new RegExp(pattern);
     const match = re.test(output);
@@ -272,10 +302,12 @@ export function jsonSchema(request: ScorerRequest): ScorerResult {
     value = request.output;
   }
 
-  // Lazy-import ajv so workerd/edge bundles that never call this scorer
-  // don't pay the bundle cost. Cache the validator per-schema by JSON
-  // identity to amortize repeated calls in a batch.
-  const Ajv = (require('ajv') as { default: any }).default;
+  // ajv is imported statically at the top of the file — the dynamic
+  // require() form was incompatible with the package's "type": "module"
+  // declaration and threw ReferenceError under Node's ESM loader.
+  // Bundle cost (~120KB minified) is the same either way; per-call we
+  // re-compile because Ajv is stateful per schema and schema isn't
+  // necessarily JSON-identical across calls.
   let validator;
   try {
     const ajv = new Ajv({ allErrors: true, strict: false });
@@ -491,7 +523,7 @@ export async function llmJudge(
   let lm = (ctx as { llmJudgeLm?: { generate: (req: any) => Promise<any> } } | undefined)?.llmJudgeLm;
   if (!lm) {
     try {
-      lm = makeLmForProvider(providerName);
+      lm = await makeLmForProvider(providerName);
     } catch (e) {
       return new ScorerResult({
         score: 0.0,
@@ -532,11 +564,15 @@ function formatJudgeValue(v: any): string {
   }
 }
 
-function makeLmForProvider(providerName: string): { generate: (req: any) => Promise<any> } {
-  // Lazy import keeps `scorer.ts` usable in environments (wasm/edge)
-  // where the native LM bindings aren't loaded.
-  const lmModule = require('./lm.js') as typeof import('./lm.js');
-  const { LM } = lmModule;
+async function makeLmForProvider(
+  providerName: string,
+): Promise<{ generate: (req: any) => Promise<any> }> {
+  // Dynamic ESM import keeps the LM bindings out of bundles that never
+  // call llm_judge — important for wasm/edge runtimes where the native
+  // module isn't loadable. `await import()` is the ESM-correct shape;
+  // the previous bare `require()` threw ReferenceError under Node's
+  // pure ESM loader since this package is "type": "module".
+  const { LM } = await import('./lm.js');
   switch (providerName.toLowerCase()) {
     case 'openai':
       return LM.openai();

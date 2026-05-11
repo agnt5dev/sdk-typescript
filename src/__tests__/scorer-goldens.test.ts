@@ -39,13 +39,13 @@ const fixturePath = path.resolve(__dirname, '../../../test-fixtures/eval/builtin
 const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8')) as { cases: Golden[] };
 
 function runScorer(name: string, req: ScorerRequest): ScorerResult {
+  // No adapters here: if a row passes in Rust + Python but fails here,
+  // the TypeScript symbol's shape has drifted — fix the symbol.
   switch (name) {
     case 'exact_match':
       return exactMatch(req);
     case 'contains':
-      // The TS legacy `contains` reads `expected` for the pattern.
-      // Map the fixture's `config.pattern` shape onto that.
-      return contains({ ...req, expected: req.config?.pattern });
+      return contains(req);
     case 'json_valid':
       return jsonValid(req);
     case 'json_schema':
@@ -53,7 +53,7 @@ function runScorer(name: string, req: ScorerRequest): ScorerResult {
     case 'numeric_range':
       return numericRange(req);
     case 'regex_match':
-      return regexMatch({ ...req, expected: req.config?.pattern });
+      return regexMatch(req);
     case 'levenshtein':
       return levenshtein(req);
     default:
