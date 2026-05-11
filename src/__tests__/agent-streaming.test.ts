@@ -49,7 +49,7 @@ describe('Agent Streaming', () => {
     expect(started.eventType).toBe('agent.started');
     if (started.eventType === 'agent.started') {
       expect(started.agentName).toBe('test-agent');
-      expect(started.agentModel).toBe('gpt-4o-mini');
+      expect(started.agentModel).toBe('openai/gpt-4o-mini');
       expect(started.maxIterations).toBe(10);
     }
 
