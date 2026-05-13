@@ -75,14 +75,14 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
 
     const handlerName = this.name;
 
-    const wrapped = async (ctx: Context, input: TInput): Promise<TOutput> => {
+    const wrapped = async (ctx: Context, ...args: TInput[]): Promise<TOutput> => {
       const anyCtx = ctx as any;
       const hasEmit = ctx && typeof anyCtx.emit === 'function';
       const hasStack = ctx && typeof anyCtx.pushCorrelation === 'function';
 
       // No platform context — call handler directly (unit tests, local invocation).
       if (!hasEmit || !hasStack) {
-        return handler(ctx, input);
+        return handler(ctx, ...args);
       }
 
       // Skip event emission when the dispatcher is already wrapping us. This
@@ -95,7 +95,7 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
       const parentCid: string | undefined =
         anyCtx.getCurrentCorrelationId?.() ?? anyCtx._workflowCid;
       if (!parentCid) {
-        return handler(ctx, input);
+        return handler(ctx, ...args);
       }
 
       const stepName: string = anyCtx.nextStepName?.(handlerName) ?? `${handlerName}_0`;
@@ -103,17 +103,22 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
       const fnCid = generateCid();
       const startMs = Date.now();
 
+      // Event metadata: single-arg handlers (the common case) emit the bare
+      // value to match sdk-python's shape; multi-arg handlers emit the full
+      // arg list so nothing is dropped from the journal.
+      const inputForEvent: any = args.length <= 1 ? args[0] : args;
+
       await ctx.emit(
         workflowStepStarted(stepCid, parentCid, {
           handlerName,
           stepName,
-          input,
+          input: inputForEvent,
           attempt: 1,
         }),
       );
       await ctx.emit(
         functionStarted(fnCid, stepCid, {
-          inputData: input,
+          inputData: inputForEvent,
           attempt: 0,
         }),
       );
@@ -122,7 +127,7 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
       // as its parent (matches sdk-python: function → agent.started).
       anyCtx.pushCorrelation(fnCid);
       try {
-        const result = await handler(ctx, input);
+        const result = await handler(ctx, ...args);
         const durationMs = Date.now() - startMs;
 
         await ctx.emit(
