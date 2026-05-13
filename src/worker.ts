@@ -83,6 +83,17 @@ class SimpleContext implements Context {
   private _workflowCid?: string;
   private _runCid?: string;
 
+  // Correlation stack: top entry is the current parent for nested events.
+  // Push when entering a wrapped fn/step, pop on exit. Used by emit() to
+  // auto-fill parentCorrelationId on events whose helpers default to null
+  // (e.g. agent.started/completed/failed emitted by Agent.stream()).
+  private _correlationStack: string[] = [];
+
+  // Per-workflow incrementing counter for generating step names like
+  // `fetch_top_ids_0`, `summarize_3`. Matches sdk-python's WorkflowContext
+  // step naming so journals look identical across languages.
+  private _workflowStepCounter = 0;
+
   constructor(
     public readonly invocationId: string,
     public readonly runId: string,
@@ -178,9 +189,44 @@ class SimpleContext implements Context {
   }
 
   async emit(event: any): Promise<void> {
-    if (this._emitter) {
-      await this._emitter.emit(event);
+    if (!this._emitter) return;
+
+    // Auto-fill parentCorrelationId from the correlation stack if the event
+    // doesn't carry one. This matches sdk-python where the agent/lm event
+    // emitters pick up the active step/function/iteration cid from context.
+    if (event && (event.parentCorrelationId === null || event.parentCorrelationId === undefined)) {
+      const top = this._correlationStack[this._correlationStack.length - 1];
+      if (top) {
+        event.parentCorrelationId = top;
+      }
     }
+
+    await this._emitter.emit(event);
+  }
+
+  /** Push a correlation id onto the stack (parent context for nested events). */
+  pushCorrelation(cid: string): void {
+    this._correlationStack.push(cid);
+  }
+
+  /** Pop the most recently pushed correlation id. */
+  popCorrelation(): string | undefined {
+    return this._correlationStack.pop();
+  }
+
+  /** Top of the correlation stack — current parent for any newly emitted event. */
+  getCurrentCorrelationId(): string | undefined {
+    return this._correlationStack[this._correlationStack.length - 1] ?? this._workflowCid;
+  }
+
+  /** Workflow correlation id (set by Worker.processMessage for workflow dispatches). */
+  getWorkflowCorrelationId(): string | undefined {
+    return this._workflowCid;
+  }
+
+  /** Generate the next step name in the form `${handlerName}_${counter}`. */
+  nextStepName(handlerName: string): string {
+    return `${handlerName}_${this._workflowStepCounter++}`;
   }
 
   get logger() {
@@ -638,6 +684,10 @@ export class Worker {
                 attempt,
               }));
 
+              // Push function cid onto the correlation stack so any nested
+              // agent/lm events emitted by the handler body inherit fnCid as
+              // their parent (matches sdk-python's function→agent parenting).
+              ctx.pushCorrelation(fnCid);
               try {
                 result = await fn.handler(ctx, inputData);
                 const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
@@ -657,6 +707,8 @@ export class Worker {
                   durationMs,
                 }));
                 throw fnError;
+              } finally {
+                ctx.popCorrelation();
               }
               break;
             }
@@ -679,6 +731,10 @@ export class Worker {
                 attempt,
               }));
 
+              // Push workflow cid onto the correlation stack so direct fn()
+              // calls and inline Agent.run inside the workflow handler emit
+              // events parented to the workflow.
+              ctx.pushCorrelation(wfCid);
               try {
                 result = await wf.handler(ctx, inputData);
                 const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
@@ -706,6 +762,8 @@ export class Worker {
                   durationMs,
                 }));
                 throw wfError;
+              } finally {
+                ctx.popCorrelation();
               }
               break;
             }

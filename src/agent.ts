@@ -26,6 +26,10 @@ import {
   toolCallStarted,
   toolCallCompleted,
   toolCallFailed,
+  lmStarted,
+  lmCompleted,
+  lmFailed,
+  generateCid,
 } from './events.js';
 
 /**
@@ -560,12 +564,17 @@ export class Agent {
   }
 
   /**
-   * Generate using the model (handles both old and new LM types)
+   * Generate using the model (handles both old and new LM types).
+   *
+   * Emits `lm.started` and `lm.completed`/`lm.failed` around the model
+   * call, parented under the agent iteration (matches sdk-python's
+   * lm/client.py emission so the platform journal records model name,
+   * provider, and token counts).
    */
   private async generateWithModel(
     messages: Message[],
     toolDefs: ToolSchema[],
-    callbackContext?: { context: Context; iteration: number },
+    callbackContext?: { context: Context; iteration: number; parentCorrelationId?: string },
   ): Promise<GenerateResponse> {
     const request = this.buildModelRequest(messages, toolDefs);
 
@@ -581,24 +590,98 @@ export class Agent {
       toolDefs,
     };
 
-    let response: GenerateResponse | undefined;
-    if (this.callbacks.beforeModel) {
-      const raw = await this.callbacks.beforeModel(modelCtx, request);
-      const resolved = this.callbackValue(raw);
-      if (resolved.hasValue) {
-        response = this.normalizeGenerateResponse(resolved.value);
+    // LM event metadata. Model name format is `provider/model` (e.g.
+    // `openai/gpt-5-mini`); split for the metadata fields. parentCid points
+    // at the iteration cid passed in from stream() — Python parents lm.* on
+    // iteration.
+    const slashIdx = this.modelName.indexOf('/');
+    const provider = slashIdx > 0 ? this.modelName.slice(0, slashIdx) : '';
+    const model = this.modelName;
+    const parentCid =
+      callbackContext.parentCorrelationId ??
+      (callbackContext.context as any).getCurrentCorrelationId?.();
+
+    const lmCid = generateCid();
+    const startMs = Date.now();
+    const reqAny = request as any;
+    const ctx = callbackContext.context;
+
+    if (parentCid) {
+      try {
+        await ctx.emit(
+          lmStarted(lmCid, parentCid, {
+            model,
+            provider,
+            messages: reqAny.messages ?? [],
+            systemPrompt: reqAny.systemPrompt ?? reqAny.system_prompt,
+            toolsCount: toolDefs.length,
+            temperature: reqAny.config?.temperature,
+            maxTokens: reqAny.config?.maxTokens ?? reqAny.config?.max_tokens ?? null,
+          }),
+        );
+      } catch {
+        // Best-effort: emission failure must not block the model call.
       }
     }
 
-    if (!response) {
-      response = await this.dispatchModelRequest(request);
+    let response: GenerateResponse | undefined;
+    try {
+      if (this.callbacks.beforeModel) {
+        const raw = await this.callbacks.beforeModel(modelCtx, request);
+        const resolved = this.callbackValue(raw);
+        if (resolved.hasValue) {
+          response = this.normalizeGenerateResponse(resolved.value);
+        }
+      }
+
+      if (!response) {
+        response = await this.dispatchModelRequest(request);
+      }
+
+      if (this.callbacks.afterModel) {
+        const raw = await this.callbacks.afterModel(modelCtx, request, response);
+        const resolved = this.callbackValue(raw);
+        if (resolved.hasValue) {
+          response = this.normalizeGenerateResponse(resolved.value);
+        }
+      }
+    } catch (err) {
+      if (parentCid) {
+        try {
+          await ctx.emit(
+            lmFailed(lmCid, parentCid, {
+              model,
+              provider,
+              errorCode: 'LM_ERROR',
+              errorMessage: (err as Error).message ?? String(err),
+              durationMs: Date.now() - startMs,
+            }),
+          );
+        } catch {
+          /* best-effort */
+        }
+      }
+      throw err;
     }
 
-    if (this.callbacks.afterModel) {
-      const raw = await this.callbacks.afterModel(modelCtx, request, response);
-      const resolved = this.callbackValue(raw);
-      if (resolved.hasValue) {
-        response = this.normalizeGenerateResponse(resolved.value);
+    if (parentCid) {
+      const durationMs = Date.now() - startMs;
+      const usage = response.usage;
+      try {
+        await ctx.emit(
+          lmCompleted(lmCid, parentCid, {
+            model,
+            provider,
+            output: response.text ?? '',
+            toolCalls: response.toolCalls ?? null,
+            inputTokens: usage?.promptTokens ?? 0,
+            outputTokens: usage?.completionTokens ?? 0,
+            totalTokens: usage?.totalTokens ?? 0,
+            durationMs,
+          }),
+        );
+      } catch {
+        /* best-effort */
       }
     }
 
@@ -739,6 +822,7 @@ export class Agent {
         const response = await this.generateWithModel(messages, toolDefs, {
           context: ctx,
           iteration: iteration + 1,
+          parentCorrelationId: iterCorrelationId,
         });
 
         messages.push(Message.assistant(response.text));

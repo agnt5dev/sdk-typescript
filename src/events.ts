@@ -333,6 +333,54 @@ export interface WorkflowPaused extends BaseEvent {
   pauseData: Record<string, any>;
 }
 
+// ─── Workflow step lifecycle events ─────────────────────────────────
+
+export interface WorkflowStepStarted extends BaseEvent {
+  eventType: 'workflow.step.started';
+  inputData: { handler_name: string; input: any; step_name: string };
+  attempt: number;
+}
+
+export interface WorkflowStepCompleted extends BaseEvent {
+  eventType: 'workflow.step.completed';
+  outputData: { handler_name: string; result: any; step_name: string };
+  durationMs: number;
+}
+
+export interface WorkflowStepFailed extends BaseEvent {
+  eventType: 'workflow.step.failed';
+  errorCode: string;
+  errorMessage: string;
+  durationMs: number;
+}
+
+// ─── LM lifecycle events ────────────────────────────────────────────
+
+export interface LMStarted extends BaseEvent {
+  eventType: 'lm.started';
+  inputData: {
+    messages: any[];
+    system_prompt?: string;
+    tools_count: number;
+    temperature?: number;
+    max_tokens?: number | null;
+  };
+  attempt: number;
+}
+
+export interface LMCompleted extends BaseEvent {
+  eventType: 'lm.completed';
+  outputData: { output: string; tool_calls?: any };
+  durationMs: number;
+}
+
+export interface LMFailed extends BaseEvent {
+  eventType: 'lm.failed';
+  errorCode: string;
+  errorMessage: string;
+  durationMs: number;
+}
+
 // ─── Tool lifecycle events (platform dispatch) ──────────────────────
 
 export interface ToolStarted extends BaseEvent {
@@ -376,6 +424,8 @@ export type LifecycleEvent =
   | RunStarted | RunCompleted | RunFailed
   | FunctionStarted | FunctionCompleted | FunctionFailed
   | WorkflowStarted | WorkflowCompleted | WorkflowFailed | WorkflowPaused
+  | WorkflowStepStarted | WorkflowStepCompleted | WorkflowStepFailed
+  | LMStarted | LMCompleted | LMFailed
   | ToolStarted | ToolCompleted | ToolFailed
   | OutputStart | OutputDelta | OutputStop;
 
@@ -573,6 +623,143 @@ export function toolFailed(
   return {
     ...baseFields('tool.failed', correlationId, parentCorrelationId),
     eventType: 'tool.failed',
+    errorCode: opts.errorCode,
+    errorMessage: opts.errorMessage,
+    durationMs: opts.durationMs,
+  };
+}
+
+export function workflowStepStarted(
+  correlationId: string,
+  parentCorrelationId: string,
+  opts: { handlerName: string; stepName: string; input: any; attempt: number },
+): WorkflowStepStarted {
+  return {
+    ...baseFields(opts.stepName, correlationId, parentCorrelationId, { name: opts.stepName }),
+    eventType: 'workflow.step.started',
+    inputData: {
+      handler_name: opts.handlerName,
+      input: opts.input,
+      step_name: opts.stepName,
+    },
+    attempt: opts.attempt,
+  };
+}
+
+export function workflowStepCompleted(
+  correlationId: string,
+  parentCorrelationId: string,
+  opts: { handlerName: string; stepName: string; result: any; durationMs: number },
+): WorkflowStepCompleted {
+  return {
+    ...baseFields(opts.stepName, correlationId, parentCorrelationId, { name: opts.stepName }),
+    eventType: 'workflow.step.completed',
+    outputData: {
+      handler_name: opts.handlerName,
+      result: opts.result,
+      step_name: opts.stepName,
+    },
+    durationMs: opts.durationMs,
+  };
+}
+
+export function workflowStepFailed(
+  correlationId: string,
+  parentCorrelationId: string,
+  opts: { stepName: string; errorCode: string; errorMessage: string; durationMs: number },
+): WorkflowStepFailed {
+  return {
+    ...baseFields(opts.stepName, correlationId, parentCorrelationId, { name: opts.stepName }),
+    eventType: 'workflow.step.failed',
+    errorCode: opts.errorCode,
+    errorMessage: opts.errorMessage,
+    durationMs: opts.durationMs,
+  };
+}
+
+export function lmStarted(
+  correlationId: string,
+  parentCorrelationId: string,
+  opts: {
+    model: string;
+    provider: string;
+    messages: any[];
+    systemPrompt?: string;
+    toolsCount: number;
+    temperature?: number;
+    maxTokens?: number | null;
+    attempt?: number;
+  },
+): LMStarted {
+  return {
+    ...baseFields(opts.model, correlationId, parentCorrelationId, {
+      name: opts.model,
+      model: opts.model,
+      provider: opts.provider,
+    }),
+    eventType: 'lm.started',
+    inputData: {
+      messages: opts.messages,
+      system_prompt: opts.systemPrompt,
+      tools_count: opts.toolsCount,
+      temperature: opts.temperature,
+      max_tokens: opts.maxTokens ?? null,
+    },
+    attempt: opts.attempt ?? 1,
+  };
+}
+
+export function lmCompleted(
+  correlationId: string,
+  parentCorrelationId: string,
+  opts: {
+    model: string;
+    provider: string;
+    output: string;
+    toolCalls?: any;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    durationMs: number;
+  },
+): LMCompleted {
+  return {
+    ...baseFields(opts.model, correlationId, parentCorrelationId, {
+      name: opts.model,
+      model: opts.model,
+      provider: opts.provider,
+      input_tokens: String(opts.inputTokens),
+      output_tokens: String(opts.outputTokens),
+      total_tokens: String(opts.totalTokens),
+      duration_ms: String(opts.durationMs),
+    }),
+    eventType: 'lm.completed',
+    outputData: {
+      output: opts.output,
+      tool_calls: opts.toolCalls ?? null,
+    },
+    durationMs: opts.durationMs,
+  };
+}
+
+export function lmFailed(
+  correlationId: string,
+  parentCorrelationId: string,
+  opts: {
+    model: string;
+    provider: string;
+    errorCode: string;
+    errorMessage: string;
+    durationMs: number;
+  },
+): LMFailed {
+  return {
+    ...baseFields(opts.model, correlationId, parentCorrelationId, {
+      name: opts.model,
+      model: opts.model,
+      provider: opts.provider,
+    }),
+    eventType: 'lm.failed',
     errorCode: opts.errorCode,
     errorMessage: opts.errorMessage,
     durationMs: opts.durationMs,
