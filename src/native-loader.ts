@@ -1,0 +1,61 @@
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+let cached: any = null;
+let loadAttempted = false;
+
+export function tryLoadNativeBindings(): any | null {
+  if (cached) return cached;
+  if (loadAttempted) return null;
+  try {
+    return loadNativeBindings();
+  } catch {
+    return null;
+  }
+}
+
+export function loadNativeBindings(): any {
+  if (cached) return cached;
+  loadAttempted = true;
+
+  const require = createRequire(import.meta.url);
+  const { platform, arch } = process;
+
+  let pkgName: string | null = null;
+  switch (platform) {
+    case 'darwin':
+      if (arch === 'arm64') pkgName = '@agnt5/sdk-darwin-arm64';
+      else if (arch === 'x64') pkgName = '@agnt5/sdk-darwin-x64';
+      break;
+    case 'linux':
+      if (arch === 'arm64') pkgName = '@agnt5/sdk-linux-arm64-gnu';
+      else if (arch === 'x64') pkgName = '@agnt5/sdk-linux-x64-gnu';
+      break;
+  }
+  if (!pkgName) {
+    throw new Error(`Unsupported platform ${platform}-${arch}`);
+  }
+
+  try {
+    cached = require(pkgName);
+    return cached;
+  } catch (primaryError) {
+    // Workspace symlink fallback: look for a local napi build at the
+    // SDK package root when the optionalDependency platform package
+    // isn't installed.
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    for (const suffix of [`${platform}-${arch}`, `${platform}-${arch}-gnu`]) {
+      for (const rel of ['../', '../../']) {
+        try {
+          cached = require(join(__dirname, rel, `agnt5-sdk-native.${suffix}.node`));
+          return cached;
+        } catch {}
+      }
+    }
+    throw new Error(
+      `Failed to load native bindings: ${pkgName} not installed, no local build found. ` +
+      `Run "pnpm run build:napi" in sdk/sdk-typescript. Original: ${(primaryError as Error).message}`
+    );
+  }
+}

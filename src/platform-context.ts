@@ -4,44 +4,8 @@
  */
 
 import type { Context, Logger } from './types.js';
-import { createRequire } from 'module';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import { StateError, CheckpointError } from './errors.js';
-
-// Dynamic import for native bindings
-let nativeBindings: any = null;
-
-function loadNativeBindings() {
-  if (nativeBindings) return nativeBindings;
-
-  try {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const require = createRequire(import.meta.url);
-
-    // Try multiple paths to find the native module
-    const possiblePaths = [
-      join(__dirname, '../../native/agnt5-sdk-native.linux-x64-gnu.node'),
-      join(__dirname, '../native/agnt5-sdk-native.linux-x64-gnu.node'),
-      join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),
-      join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),
-    ];
-
-    for (const nativePath of possiblePaths) {
-      try {
-        nativeBindings = require(nativePath);
-        return nativeBindings;
-      } catch (e) {
-        continue;
-      }
-    }
-
-    throw new Error('Could not find native bindings');
-  } catch (error) {
-    throw new Error(`Failed to load native bindings: ${(error as Error).message}`);
-  }
-}
+import { loadNativeBindings, tryLoadNativeBindings } from './native-loader.js';
 
 /**
  * Platform-backed context with durable state and distributed tracing
@@ -179,7 +143,7 @@ export class PlatformContext implements Context {
    */
   get logger(): Logger {
     const runId = this.runId;
-    const native = nativeBindings;
+    const native = tryLoadNativeBindings();
     return {
       info: (message: string, meta?: Record<string, any>) => {
         console.log(`[INFO] ${message}`, meta || '');

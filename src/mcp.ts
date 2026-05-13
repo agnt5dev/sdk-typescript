@@ -1,8 +1,6 @@
-import { createRequire } from 'module';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import { Tool } from './tool.js';
 import type { Context } from './types.js';
+import { loadNativeBindings } from './native-loader.js';
 
 export interface McpTool {
   name: string;
@@ -63,36 +61,6 @@ export class MCPError extends Error {
     super(message);
     this.name = 'MCPError';
   }
-}
-
-let nativeBindings: any = null;
-
-function loadNativeBindings() {
-  if (nativeBindings) return nativeBindings;
-
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = dirname(__filename);
-  const require = createRequire(import.meta.url);
-
-  const possiblePaths = [
-    join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),
-    join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),
-    join(__dirname, '../../native/agnt5-sdk-native.linux-x64-gnu.node'),
-    join(__dirname, '../native/agnt5-sdk-native.linux-x64-gnu.node'),
-    join(__dirname, '../../native/agnt5-sdk-native.linux-x64.node'),
-    join(__dirname, '../native/agnt5-sdk-native.linux-x64.node'),
-  ];
-
-  for (const nativePath of possiblePaths) {
-    try {
-      nativeBindings = require(nativePath);
-      return nativeBindings;
-    } catch {
-      continue;
-    }
-  }
-
-  throw new Error('Could not find native MCP bindings');
 }
 
 function parseServerConfig(config: Record<string, any>): ServerConfig {
