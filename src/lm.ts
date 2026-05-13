@@ -17,47 +17,9 @@
  * - OpenAI Chat (custom OpenAI-compatible APIs)
  */
 
-import { createRequire } from 'module';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import { ConfigurationError } from './errors.js';
 import type { JSONSchema } from './types.js';
-
-// Native bindings (loaded dynamically)
-let nativeBindings: any = null;
-
-/**
- * Load native bindings
- * @internal
- */
-function loadNativeBindings() {
-  if (nativeBindings) return nativeBindings;
-
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = dirname(__filename);
-  const require = createRequire(import.meta.url);
-
-  // Try multiple paths to find the native module
-  const possiblePaths = [
-    join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),
-    join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),
-    join(__dirname, '../../native/agnt5-sdk-native.linux-x64-gnu.node'),
-    join(__dirname, '../native/agnt5-sdk-native.linux-x64-gnu.node'),
-    join(__dirname, '../../native/agnt5-sdk-native.linux-x64.node'),
-    join(__dirname, '../native/agnt5-sdk-native.linux-x64.node'),
-  ];
-
-  for (const nativePath of possiblePaths) {
-    try {
-      nativeBindings = require(nativePath);
-      return nativeBindings;
-    } catch (e) {
-      continue;
-    }
-  }
-
-  throw new Error('Could not find native LM bindings');
-}
+import { loadNativeBindings } from './native-loader.js';
 
 // ============================================================================
 // Types

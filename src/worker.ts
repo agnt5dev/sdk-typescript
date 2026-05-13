@@ -19,57 +19,7 @@ import {
   toolStarted, toolCompleted, toolFailed,
 } from './events.js';
 import type { AgentEvent } from './events.js';
-import { createRequire } from 'module';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-
-// Dynamic import for native bindings
-let nativeBindings: any = null;
-
-/**
- * Load native bindings based on platform
- */
-function loadNativeBindings() {
-  if (nativeBindings) return nativeBindings;
-
-  try {
-    const runtime = getRuntime();
-
-    if (runtime === 'edge') {
-      // TODO: Load WASM bindings for edge runtimes
-      throw new Error('WASM bindings not yet implemented');
-    }
-
-    // Load NAPI bindings for Node.js/Bun/Deno
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const require = createRequire(import.meta.url);
-
-    // Try multiple paths to find the native module
-    const possiblePaths = [
-      join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),      // From dist/src (macOS)
-      join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),         // From src (macOS)
-      join(__dirname, '../../native/agnt5-sdk-native.linux-x64-gnu.node'),     // From dist/src (Linux)
-      join(__dirname, '../native/agnt5-sdk-native.linux-x64-gnu.node'),        // From src (Linux)
-      join(__dirname, '../../native/agnt5-sdk-native.linux-x64.node'),         // From dist/src (Linux fallback)
-      join(__dirname, '../native/agnt5-sdk-native.linux-x64.node'),            // From src (Linux fallback)
-    ];
-
-    for (const nativePath of possiblePaths) {
-      try {
-        nativeBindings = require(nativePath);
-        return nativeBindings;
-      } catch (e) {
-        // Try next path
-        continue;
-      }
-    }
-
-    throw new Error('Could not find native bindings in any expected location');
-  } catch (error) {
-    throw new Error(`Failed to load native bindings: ${(error as Error).message}`);
-  }
-}
+import { loadNativeBindings, tryLoadNativeBindings } from './native-loader.js';
 
 /**
  * Platform worker configuration
@@ -238,19 +188,19 @@ class SimpleContext implements Context {
     return {
       info: (message: string, meta?: Record<string, any>) => {
         console.log(`[INFO] ${message}`, meta || {});
-        nativeBindings?.logFromTypescript('INFO', message, runId, null, null, meta ?? null);
+        tryLoadNativeBindings()?.logFromTypescript('INFO', message, runId, null, null, meta ?? null);
       },
       error: (message: string, meta?: Record<string, any>) => {
         console.error(`[ERROR] ${message}`, meta || {});
-        nativeBindings?.logFromTypescript('ERROR', message, runId, null, null, meta ?? null);
+        tryLoadNativeBindings()?.logFromTypescript('ERROR', message, runId, null, null, meta ?? null);
       },
       warn: (message: string, meta?: Record<string, any>) => {
         console.warn(`[WARN] ${message}`, meta || {});
-        nativeBindings?.logFromTypescript('WARN', message, runId, null, null, meta ?? null);
+        tryLoadNativeBindings()?.logFromTypescript('WARN', message, runId, null, null, meta ?? null);
       },
       debug: (message: string, meta?: Record<string, any>) => {
         console.debug(`[DEBUG] ${message}`, meta || {});
-        nativeBindings?.logFromTypescript('DEBUG', message, runId, null, null, meta ?? null);
+        tryLoadNativeBindings()?.logFromTypescript('DEBUG', message, runId, null, null, meta ?? null);
       },
     };
   }
