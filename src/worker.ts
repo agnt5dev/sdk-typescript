@@ -20,6 +20,12 @@ import {
 } from './events.js';
 import type { AgentEvent } from './events.js';
 import { loadNativeBindings, tryLoadNativeBindings } from './native-loader.js';
+import {
+  executePromptWorkerInput,
+  isPromptExecutorComponent,
+  PROMPT_EXECUTOR_COMPONENT_NAME,
+  PROMPT_EXECUTOR_METADATA,
+} from './prompt-executor.js';
 
 /**
  * Platform worker configuration
@@ -671,7 +677,16 @@ export class Worker {
 
           switch (message.componentType) {
             case 'function': {
-              const fn = FunctionRegistry.get(message.componentName);
+              const registeredFn = FunctionRegistry.get(message.componentName);
+              const fn =
+                registeredFn ??
+                (isPromptExecutorComponent(message.componentName)
+                  ? {
+                      handler: async (_ctx: Context, input: any) =>
+                        await executePromptWorkerInput(input),
+                      options: {},
+                    }
+                  : undefined);
               if (!fn) {
                 throw new Error(`Function not found: ${message.componentName}`);
               }
@@ -1081,6 +1096,15 @@ export class Worker {
       }
 
       components.push({ name, componentType: 'function', config, metadata: {} });
+    }
+
+    if (!FunctionRegistry.get(PROMPT_EXECUTOR_COMPONENT_NAME)) {
+      components.push({
+        name: PROMPT_EXECUTOR_COMPONENT_NAME,
+        componentType: 'function',
+        config: { builtin: 'true' },
+        metadata: PROMPT_EXECUTOR_METADATA,
+      });
     }
 
     // Workflows (auto-discover from registry)
