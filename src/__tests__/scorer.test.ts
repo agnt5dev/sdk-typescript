@@ -368,6 +368,87 @@ describe('Built-in scorers', () => {
     expect(result.label).toBe('config_error');
   });
 
+  it('llmJudge: should render custom prompt templates and map choice labels to scores', async () => {
+    let prompt = '';
+    const result = await llmJudge(
+      {
+        output: { answer: '4' },
+        expected: { answer: '4' },
+        input: { question: '2+2?' },
+        config: {
+          prompt_template:
+            'Question: {{input.question}}\nAnswer: {{output.answer}}\nReference: {{expected.answer}}',
+          choice_scores: { correct: 1, incorrect: 0 },
+          provider: 'openai',
+          model: 'gpt-test',
+        },
+      },
+      {
+        runId: 'r',
+        correlationId: 'c',
+        attempt: 0,
+        log: () => {},
+        llmJudgeLm: {
+          generate: async (req: any) => {
+            prompt = req.messages[1].content;
+            return { text: '{"label":"correct","explanation":"matches"}' };
+          },
+        },
+      } as any,
+    );
+
+    expect(result.score).toBe(1);
+    expect(result.passed).toBe(true);
+    expect(result.label).toBe('correct');
+    expect(result.metadata?.selected_label).toBe('correct');
+    expect(prompt).toContain('Question: 2+2?');
+    expect(prompt).toContain('Choose exactly one label from: correct, incorrect');
+  });
+
+  it('llmJudge: should reject labels outside configured choice scores', async () => {
+    const result = await llmJudge(
+      {
+        output: '4',
+        config: {
+          prompt_template: 'Score {{output}}',
+          choice_scores: { correct: 1, incorrect: 0 },
+          provider: 'openai',
+          model: 'gpt-test',
+        },
+      },
+      {
+        runId: 'r',
+        correlationId: 'c',
+        attempt: 0,
+        log: () => {},
+        llmJudgeLm: {
+          generate: async () => ({ text: '{"label":"maybe","explanation":"uncertain"}' }),
+        },
+      } as any,
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.label).toBe('invalid_label');
+    expect(result.metadata?.invalid_label).toBe('maybe');
+    expect(result.metadata?.allowed_labels).toEqual(['correct', 'incorrect']);
+  });
+
+  it('llmJudge: should report missing custom prompt template variables', async () => {
+    const result = await llmJudge({
+      output: { answer: '4' },
+      config: {
+        prompt_template: 'Score {{output.missing}}',
+        choice_scores: { correct: 1, incorrect: 0 },
+        provider: 'openai',
+        model: 'gpt-test',
+      },
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.label).toBe('config_error');
+    expect(result.explanation).toContain('output.missing');
+  });
+
   it('faithfulness: should bind configured context fields', async () => {
     let prompt = '';
     const result = await faithfulness(

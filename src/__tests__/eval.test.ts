@@ -232,6 +232,20 @@ describe('LLMJudge', () => {
     expect(spec.config.include_input).toBe(true);
     expect(spec.config.temperature).toBe(0.5);
   });
+
+  it('should convert custom prompt templates and choice scores to scorer spec', () => {
+    const judge = new LLMJudge({
+      promptTemplate: 'Label {{output.answer}} against {{expected.answer}}',
+      choiceScores: { correct: 1, incorrect: 0 },
+      model: 'openai/gpt-test',
+    });
+
+    const spec = judge.toScorerSpec();
+    expect(spec.name).toBe('llm_judge');
+    expect(spec.config.prompt_template).toBe('Label {{output.answer}} against {{expected.answer}}');
+    expect(spec.config.choice_scores).toEqual({ correct: 1, incorrect: 0 });
+    expect(spec.config.model).toBe('gpt-test');
+  });
 });
 
 describe('Managed judge presets', () => {

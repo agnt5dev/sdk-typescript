@@ -312,11 +312,13 @@ export class BatchEvalResult {
 
 /** Configuration for an LLM-as-judge scorer */
 export interface LLMJudgeConfig {
-  criteria: string;
+  criteria?: string;
   model?: string;
   systemPrompt?: string;
   temperature?: number;
   includeInput?: boolean;
+  promptTemplate?: string;
+  choiceScores?: Record<string, number>;
 }
 
 /**
@@ -339,29 +341,36 @@ export interface LLMJudgeConfig {
 export class LLMJudge {
   readonly criteria: string;
   readonly model: string;
+  readonly systemPrompt?: string;
   readonly includeInput: boolean;
   readonly temperature: number;
+  readonly promptTemplate?: string;
+  readonly choiceScores?: Record<string, number>;
 
   constructor(config: LLMJudgeConfig) {
-    this.criteria = config.criteria;
+    this.criteria = config.criteria || '';
     this.model = config.model || 'openai/gpt-4o-mini';
+    this.systemPrompt = config.systemPrompt;
     this.includeInput = config.includeInput ?? false;
     this.temperature = config.temperature ?? 0.0;
+    this.promptTemplate = config.promptTemplate;
+    this.choiceScores = config.choiceScores;
   }
 
   /** Convert to scorer spec for platform API */
   toScorerSpec(): Record<string, any> {
     const [provider, model] = splitProviderModel(this.model);
-    return {
-      name: 'llm_judge',
-      config: {
-        criteria: this.criteria,
-        provider,
-        model,
-        include_input: this.includeInput,
-        temperature: this.temperature,
-      },
+    const config: Record<string, any> = {
+      provider,
+      model,
+      include_input: this.includeInput,
+      temperature: this.temperature,
     };
+    if (this.criteria) config.criteria = this.criteria;
+    if (this.promptTemplate) config.prompt_template = this.promptTemplate;
+    if (this.choiceScores) config.choice_scores = this.choiceScores;
+    if (this.systemPrompt) config.system_prompt = this.systemPrompt;
+    return { name: 'llm_judge', config };
   }
 }
 
