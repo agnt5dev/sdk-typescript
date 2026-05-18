@@ -570,6 +570,48 @@ describe('Scorer decorator & registry', () => {
     expect(names).toContain('correctness');
     expect(names).toContain('faithfulness');
   });
+
+  it('runScorer: should bind structured output and expected fields', async () => {
+    const result = await runScorer('exact_match', {
+      output: { final_output: { answer: 'Paris' }, path_length: 3 },
+      expected: { answer: 'Paris' },
+      input: { question: 'capital?' },
+      config: {
+        output_field: 'final_output.answer',
+        expected_field: 'answer',
+        input_field: 'question',
+        output_type: 'string',
+      },
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.metadata?.output_field).toBe('final_output.answer');
+    expect(result.metadata?.expected_field).toBe('answer');
+    expect(result.metadata?.input_field).toBe('question');
+  });
+
+  it('runScorer: should report missing field bindings', async () => {
+    const result = await runScorer('exact_match', {
+      output: { other: 'Paris' },
+      expected: 'Paris',
+      config: { output_field: 'final_output.answer' },
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.label).toBe('config_error');
+    expect(result.explanation).toContain('final_output.answer');
+  });
+
+  it('runScorer: should report wrong field binding types', async () => {
+    const result = await runScorer('json_valid', {
+      output: { tool_calls: { name: 'search' } },
+      config: { output_field: 'tool_calls', output_type: 'array' },
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.label).toBe('config_error');
+    expect(result.explanation).toContain('expected array');
+  });
 });
 
 describe('Trace helpers', () => {

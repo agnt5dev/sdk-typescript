@@ -963,10 +963,146 @@ export async function runScorer(
     log: () => {},
   };
 
-  return config.handler(scorerCtx, request);
+  const bound = applyScorerFieldBindings(request);
+  if (bound.error) {
+    return new ScorerResult({
+      score: 0.0,
+      passed: false,
+      label: 'config_error',
+      explanation: `${scorerName} field binding error: ${bound.error}`,
+    });
+  }
+  const result = await config.handler(scorerCtx, bound.request!);
+  return mergeResultMetadata(result, bound.metadata);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────
+
+function applyScorerFieldBindings(
+  request: ScorerRequest,
+): { request?: ScorerRequest; metadata?: Record<string, any>; error?: string } {
+  const cfg = request.config ?? {};
+  const metadata: Record<string, any> = {};
+  try {
+    const output = bindRequestField(
+      cfg,
+      'output',
+      'output_field',
+      'output_type',
+      request.output,
+      metadata,
+    );
+    const expected =
+      request.expected !== undefined || hasFieldBinding(cfg, 'expected_field', 'expected_type')
+        ? bindRequestField(
+            cfg,
+            'expected',
+            'expected_field',
+            'expected_type',
+            request.expected,
+            metadata,
+          )
+        : request.expected;
+    const input =
+      request.input !== undefined || hasFieldBinding(cfg, 'input_field', 'input_type')
+        ? bindRequestField(cfg, 'input', 'input_field', 'input_type', request.input, metadata)
+        : request.input;
+    return {
+      request: { ...request, output, expected, input },
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+    };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+}
+
+function hasFieldBinding(config: Record<string, any>, fieldKey: string, typeKey: string): boolean {
+  return config[fieldKey] !== undefined || config[typeKey] !== undefined;
+}
+
+function bindRequestField(
+  config: Record<string, any>,
+  root: string,
+  fieldKey: string,
+  typeKey: string,
+  value: any,
+  metadata: Record<string, any>,
+): any {
+  let selected = value;
+  const selector = config[fieldKey];
+  if (typeof selector === 'string' && selector.trim()) {
+    selected = boundFieldValue(value, selector.trim(), root);
+    metadata[fieldKey] = selector.trim();
+  }
+  const expectedType = config[typeKey];
+  if (typeof expectedType === 'string' && expectedType.trim()) {
+    if (!valueTypeMatches(selected, expectedType.trim())) {
+      throw new Error(
+        `${fieldKey} selected ${valueTypeName(selected)}; expected ${expectedType.trim()}`,
+      );
+    }
+    metadata[typeKey] = expectedType.trim();
+  }
+  return selected;
+}
+
+function boundFieldValue(value: any, selector: string, root: string): any {
+  const prefix = `${root}.`;
+  const path =
+    selector === root ? '' : selector.startsWith(prefix) ? selector.slice(prefix.length) : selector;
+  if (!path) return value;
+  let current = value;
+  for (const part of path.split('.')) {
+    if (!part) {
+      throw new Error(`${root}_field ${JSON.stringify(selector)} contains an empty path segment`);
+    }
+    if (current && typeof current === 'object' && !Array.isArray(current) && part in current) {
+      current = current[part];
+      continue;
+    }
+    if (Array.isArray(current) && /^\d+$/.test(part)) {
+      const index = Number(part);
+      if (index < current.length) {
+        current = current[index];
+        continue;
+      }
+    }
+    throw new Error(`${root}_field ${JSON.stringify(selector)} was not found`);
+  }
+  return current;
+}
+
+function valueTypeMatches(value: any, expectedType: string): boolean {
+  const normalized = expectedType.toLowerCase();
+  if (normalized === 'null') return value === null || value === undefined;
+  if (normalized === 'bool' || normalized === 'boolean') return typeof value === 'boolean';
+  if (normalized === 'number') return typeof value === 'number';
+  if (normalized === 'string') return typeof value === 'string';
+  if (normalized === 'array') return Array.isArray(value);
+  if (normalized === 'object') return !!value && typeof value === 'object' && !Array.isArray(value);
+  return false;
+}
+
+function valueTypeName(value: any): string {
+  if (value === null || value === undefined) return 'null';
+  if (Array.isArray(value)) return 'array';
+  if (typeof value === 'boolean') return 'boolean';
+  if (typeof value === 'number') return 'number';
+  if (typeof value === 'string') return 'string';
+  if (typeof value === 'object') return 'object';
+  return typeof value;
+}
+
+function mergeResultMetadata(result: ScorerResult, metadata?: Record<string, any>): ScorerResult {
+  if (!metadata) return result;
+  return new ScorerResult({
+    score: result.score,
+    passed: result.passed,
+    label: result.label,
+    explanation: result.explanation,
+    metadata: { ...(result.metadata ?? {}), ...metadata },
+  });
+}
 
 /** Helper methods for ScorerRequest */
 export function getRequestConfig(request: ScorerRequest, key: string, defaultValue?: any): any {
