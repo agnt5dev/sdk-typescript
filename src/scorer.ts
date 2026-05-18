@@ -462,6 +462,12 @@ Respond with a JSON object containing:
 
 Respond ONLY with the JSON object, no other text.`;
 
+const CORRECTNESS_JUDGE_CRITERIA =
+  'Evaluate whether the output correctly answers the input and matches the expected output. Score 1.0 for fully correct answers, 0.5 for partially correct answers, and 0.0 for incorrect or unsupported answers.';
+
+const FAITHFULNESS_JUDGE_CRITERIA =
+  'Evaluate whether the output is faithful to the provided context. Penalize claims that are unsupported, contradicted by context, or omit critical context needed for the answer.';
+
 /**
  * LLM-as-judge scorer: ask an LM to score the output against criteria.
  *
@@ -509,12 +515,16 @@ export async function llmJudge(
     typeof cfg.system_prompt === 'string' ? cfg.system_prompt : LLM_JUDGE_DEFAULT_SYSTEM_PROMPT;
   const temperature = typeof cfg.temperature === 'number' ? cfg.temperature : 0.0;
   const includeInput = cfg.include_input === true;
+  const contextData = cfg.context_data ?? cfg.context;
 
   // Build the user prompt the same way Rust/Python do — keeps judge
   // verdicts comparable across languages.
   let userContent = `## Evaluation Criteria\n${criteria}\n\n`;
   if (includeInput && request.input !== undefined && request.input !== null) {
     userContent += `## Input\n${formatJudgeValue(request.input)}\n\n`;
+  }
+  if (contextData !== undefined && contextData !== null) {
+    userContent += `## Context\n${formatJudgeValue(contextData)}\n\n`;
   }
   userContent += `## Output to Evaluate\n${formatJudgeValue(request.output)}\n\n`;
   if (request.expected !== undefined && request.expected !== null) {
@@ -651,6 +661,148 @@ function extractJudgeJson(raw: string): string {
   return s;
 }
 
+export async function correctness(
+  request: ScorerRequest,
+  ctx?: ScorerContext,
+): Promise<ScorerResult> {
+  const cfg = request.config ?? {};
+  let output: any;
+  let expected: any;
+  try {
+    output = optionalSelectedValue(request, cfg.answer_field, request.output);
+    expected = optionalSelectedValue(request, cfg.reference_field, request.expected);
+  } catch (e) {
+    return judgeConfigError(`correctness field selector not found: ${(e as Error).message}`);
+  }
+  if (expected === undefined || expected === null) {
+    return judgeConfigError('correctness requires expected output or config.reference_field');
+  }
+  const result = await llmJudge({
+    ...request,
+    output,
+    expected,
+    config: {
+      provider: cfg.provider ?? 'openai',
+      model: cfg.model ?? 'gpt-4o-mini',
+      criteria: CORRECTNESS_JUDGE_CRITERIA,
+      include_input: cfg.include_input ?? true,
+      temperature: cfg.temperature ?? 0.0,
+    },
+  }, ctx);
+  return mergeJudgeMetadata(result, {
+    judge_preset: 'correctness',
+  });
+}
+
+export async function faithfulness(
+  request: ScorerRequest,
+  ctx?: ScorerContext,
+): Promise<ScorerResult> {
+  const cfg = request.config ?? {};
+  const fields = contextFields(cfg);
+  if (fields.length === 0) {
+    return judgeConfigError('faithfulness requires config.context_fields or config.context_field');
+  }
+  let output: any;
+  const context: Record<string, any> = {};
+  try {
+    output = optionalSelectedValue(request, cfg.answer_field, request.output);
+    for (const field of fields) {
+      context[field] = selectedValue(request, field);
+    }
+  } catch (e) {
+    return judgeConfigError(`faithfulness field selector not found: ${(e as Error).message}`);
+  }
+  const result = await llmJudge({
+    ...request,
+    output,
+    config: {
+      provider: cfg.provider ?? 'openai',
+      model: cfg.model ?? 'gpt-4o-mini',
+      criteria: FAITHFULNESS_JUDGE_CRITERIA,
+      include_input: cfg.include_input ?? false,
+      temperature: cfg.temperature ?? 0.0,
+      context_data: context,
+    },
+  }, ctx);
+  return mergeJudgeMetadata(result, {
+    judge_preset: 'faithfulness',
+    context_fields: fields,
+  });
+}
+
+function judgeConfigError(explanation: string): ScorerResult {
+  return new ScorerResult({
+    score: 0.0,
+    passed: false,
+    label: 'config_error',
+    explanation,
+  });
+}
+
+function mergeJudgeMetadata(result: ScorerResult, metadata: Record<string, any>): ScorerResult {
+  return new ScorerResult({
+    score: result.score,
+    passed: result.passed,
+    label: result.label,
+    explanation: result.explanation,
+    metadata: { ...(result.metadata ?? {}), ...metadata },
+  });
+}
+
+function contextFields(config: Record<string, any>): string[] {
+  const fields: string[] = [];
+  if (typeof config.context_field === 'string' && config.context_field.trim()) {
+    fields.push(config.context_field.trim());
+  }
+  if (Array.isArray(config.context_fields)) {
+    for (const field of config.context_fields) {
+      if (typeof field === 'string' && field.trim()) fields.push(field.trim());
+    }
+  }
+  return fields;
+}
+
+function optionalSelectedValue(request: ScorerRequest, selector: any, fallback: any): any {
+  if (selector === undefined || selector === null || selector === '') return fallback;
+  if (typeof selector !== 'string') throw new Error(String(selector));
+  return selectedValue(request, selector);
+}
+
+function selectedValue(request: ScorerRequest, selector: string): any {
+  const [root, ...parts] = selector.trim().split('.');
+  if (!root || parts.length === 0) throw new Error(selector);
+  let value: any;
+  switch (root) {
+    case 'input':
+      value = request.input;
+      break;
+    case 'output':
+      value = request.output;
+      break;
+    case 'expected':
+      value = request.expected;
+      break;
+    default:
+      throw new Error(selector);
+  }
+  for (const part of parts) {
+    if (value && typeof value === 'object' && !Array.isArray(value) && part in value) {
+      value = value[part];
+      continue;
+    }
+    if (Array.isArray(value) && /^\d+$/.test(part)) {
+      const index = Number(part);
+      if (index < value.length) {
+        value = value[index];
+        continue;
+      }
+    }
+    throw new Error(selector);
+  }
+  return value;
+}
+
 // Register built-in scorers
 ScorerRegistry.register({ name: 'exact_match', handler: (_ctx, req) => exactMatch(req), description: 'Exact string match', scope: 'item', isAsync: false });
 ScorerRegistry.register({ name: 'contains', handler: (_ctx, req) => contains(req), description: 'Substring containment check', scope: 'item', isAsync: false });
@@ -660,6 +812,8 @@ ScorerRegistry.register({ name: 'numeric_range', handler: (_ctx, req) => numeric
 ScorerRegistry.register({ name: 'regex_match', handler: (_ctx, req) => regexMatch(req), description: 'Regex pattern match', scope: 'item', isAsync: false });
 ScorerRegistry.register({ name: 'levenshtein', handler: (_ctx, req) => levenshtein(req), description: 'Levenshtein edit distance', scope: 'item', isAsync: false });
 ScorerRegistry.register({ name: 'llm_judge', handler: (ctx, req) => llmJudge(req, ctx), description: 'LLM-as-judge: ask an LM to score the output against criteria', scope: 'item', isAsync: true });
+ScorerRegistry.register({ name: 'correctness', handler: (ctx, req) => correctness(req, ctx), description: 'Managed LLM judge preset for answer correctness', scope: 'item', isAsync: true });
+ScorerRegistry.register({ name: 'faithfulness', handler: (ctx, req) => faithfulness(req, ctx), description: 'Managed LLM judge preset for faithfulness to configured context', scope: 'item', isAsync: true });
 
 // ─── Runner ──────────────────────────────────────────────────────────
 

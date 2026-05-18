@@ -5,6 +5,8 @@ import {
   BatchEvalItemResult,
   BatchEvalResult,
   LLMJudge,
+  Correctness,
+  Faithfulness,
   normalizeBatchEvalItems,
   normalizeScorerSpecs,
 } from '../eval.js';
@@ -232,6 +234,28 @@ describe('LLMJudge', () => {
   });
 });
 
+describe('Managed judge presets', () => {
+  it('should convert Correctness to scorer spec', () => {
+    const judge = new Correctness({ answerField: 'output.answer' });
+    const spec = judge.toScorerSpec();
+    expect(spec.name).toBe('correctness');
+    expect(spec.config.provider).toBe('openai');
+    expect(spec.config.model).toBe('gpt-4o-mini');
+    expect(spec.config.answer_field).toBe('output.answer');
+  });
+
+  it('should convert Faithfulness to scorer spec', () => {
+    const judge = new Faithfulness({
+      contextFields: ['input.context'],
+      answerField: 'output.answer',
+    });
+    const spec = judge.toScorerSpec();
+    expect(spec.name).toBe('faithfulness');
+    expect(spec.config.context_fields).toEqual(['input.context']);
+    expect(spec.config.answer_field).toBe('output.answer');
+  });
+});
+
 describe('normalizeBatchEvalItems', () => {
   it('should handle BatchEvalItem objects', () => {
     const items = normalizeBatchEvalItems([
@@ -265,6 +289,15 @@ describe('normalizeScorerSpecs', () => {
     const specs = normalizeScorerSpecs([new LLMJudge({ criteria: 'test' })]);
     expect(specs[0].name).toBe('llm_judge');
     expect(specs[0].config.criteria).toBe('test');
+  });
+
+  it('should normalize managed judge preset instances', () => {
+    const specs = normalizeScorerSpecs([
+      new Correctness(),
+      new Faithfulness({ contextFields: ['input.context'] }),
+    ]);
+    expect(specs[0].name).toBe('correctness');
+    expect(specs[1].name).toBe('faithfulness');
   });
 
   it('should pass through raw specs', () => {

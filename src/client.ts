@@ -11,7 +11,7 @@ import {
 } from './errors.js';
 import { BatchResult, BatchStatusResult } from './batch.js';
 import type { BatchConfig, BatchItemInput, CancelBatchResult } from './batch.js';
-import { EvalResponse, BatchEvalResult, BatchEvalItemResult, LLMJudge, normalizeBatchEvalItems, normalizeScorerSpecs } from './eval.js';
+import { EvalResponse, BatchEvalResult, BatchEvalItemResult, LLMJudge, Correctness, Faithfulness, normalizeBatchEvalItems, normalizeScorerSpecs } from './eval.js';
 import type { BatchEvalItem } from './eval.js';
 
 // ---------------------------------------------------------------------------
@@ -853,7 +853,7 @@ export class Client {
     inputData?: Record<string, any>,
     options: {
       expected?: any;
-      scorers?: Array<string | LLMJudge | Record<string, any>>;
+      scorers?: Array<string | LLMJudge | Correctness | Faithfulness | Record<string, any>>;
       componentType?: string;
       sessionId?: string;
       userId?: string;
@@ -926,7 +926,7 @@ export class Client {
     component: string,
     items: Array<Record<string, any> | BatchEvalItem>,
     options: {
-      scorers?: Array<string | LLMJudge | Record<string, any>>;
+      scorers?: Array<string | LLMJudge | Correctness | Faithfulness | Record<string, any>>;
       expected?: any[];
       componentType?: string;
       maxConcurrency?: number;

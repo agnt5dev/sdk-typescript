@@ -278,6 +278,8 @@ export {
   regexMatch,
   levenshtein,
   llmJudge,
+  correctness,
+  faithfulness,
   getRequestConfig,
   getTraceEvents,
   getTotalTokens,
@@ -298,6 +300,8 @@ export {
   BatchEvalItemResult,
   BatchEvalResult,
   LLMJudge,
+  Correctness,
+  Faithfulness,
   TraceAssertion,
   traceScorer,
   normalizeBatchEvalItems,
@@ -309,6 +313,8 @@ export type {
   BatchEvalItem,
   BatchEvalStats,
   LLMJudgeConfig,
+  CorrectnessConfig,
+  FaithfulnessConfig,
 } from './eval.js';
 
 // Memory exports

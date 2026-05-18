@@ -11,6 +11,8 @@ import {
   jsonValid,
   jsonSchema,
   llmJudge,
+  correctness,
+  faithfulness,
   numericRange,
   regexMatch,
   levenshtein,
@@ -365,6 +367,78 @@ describe('Built-in scorers', () => {
     });
     expect(result.label).toBe('config_error');
   });
+
+  it('faithfulness: should bind configured context fields', async () => {
+    let prompt = '';
+    const result = await faithfulness(
+      {
+        output: { answer: 'Paris is the capital of France.' },
+        input: { context: 'France capital: Paris.' },
+        config: {
+          context_fields: ['input.context'],
+          answer_field: 'output.answer',
+          model: 'gpt-test',
+        },
+      },
+      {
+        runId: 'run-1',
+        correlationId: 'corr-1',
+        attempt: 0,
+        log: () => {},
+        llmJudgeLm: {
+          generate: async (req: any) => {
+            prompt = req.messages[1].content;
+            return { text: '{"score":0.9,"passed":true,"explanation":"grounded","label":"pass"}' };
+          },
+        },
+      } as any,
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.explanation).toBe('grounded');
+    expect(result.metadata?.judge_preset).toBe('faithfulness');
+    expect(result.metadata?.context_fields).toEqual(['input.context']);
+    expect(prompt).toContain('## Context');
+    expect(prompt).toContain('France capital: Paris.');
+  });
+
+  it('faithfulness: should report missing configured context fields', async () => {
+    const result = await faithfulness({
+      output: { answer: 'Paris' },
+      input: { other: 'context' },
+      config: { context_fields: ['input.context'], model: 'gpt-test' },
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.label).toBe('config_error');
+    expect(result.explanation).toContain('input.context');
+  });
+
+  it('correctness: should use the managed preset and preserve metadata', async () => {
+    const result = await correctness(
+      {
+        output: { answer: '4' },
+        expected: { answer: '4' },
+        config: {
+          answer_field: 'output.answer',
+          reference_field: 'expected.answer',
+          model: 'gpt-test',
+        },
+      },
+      {
+        runId: 'run-1',
+        correlationId: 'corr-1',
+        attempt: 0,
+        log: () => {},
+        llmJudgeLm: {
+          generate: async () => ({ text: '{"score":1,"passed":true,"explanation":"correct"}' }),
+        },
+      } as any,
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.metadata?.judge_preset).toBe('correctness');
+  });
 });
 
 describe('Scorer decorator & registry', () => {
@@ -412,6 +486,8 @@ describe('Scorer decorator & registry', () => {
     expect(names).toContain('regex_match');
     expect(names).toContain('levenshtein');
     expect(names).toContain('llm_judge');
+    expect(names).toContain('correctness');
+    expect(names).toContain('faithfulness');
   });
 });
 

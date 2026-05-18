@@ -351,18 +351,100 @@ export class LLMJudge {
 
   /** Convert to scorer spec for platform API */
   toScorerSpec(): Record<string, any> {
-    const [provider, ...modelParts] = this.model.split('/');
+    const [provider, model] = splitProviderModel(this.model);
     return {
       name: 'llm_judge',
       config: {
         criteria: this.criteria,
         provider,
-        model: modelParts.join('/'),
+        model,
         include_input: this.includeInput,
         temperature: this.temperature,
       },
     };
   }
+}
+
+export interface CorrectnessConfig {
+  model?: string;
+  includeInput?: boolean;
+  temperature?: number;
+  answerField?: string;
+  referenceField?: string;
+}
+
+/** Managed correctness judge preset. */
+export class Correctness {
+  readonly model: string;
+  readonly includeInput: boolean;
+  readonly temperature: number;
+  readonly answerField?: string;
+  readonly referenceField?: string;
+
+  constructor(config: CorrectnessConfig = {}) {
+    this.model = config.model || 'openai/gpt-4o-mini';
+    this.includeInput = config.includeInput ?? true;
+    this.temperature = config.temperature ?? 0.0;
+    this.answerField = config.answerField;
+    this.referenceField = config.referenceField;
+  }
+
+  toScorerSpec(): Record<string, any> {
+    const [provider, model] = splitProviderModel(this.model);
+    const config: Record<string, any> = {
+      provider,
+      model,
+      include_input: this.includeInput,
+      temperature: this.temperature,
+    };
+    if (this.answerField) config.answer_field = this.answerField;
+    if (this.referenceField) config.reference_field = this.referenceField;
+    return { name: 'correctness', config };
+  }
+}
+
+export interface FaithfulnessConfig {
+  contextFields: string[];
+  model?: string;
+  includeInput?: boolean;
+  temperature?: number;
+  answerField?: string;
+}
+
+/** Managed faithfulness judge preset with configured context fields. */
+export class Faithfulness {
+  readonly contextFields: string[];
+  readonly model: string;
+  readonly includeInput: boolean;
+  readonly temperature: number;
+  readonly answerField?: string;
+
+  constructor(config: FaithfulnessConfig) {
+    this.contextFields = config.contextFields;
+    this.model = config.model || 'openai/gpt-4o-mini';
+    this.includeInput = config.includeInput ?? false;
+    this.temperature = config.temperature ?? 0.0;
+    this.answerField = config.answerField;
+  }
+
+  toScorerSpec(): Record<string, any> {
+    const [provider, model] = splitProviderModel(this.model);
+    const specConfig: Record<string, any> = {
+      provider,
+      model,
+      context_fields: this.contextFields,
+      include_input: this.includeInput,
+      temperature: this.temperature,
+    };
+    if (this.answerField) specConfig.answer_field = this.answerField;
+    return { name: 'faithfulness', config: specConfig };
+  }
+}
+
+function splitProviderModel(value: string): [string, string] {
+  const [provider, ...modelParts] = value.split('/');
+  if (modelParts.length === 0) return ['openai', value];
+  return [provider, modelParts.join('/')];
 }
 
 // ─── Trace Assertions ────────────────────────────────────────────
@@ -584,16 +666,16 @@ export function normalizeBatchEvalItems(
 /**
  * Normalize scorer specs for the platform API.
  *
- * Accepts strings ("exact_match"), LLMJudge instances, or raw spec dicts.
+ * Accepts strings ("exact_match"), managed judge presets, or raw spec dicts.
  */
 export function normalizeScorerSpecs(
-  scorers: Array<string | LLMJudge | Record<string, any>>,
+  scorers: Array<string | LLMJudge | Correctness | Faithfulness | Record<string, any>>,
 ): Array<Record<string, any>> {
   return scorers.map(s => {
     if (typeof s === 'string') {
       return { name: s };
     }
-    if (s instanceof LLMJudge) {
+    if (s instanceof LLMJudge || s instanceof Correctness || s instanceof Faithfulness) {
       return s.toScorerSpec();
     }
     return s;
