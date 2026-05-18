@@ -65,6 +65,39 @@ describe('EvalContext', () => {
     expect(ctx.getStepEvents('step1')).toHaveLength(2);
     expect(ctx.getStepEvents('step2')).toHaveLength(1);
   });
+
+  it('should expose tool-call trajectory helpers', () => {
+    const ctx = new EvalContext({
+      input: {},
+      output: 'ok',
+      events: [
+        {
+          eventType: 'tool.call.completed',
+          eventId: '1',
+          correlationId: 'span-1',
+          timestampNs: 1000,
+          data: { tool_name: 'search', tool_call_id: 'call-1' },
+        },
+        {
+          eventType: 'lm.call.completed',
+          eventId: '2',
+          correlationId: 'span-2',
+          timestampNs: 2000,
+          data: {
+            tool_calls: [
+              { id: 'call-2', function: { name: 'lookup', arguments: '{"id":42}' } },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(ctx.getToolCallNames()).toEqual(['search', 'lookup']);
+    expect(ctx.getToolCalls()[1].arguments).toEqual({ id: 42 });
+    expect(ctx.toolTrajectoryMatches(['search', 'lookup'])).toBe(true);
+    expect(ctx.toolTrajectoryMatches(['lookup'], 'in_order')).toBe(true);
+    expect(ctx.toolTrajectoryMatches(['lookup', 'search'], 'any_order')).toBe(true);
+  });
 });
 
 describe('EvalResponse', () => {

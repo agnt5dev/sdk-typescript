@@ -35,6 +35,19 @@ export interface TraceEvent {
   name?: string;
 }
 
+/** Tool call extracted from journal events or normalized session payloads */
+export interface ToolCall {
+  name: string;
+  arguments?: any;
+  callId?: string;
+  spanId?: string;
+  timestampNs?: number;
+  startedAt?: number;
+  endedAt?: number;
+  status?: string;
+  metadata: Record<string, any>;
+}
+
 /** Result of a scorer evaluation */
 export class ScorerResult {
   /** Score between 0.0 and 1.0 */
@@ -1119,4 +1132,251 @@ export function getTotalTokens(request: ScorerRequest): number {
   return (request.trace || [])
     .filter(e => e.eventType === 'lm.call.completed')
     .reduce((sum, e) => sum + (e.data.total_tokens || 0), 0);
+}
+
+/** Extract typed tool calls from ScorerRequest journal events */
+export function getToolCalls(request: ScorerRequest): ToolCall[] {
+  return extractToolCallsFromEvents(request.trace || []);
+}
+
+/** Extract typed tool calls from journal events */
+export function extractToolCallsFromEvents(events: TraceEvent[] = []): ToolCall[] {
+  const calls: ToolCall[] = [];
+  const byKey = new Map<string, number>();
+
+  const add = (call: ToolCall | undefined, fallbackKey: string) => {
+    if (!call?.name) return;
+    const key = call.callId || call.spanId || fallbackKey;
+    const existingIndex = byKey.get(key);
+    if (existingIndex !== undefined) {
+      calls[existingIndex] = mergeToolCalls(calls[existingIndex], call);
+      return;
+    }
+    byKey.set(key, calls.length);
+    calls.push(call);
+  };
+
+  for (const event of events) {
+    const data = isRecord(event.data) ? event.data : {};
+    iterToolCallPayloads(data).forEach((payload, index) => {
+      add(toolCallFromMapping(payload, event, index), `${eventIdOf(event)}:payload:${index}`);
+    });
+    if (eventTypeOf(event).includes('tool')) {
+      add(toolCallFromMapping(data, event, 0), eventIdOf(event));
+    }
+  }
+  return calls;
+}
+
+/** Return tool names in observed call order */
+export function getToolCallNames(request: ScorerRequest): string[] {
+  return toolCallNames(getToolCalls(request));
+}
+
+/** Return tool-call names from typed tool calls */
+export function toolCallNames(calls: ToolCall[]): string[] {
+  return calls.map(call => call.name).filter(Boolean);
+}
+
+/** Return true when the observed trajectory exactly matches expected */
+export function toolTrajectoryExact(actual: string[], expected: string[]): boolean {
+  return actual.length === expected.length && actual.every((name, index) => name === expected[index]);
+}
+
+/** Return true when expected appears as an ordered subsequence */
+export function toolTrajectoryInOrder(actual: string[], expected: string[]): boolean {
+  if (expected.length === 0) return true;
+  let index = 0;
+  for (const name of actual) {
+    if (name === expected[index]) {
+      index += 1;
+      if (index === expected.length) return true;
+    }
+  }
+  return false;
+}
+
+/** Return true when actual contains expected names with matching counts */
+export function toolTrajectoryAnyOrder(actual: string[], expected: string[]): boolean {
+  const remaining = new Map<string, number>();
+  for (const name of actual) remaining.set(name, (remaining.get(name) || 0) + 1);
+  for (const name of expected) {
+    const count = remaining.get(name) || 0;
+    if (count <= 0) return false;
+    remaining.set(name, count - 1);
+  }
+  return true;
+}
+
+/** Compare a tool trajectory using exact, in_order, or any_order semantics */
+export function toolTrajectoryMatches(
+  actual: string[],
+  expected: string[],
+  mode: 'exact' | 'in_order' | 'any_order' = 'exact',
+): boolean {
+  if (mode === 'exact') return toolTrajectoryExact(actual, expected);
+  if (mode === 'in_order') return toolTrajectoryInOrder(actual, expected);
+  return toolTrajectoryAnyOrder(actual, expected);
+}
+
+function iterToolCallPayloads(data: Record<string, any>): Record<string, any>[] {
+  const payloads: Record<string, any>[] = [];
+  const extendFrom = (value: any) => {
+    if (Array.isArray(value)) {
+      payloads.push(...value.filter(isRecord));
+    }
+  };
+
+  extendFrom(data.tool_calls);
+  extendFrom(data.toolCalls);
+  for (const key of ['normalized_session', 'session', 'trace_session', 'journal_session']) {
+    if (isRecord(data[key])) {
+      extendFrom(data[key].tool_calls);
+      extendFrom(data[key].toolCalls);
+    }
+  }
+  for (const key of ['response', 'output', 'message']) {
+    if (isRecord(data[key])) {
+      extendFrom(data[key].tool_calls);
+      extendFrom(data[key].toolCalls);
+    }
+  }
+  if (Array.isArray(data.choices)) {
+    for (const choice of data.choices) {
+      if (isRecord(choice?.message)) {
+        extendFrom(choice.message.tool_calls);
+        extendFrom(choice.message.toolCalls);
+      }
+    }
+  }
+  return payloads;
+}
+
+function toolCallFromMapping(
+  payload: Record<string, any>,
+  event: TraceEvent,
+  index: number,
+): ToolCall | undefined {
+  const fnPayload = isRecord(payload.function) ? payload.function : {};
+  const eventType = eventTypeOf(event);
+  const name = stringOrUndefined(
+    firstPresent(
+      payload.name,
+      payload.tool_name,
+      fnPayload.name,
+      eventType.includes('tool') ? event.name : undefined,
+    ),
+  );
+  if (!name) return undefined;
+  const callId = stringOrUndefined(
+    firstPresent(
+      payload.call_id,
+      payload.tool_call_id,
+      payload.id,
+      eventType.includes('tool') ? event.correlationId : undefined,
+    ),
+  );
+  const rawArgs = firstPresent(payload.arguments, payload.args, fnPayload.arguments);
+  return {
+    name,
+    arguments: decodeArguments(rawArgs),
+    callId,
+    spanId: stringOrUndefined(payload.span_id) || event.correlationId,
+    timestampNs: numberOrUndefined(payload.timestamp_ns) || event.timestampNs,
+    startedAt: numberOrUndefined(payload.started_at),
+    endedAt: numberOrUndefined(payload.ended_at),
+    status: stringOrUndefined(payload.status) || statusFromEventType(eventType),
+    metadata: toolCallMetadata(payload, event, index),
+  };
+}
+
+function toolCallMetadata(
+  payload: Record<string, any>,
+  event: TraceEvent,
+  index: number,
+): Record<string, any> {
+  const metadata: Record<string, any> = {
+    source_event_id: eventIdOf(event),
+    source_event_type: eventTypeOf(event),
+    source_index: index,
+  };
+  for (const key of [
+    'arguments_ref',
+    'args_ref',
+    'arguments_hash',
+    'args_hash',
+    'result_ref',
+    'result_hash',
+    'output_ref',
+    'output_hash',
+    'duration_ms',
+    'error_code',
+    'error_message_sanitized',
+  ]) {
+    if (payload[key] !== undefined && payload[key] !== null) metadata[key] = payload[key];
+  }
+  if (isRecord(payload.attributes_safe)) metadata.attributes_safe = payload.attributes_safe;
+  return metadata;
+}
+
+function mergeToolCalls(existing: ToolCall, incoming: ToolCall): ToolCall {
+  return {
+    name: incoming.name || existing.name,
+    arguments: incoming.arguments !== undefined ? incoming.arguments : existing.arguments,
+    callId: incoming.callId || existing.callId,
+    spanId: incoming.spanId || existing.spanId,
+    timestampNs: existing.timestampNs || incoming.timestampNs,
+    startedAt: existing.startedAt || incoming.startedAt,
+    endedAt: incoming.endedAt || existing.endedAt,
+    status: incoming.status || existing.status,
+    metadata: { ...existing.metadata, ...incoming.metadata },
+  };
+}
+
+function decodeArguments(value: any): any {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function firstPresent(...values: any[]): any {
+  return values.find(value => value !== undefined && value !== null);
+}
+
+function stringOrUndefined(value: any): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const text = String(value).trim();
+  return text || undefined;
+}
+
+function numberOrUndefined(value: any): number | undefined {
+  if (value === undefined || value === null || typeof value === 'boolean') return undefined;
+  if (typeof value === 'number') return Number.isFinite(value) ? Math.trunc(value) : undefined;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.trunc(parsed) : undefined;
+  }
+  return undefined;
+}
+
+function statusFromEventType(eventType: string): string | undefined {
+  if (eventType.endsWith('.started')) return 'started';
+  if (eventType.endsWith('.completed')) return 'completed';
+  if (eventType.endsWith('.failed')) return 'failed';
+  return undefined;
+}
+
+function isRecord(value: any): value is Record<string, any> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function eventTypeOf(event: TraceEvent): string {
+  return event.eventType || (event as any).event_type || '';
+}
+
+function eventIdOf(event: TraceEvent): string {
+  return event.eventId || (event as any).event_id || '';
 }

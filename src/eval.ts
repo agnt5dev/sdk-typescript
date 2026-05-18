@@ -6,7 +6,12 @@
  */
 
 import { RunError } from './errors.js';
-import type { ScorerResultSummary, ScorerRequest, TraceEvent } from './scorer.js';
+import {
+  extractToolCallsFromEvents,
+  toolCallNames,
+  toolTrajectoryMatches,
+} from './scorer.js';
+import type { ScorerResultSummary, ScorerRequest, ToolCall, TraceEvent } from './scorer.js';
 
 // ─── EvalContext ─────────────────────────────────────────────────────
 
@@ -56,6 +61,24 @@ export class EvalContext {
   /** Get events for a specific step */
   getStepEvents(stepName: string): TraceEvent[] {
     return this.events.filter(e => e.name === stepName);
+  }
+
+  /** Extract typed tool calls from journal events */
+  getToolCalls(): ToolCall[] {
+    return extractToolCallsFromEvents(this.events);
+  }
+
+  /** Return tool names in observed call order */
+  getToolCallNames(): string[] {
+    return toolCallNames(this.getToolCalls());
+  }
+
+  /** Compare observed tool-call order to an expected trajectory */
+  toolTrajectoryMatches(
+    expected: string[],
+    mode: 'exact' | 'in_order' | 'any_order' = 'exact',
+  ): boolean {
+    return toolTrajectoryMatches(this.getToolCallNames(), expected, mode);
   }
 }
 

@@ -17,6 +17,12 @@ import {
   regexMatch,
   levenshtein,
   getTotalTokens,
+  getToolCalls,
+  getToolCallNames,
+  toolTrajectoryAnyOrder,
+  toolTrajectoryExact,
+  toolTrajectoryInOrder,
+  toolTrajectoryMatches,
 } from '../scorer.js';
 import type { ScorerRequest } from '../scorer.js';
 
@@ -625,5 +631,132 @@ describe('Trace helpers', () => {
       ],
     };
     expect(getTotalTokens(request)).toBe(150);
+  });
+
+  it('getToolCalls should tolerate empty traces', () => {
+    const request: ScorerRequest = { output: 'test' };
+
+    expect(getToolCalls(request)).toEqual([]);
+    expect(getToolCallNames(request)).toEqual([]);
+  });
+
+  it('getToolCalls should extract normalized session tool calls in order', () => {
+    const request: ScorerRequest = {
+      output: 'test',
+      trace: [
+        {
+          eventType: 'session.normalized',
+          eventId: 'evt-1',
+          correlationId: 'span-root',
+          timestampNs: 1000,
+          data: {
+            normalized_session: {
+              tool_calls: [
+                {
+                  call_id: 'call-1',
+                  span_id: 'span-1',
+                  name: 'search',
+                  started_at: 10,
+                  ended_at: 12,
+                  arguments_ref: 's3://args.json',
+                  arguments_hash: 'hash-args',
+                  status: 'completed',
+                  attributes_safe: { source: 'normalized' },
+                },
+                {
+                  call_id: 'call-2',
+                  span_id: 'span-2',
+                  name: 'lookup',
+                  started_at: 13,
+                  ended_at: 14,
+                },
+                { call_id: 'malformed' },
+              ],
+            },
+          },
+        },
+      ],
+    };
+
+    const calls = getToolCalls(request);
+
+    expect(getToolCallNames(request)).toEqual(['search', 'lookup']);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].callId).toBe('call-1');
+    expect(calls[0].spanId).toBe('span-1');
+    expect(calls[0].arguments).toBeUndefined();
+    expect(calls[0].metadata.arguments_ref).toBe('s3://args.json');
+    expect(calls[0].metadata.attributes_safe).toEqual({ source: 'normalized' });
+    expect(calls[1].startedAt).toBe(13);
+  });
+
+  it('getToolCalls should extract legacy tool events and LM tool-call payloads', () => {
+    const request: ScorerRequest = {
+      output: 'test',
+      trace: [
+        {
+          eventType: 'tool.call.started',
+          eventId: 'evt-1',
+          correlationId: 'span-tool',
+          timestampNs: 1000,
+          data: {
+            tool_name: 'search',
+            tool_call_id: 'call-1',
+            arguments: { query: 'weather' },
+          },
+        },
+        {
+          eventType: 'tool.call.completed',
+          eventId: 'evt-2',
+          correlationId: 'span-tool',
+          timestampNs: 2000,
+          data: { tool_name: 'search', tool_call_id: 'call-1', duration_ms: 5 },
+        },
+        {
+          eventType: 'lm.call.completed',
+          eventId: 'evt-3',
+          correlationId: 'span-lm',
+          timestampNs: 3000,
+          data: {
+            tool_calls: [
+              {
+                id: 'call-2',
+                function: { name: 'lookup', arguments: '{"id": 42}' },
+              },
+            ],
+          },
+        },
+        {
+          eventType: 'tool.call.completed',
+          eventId: 'evt-4',
+          correlationId: 'span-bad',
+          timestampNs: 4000,
+          data: { duration_ms: 1 },
+        },
+      ],
+    };
+
+    const calls = getToolCalls(request);
+
+    expect(getToolCallNames(request)).toEqual(['search', 'lookup']);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].callId).toBe('call-1');
+    expect(calls[0].arguments).toEqual({ query: 'weather' });
+    expect(calls[0].status).toBe('completed');
+    expect(calls[0].metadata.duration_ms).toBe(5);
+    expect(calls[1].callId).toBe('call-2');
+    expect(calls[1].arguments).toEqual({ id: 42 });
+  });
+
+  it('tool trajectory helpers should support exact, in-order, and any-order matching', () => {
+    const actual = ['search', 'lookup', 'summarize', 'search'];
+
+    expect(toolTrajectoryExact(actual, actual)).toBe(true);
+    expect(toolTrajectoryExact(actual, ['search', 'lookup'])).toBe(false);
+    expect(toolTrajectoryInOrder(actual, ['search', 'summarize'])).toBe(true);
+    expect(toolTrajectoryInOrder(actual, ['summarize', 'lookup'])).toBe(false);
+    expect(toolTrajectoryAnyOrder(actual, ['lookup', 'search', 'search'])).toBe(true);
+    expect(toolTrajectoryAnyOrder(actual, ['lookup', 'lookup'])).toBe(false);
+    expect(toolTrajectoryMatches(actual, ['summarize', 'search'], 'in_order')).toBe(true);
   });
 });

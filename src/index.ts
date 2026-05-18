@@ -283,6 +283,14 @@ export {
   getRequestConfig,
   getTraceEvents,
   getTotalTokens,
+  getToolCalls,
+  getToolCallNames,
+  extractToolCallsFromEvents,
+  toolCallNames,
+  toolTrajectoryExact,
+  toolTrajectoryInOrder,
+  toolTrajectoryAnyOrder,
+  toolTrajectoryMatches,
 } from './scorer.js';
 export type {
   ScorerRequest,
@@ -291,6 +299,7 @@ export type {
   ScorerHandler,
   ScorerConfig,
   TraceEvent,
+  ToolCall as ScorerToolCall,
 } from './scorer.js';
 
 // Evaluation exports
