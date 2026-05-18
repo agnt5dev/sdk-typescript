@@ -377,7 +377,19 @@ describe('Scorer decorator & registry', () => {
 
     expect(isScorer(myScorer)).toBe(true);
     expect(getScorerConfig(myScorer)?.name).toBe('test_scorer');
+    expect(getScorerConfig(myScorer)?.scope).toBe('item');
     expect(ScorerRegistry.get('test_scorer')).toBeDefined();
+  });
+
+  it('should register scorer scope metadata', () => {
+    const myScorer = scorer('run_test_scorer', 'A run scorer', 'run')(
+      (_ctx, request) => {
+        return new ScorerResult({ score: request.output ? 1.0 : 0.0 });
+      }
+    );
+
+    expect(getScorerConfig(myScorer)?.scope).toBe('run');
+    expect(ScorerRegistry.get('run_test_scorer')?.scope).toBe('run');
   });
 
   it('should run scorer by name', async () => {

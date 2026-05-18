@@ -1133,7 +1133,7 @@ export class Worker {
     // Scorers (custom only — built-ins are handled by Rust fast path)
     for (const [name, cfg] of ScorerRegistry.all()) {
       if (isScorer(cfg.handler)) {
-        components.push({ name, componentType: 'scorer', config: {}, metadata: {} });
+        components.push({ name, componentType: 'scorer', config: {}, metadata: { scope: cfg.scope } });
       }
     }
 

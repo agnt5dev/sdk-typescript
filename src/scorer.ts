@@ -98,11 +98,14 @@ export type ScorerHandler = (
   request: ScorerRequest,
 ) => ScorerResult | Promise<ScorerResult>;
 
+export type ScorerScope = 'item' | 'run' | 'trace' | 'span' | 'session' | 'fleet_run';
+
 /** Configuration for a registered scorer */
 export interface ScorerConfig {
   name: string;
   handler: ScorerHandler;
   description: string;
+  scope: ScorerScope;
   isAsync: boolean;
   inputSchema?: Record<string, any>;
 }
@@ -124,13 +127,14 @@ const SCORER_MARKER = Symbol('scorer');
  * );
  * ```
  */
-export function scorer(name?: string, description?: string) {
+export function scorer(name?: string, description?: string, scope: ScorerScope = 'item') {
   return function <F extends ScorerHandler>(handler: F): F {
     const scorerName = name || handler.name || 'unnamed_scorer';
     const config: ScorerConfig = {
       name: scorerName,
       handler,
       description: description || '',
+      scope,
       isAsync: handler.constructor.name === 'AsyncFunction',
     };
 
@@ -648,14 +652,14 @@ function extractJudgeJson(raw: string): string {
 }
 
 // Register built-in scorers
-ScorerRegistry.register({ name: 'exact_match', handler: (_ctx, req) => exactMatch(req), description: 'Exact string match', isAsync: false });
-ScorerRegistry.register({ name: 'contains', handler: (_ctx, req) => contains(req), description: 'Substring containment check', isAsync: false });
-ScorerRegistry.register({ name: 'json_valid', handler: (_ctx, req) => jsonValid(req), description: 'Valid JSON check', isAsync: false });
-ScorerRegistry.register({ name: 'json_schema', handler: (_ctx, req) => jsonSchema(req), description: 'Validate against a JSON Schema', isAsync: false });
-ScorerRegistry.register({ name: 'numeric_range', handler: (_ctx, req) => numericRange(req), description: 'Numeric output is in [min, max]', isAsync: false });
-ScorerRegistry.register({ name: 'regex_match', handler: (_ctx, req) => regexMatch(req), description: 'Regex pattern match', isAsync: false });
-ScorerRegistry.register({ name: 'levenshtein', handler: (_ctx, req) => levenshtein(req), description: 'Levenshtein edit distance', isAsync: false });
-ScorerRegistry.register({ name: 'llm_judge', handler: (ctx, req) => llmJudge(req, ctx), description: 'LLM-as-judge: ask an LM to score the output against criteria', isAsync: true });
+ScorerRegistry.register({ name: 'exact_match', handler: (_ctx, req) => exactMatch(req), description: 'Exact string match', scope: 'item', isAsync: false });
+ScorerRegistry.register({ name: 'contains', handler: (_ctx, req) => contains(req), description: 'Substring containment check', scope: 'item', isAsync: false });
+ScorerRegistry.register({ name: 'json_valid', handler: (_ctx, req) => jsonValid(req), description: 'Valid JSON check', scope: 'item', isAsync: false });
+ScorerRegistry.register({ name: 'json_schema', handler: (_ctx, req) => jsonSchema(req), description: 'Validate against a JSON Schema', scope: 'item', isAsync: false });
+ScorerRegistry.register({ name: 'numeric_range', handler: (_ctx, req) => numericRange(req), description: 'Numeric output is in [min, max]', scope: 'item', isAsync: false });
+ScorerRegistry.register({ name: 'regex_match', handler: (_ctx, req) => regexMatch(req), description: 'Regex pattern match', scope: 'item', isAsync: false });
+ScorerRegistry.register({ name: 'levenshtein', handler: (_ctx, req) => levenshtein(req), description: 'Levenshtein edit distance', scope: 'item', isAsync: false });
+ScorerRegistry.register({ name: 'llm_judge', handler: (ctx, req) => llmJudge(req, ctx), description: 'LLM-as-judge: ask an LM to score the output against criteria', scope: 'item', isAsync: true });
 
 // ─── Runner ──────────────────────────────────────────────────────────
 
