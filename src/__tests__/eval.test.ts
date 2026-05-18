@@ -5,8 +5,18 @@ import {
   BatchEvalItemResult,
   BatchEvalResult,
   LLMJudge,
+  EVALUATOR_PRESET_VERSION,
+  Coherence,
+  Conciseness,
   Correctness,
   Faithfulness,
+  GoalSuccess,
+  Harmfulness,
+  Helpfulness,
+  InstructionFollowing,
+  Refusal,
+  ResponseRelevance,
+  Stereotyping,
   normalizeBatchEvalItems,
   normalizeScorerSpecs,
 } from '../eval.js';
@@ -249,24 +259,56 @@ describe('LLMJudge', () => {
 });
 
 describe('Managed judge presets', () => {
-  it('should convert Correctness to scorer spec', () => {
-    const judge = new Correctness({ answerField: 'output.answer' });
-    const spec = judge.toScorerSpec();
-    expect(spec.name).toBe('correctness');
-    expect(spec.config.provider).toBe('openai');
-    expect(spec.config.model).toBe('gpt-4o-mini');
-    expect(spec.config.answer_field).toBe('output.answer');
-  });
+  it('should convert named evaluator presets to scorer specs', () => {
+    const presets: Array<[any, string, string]> = [
+      [new Correctness({ answerField: 'output.answer' }), 'correctness', 'correctness'],
+      [
+        new Faithfulness({ contextFields: ['input.context'], answerField: 'output.answer' }),
+        'faithfulness',
+        'faithfulness',
+      ],
+      [new Helpfulness(), 'helpfulness', 'llm_judge'],
+      [new Coherence(), 'coherence', 'llm_judge'],
+      [new Conciseness(), 'conciseness', 'llm_judge'],
+      [new ResponseRelevance(), 'response_relevance', 'llm_judge'],
+      [new InstructionFollowing(), 'instruction_following', 'llm_judge'],
+      [
+        new GoalSuccess({
+          sessionFields: ['session.goal'],
+          journalEventFields: ['journal.events'],
+        }),
+        'goal_success',
+        'llm_judge',
+      ],
+      [new Refusal(), 'refusal', 'llm_judge'],
+      [new Harmfulness(), 'harmfulness', 'llm_judge'],
+      [new Stereotyping(), 'stereotyping', 'llm_judge'],
+    ];
 
-  it('should convert Faithfulness to scorer spec', () => {
-    const judge = new Faithfulness({
-      contextFields: ['input.context'],
-      answerField: 'output.answer',
-    });
-    const spec = judge.toScorerSpec();
-    expect(spec.name).toBe('faithfulness');
-    expect(spec.config.context_fields).toEqual(['input.context']);
-    expect(spec.config.answer_field).toBe('output.answer');
+    for (const [preset, presetName, scorerName] of presets) {
+      const spec = preset.toScorerSpec();
+      expect(spec.name).toBe(scorerName);
+      expect(spec.config.provider).toBe('openai');
+      expect(spec.config.model).toBe('gpt-4o-mini');
+      expect(spec.config.preset_name).toBe(presetName);
+      expect(spec.config.preset_version).toBe(EVALUATOR_PRESET_VERSION);
+      expect(spec.config.prompt_version).toBe(`agnt5.evaluator.${presetName}.prompt.v1`);
+      expect(spec.config.rubric_version).toBe(`agnt5.evaluator.${presetName}.rubric.v1`);
+      expect(spec.config.output_schema.required).toEqual([
+        'score',
+        'passed',
+        'label',
+        'explanation',
+      ]);
+    }
+
+    expect(presets[0][0].toScorerSpec().config.answer_field).toBe('output.answer');
+    expect(presets[0][0].toScorerSpec().config.criteria).toBeUndefined();
+    expect(presets[1][0].toScorerSpec().config.context_fields).toEqual(['input.context']);
+    expect(presets[7][0].toScorerSpec().config.session_fields).toEqual(['session.goal']);
+    expect(presets[7][0].toScorerSpec().config.journal_event_fields).toEqual([
+      'journal.events',
+    ]);
   });
 });
 
@@ -309,9 +351,12 @@ describe('normalizeScorerSpecs', () => {
     const specs = normalizeScorerSpecs([
       new Correctness(),
       new Faithfulness({ contextFields: ['input.context'] }),
+      new Helpfulness(),
     ]);
     expect(specs[0].name).toBe('correctness');
     expect(specs[1].name).toBe('faithfulness');
+    expect(specs[2].name).toBe('llm_judge');
+    expect(specs[2].config.preset_name).toBe('helpfulness');
   });
 
   it('should pass through raw specs', () => {
