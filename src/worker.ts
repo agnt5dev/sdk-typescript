@@ -60,6 +60,21 @@ export interface PlatformWorkerOptions extends WorkerOptions {
   jobQueueMaxPollIntervalMs?: number;
 }
 
+type ComponentRegistration = {
+  name: string;
+  componentType: string;
+  config: Record<string, string>;
+  metadata: Record<string, string>;
+};
+
+function isSystemComponentRegistration(component: ComponentRegistration): boolean {
+  return (
+    component.metadata.source === 'agnt5_builtin' ||
+    Boolean(component.metadata.agnt5_builtin) ||
+    component.config.builtin === 'true'
+  );
+}
+
 /**
  * Simple context implementation
  */
@@ -1064,13 +1079,7 @@ export class Worker {
 `);
 
     // Collect all registered components
-    const components: Array<{
-      name: string;
-      componentType: string;
-      config: Record<string, string>;
-      metadata: Record<string, string>;
-      triggers?: TriggerSpec[];
-    }> = [];
+    const components: Array<ComponentRegistration & { triggers?: TriggerSpec[] }> = [];
 
     // Functions
     for (const [name, fnConfig] of FunctionRegistry.getAll()) {
@@ -1137,12 +1146,13 @@ export class Worker {
       }
     }
 
+    const visibleComponents = components.filter((component) => !isSystemComponentRegistration(component));
     const counts = {
-      function: components.filter(c => c.componentType === 'function').length,
-      workflow: components.filter(c => c.componentType === 'workflow').length,
-      tool: components.filter(c => c.componentType === 'tool').length,
-      agent: components.filter(c => c.componentType === 'agent').length,
-      scorer: components.filter(c => c.componentType === 'scorer').length,
+      function: visibleComponents.filter(c => c.componentType === 'function').length,
+      workflow: visibleComponents.filter(c => c.componentType === 'workflow').length,
+      tool: visibleComponents.filter(c => c.componentType === 'tool').length,
+      agent: visibleComponents.filter(c => c.componentType === 'agent').length,
+      scorer: visibleComponents.filter(c => c.componentType === 'scorer').length,
     };
     const summary = Object.entries(counts).filter(([, n]) => n > 0).map(([t, n]) => `${n} ${t}(s)`).join(', ');
     console.log(`📦 Registered components: ${summary || 'none'}`);
