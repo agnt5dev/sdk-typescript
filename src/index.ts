@@ -81,8 +81,14 @@ export { MCPServer, MCPServerError, Prompt, Resource } from './mcp-server.js';
 
 
 // Workflow exports
-export { event, workflow, WorkflowRegistry } from './workflow.js';
-export type { EventTriggerOptions, TriggerSpec, WorkflowConfig, WorkflowOptions } from './workflow.js';
+export { event, webhook, workflow, WorkflowRegistry } from './workflow.js';
+export type {
+  EventTriggerOptions,
+  TriggerSpec,
+  WebhookTriggerOptions,
+  WorkflowConfig,
+  WorkflowOptions,
+} from './workflow.js';
 export {
   parallel,
   gather,
