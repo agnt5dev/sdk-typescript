@@ -45,6 +45,10 @@ pub struct WorkerOptions {
     pub tenant_id: Option<String>,
     /// Deployment ID (falls back to AGNT5_DEPLOYMENT_ID env var)
     pub deployment_id: Option<String>,
+    /// Max in-flight invocations this worker serves. Sets the local pool size
+    /// and the coordinator's per-priority headroom denominator. Falls back to
+    /// the AGNT5_MAX_CONCURRENCY env var, then 100.
+    pub max_concurrency: Option<u32>,
 }
 
 /// Component type enum matching protobuf
@@ -224,6 +228,12 @@ impl Worker {
         // Override coordinator endpoint if provided
         if let Some(endpoint) = options.coordinator_endpoint {
             config.coordinator_endpoint = endpoint;
+        }
+
+        // An explicit value from JS wins over the AGNT5_MAX_CONCURRENCY env
+        // seed applied in WorkerConfig::new.
+        if let Some(c) = options.max_concurrency {
+            config.max_concurrency = Some(c);
         }
 
         // Build service metadata for checkpoint emission. `tenant_id` (the

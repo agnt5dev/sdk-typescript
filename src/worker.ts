@@ -58,6 +58,13 @@ export interface PlatformWorkerOptions extends WorkerOptions {
   jobQueuePollIntervalMs?: number;
   /** Maximum poll interval with exponential backoff (default: 30000) */
   jobQueueMaxPollIntervalMs?: number;
+  /**
+   * Max in-flight invocations this worker serves. Sets the local pool size
+   * and the coordinator's per-priority headroom denominator. Defaults to the
+   * AGNT5_MAX_CONCURRENCY env var, then 100. Raise it for async/IO-bound LLM
+   * workflows; lower it for CPU-bound work.
+   */
+  maxConcurrency?: number;
 }
 
 type ComponentRegistration = {
@@ -522,6 +529,7 @@ export class Worker {
         process.env.AGNT5_PROJECT_ID,
       deploymentId: this.options.deploymentId ||
         process.env.AGNT5_DEPLOYMENT_ID,
+      maxConcurrency: this.options.maxConcurrency,
     });
 
     this.isInitialized = true;
