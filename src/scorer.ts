@@ -550,6 +550,8 @@ export async function llmJudge(
       output: request.output,
       expected: request.expected,
       context: contextData,
+      metadata: cfg.metadata,
+      tags: cfg.tags,
     });
     if (rendered.error) {
       return new ScorerResult({
@@ -560,6 +562,9 @@ export async function llmJudge(
       });
     }
     userContent = `${rendered.text!.trimEnd()}\n\n`;
+    if (!templateReferencesSelector(promptTemplate, 'output')) {
+      userContent += `## Output to Evaluate\n${formatJudgeValue(request.output)}\n\n`;
+    }
   } else {
     userContent = `## Evaluation Criteria\n${criteria}\n\n`;
     if (includeInput && request.input !== undefined && request.input !== null) {
@@ -575,6 +580,12 @@ export async function llmJudge(
   }
   if (choiceScores) {
     userContent += `Choose exactly one label from: ${Object.keys(choiceScores).sort().join(', ')}. Return that label in the JSON \`label\` field. The platform will map labels to scores.\n\n`;
+  }
+  if (cfg.use_cot === true) {
+    userContent += 'Reason through the rubric before deciding, but do not include hidden chain-of-thought. Put only a concise rationale in the JSON `explanation` field.\n\n';
+  }
+  if (cfg.output_schema && typeof cfg.output_schema === 'object' && !Array.isArray(cfg.output_schema)) {
+    userContent += `Return a JSON object matching this requested output shape:\n${formatJudgeValue(cfg.output_schema)}\nFor experiment scoring, the JSON should include \`score\` (0.0 to 1.0), \`label\`, and \`explanation\` fields.\n\n`;
   }
   userContent += 'Please evaluate the output and respond with a JSON object.';
 
@@ -722,6 +733,18 @@ function renderPromptTemplate(
   }
 }
 
+function templateReferencesSelector(template: string, root: string): boolean {
+  const pattern = /{{\s*([^{}]+?)\s*}}/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(template)) !== null) {
+    const selector = String(match[1]).trim();
+    if (selector === root || selector.startsWith(`${root}.`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function templateSelectedValue(values: Record<string, any>, selector: string): any {
   const [root, ...parts] = selector.split('.');
   if (!(root in values)) throw new Error(selector);
@@ -773,7 +796,12 @@ function applyChoiceScores(
     return result;
   }
   const labels = Object.keys(choiceScores).sort();
-  if (!result.label || !(result.label in choiceScores)) {
+  const selectedLabel = result.label && result.label in choiceScores
+    ? result.label
+    : result.label
+      ? undefined
+      : labelForChoiceScore(result.score, choiceScores);
+  if (!selectedLabel || !(selectedLabel in choiceScores)) {
     return new ScorerResult({
       score: 0.0,
       passed: false,
@@ -786,18 +814,25 @@ function applyChoiceScores(
       },
     });
   }
-  const score = Math.max(0, Math.min(1, choiceScores[result.label]));
+  const score = Math.max(0, Math.min(1, choiceScores[selectedLabel]));
   return new ScorerResult({
     score,
     passed: score >= 0.7,
-    label: result.label,
+    label: selectedLabel,
     explanation: result.explanation,
     metadata: {
       ...(result.metadata ?? {}),
       choice_scores: choiceScores,
-      selected_label: result.label,
+      selected_label: selectedLabel,
     },
   });
+}
+
+function labelForChoiceScore(score: number, choiceScores: Record<string, number>): string | undefined {
+  const matches = Object.entries(choiceScores)
+    .filter(([, choiceScore]) => Math.abs(choiceScore - score) < 1e-9)
+    .map(([label]) => label);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export async function correctness(
@@ -812,9 +847,6 @@ export async function correctness(
     expected = optionalSelectedValue(request, cfg.reference_field, request.expected);
   } catch (e) {
     return judgeConfigError(`correctness field selector not found: ${(e as Error).message}`);
-  }
-  if (expected === undefined || expected === null) {
-    return judgeConfigError('correctness requires expected output or config.reference_field');
   }
   const result = await llmJudge({
     ...request,
@@ -1048,15 +1080,26 @@ function bindRequestField(
     metadata[fieldKey] = selector.trim();
   }
   const expectedType = config[typeKey];
-  if (typeof expectedType === 'string' && expectedType.trim()) {
-    if (!valueTypeMatches(selected, expectedType.trim())) {
+  const bindingType = fieldBindingExpectedType(expectedType);
+  if (bindingType) {
+    if (!valueTypeMatches(selected, bindingType)) {
       throw new Error(
-        `${fieldKey} selected ${valueTypeName(selected)}; expected ${expectedType.trim()}`,
+        `${fieldKey} selected ${valueTypeName(selected)}; expected ${bindingType}`,
       );
     }
-    metadata[typeKey] = expectedType.trim();
+    metadata[typeKey] = bindingType;
   }
   return selected;
+}
+
+function fieldBindingExpectedType(value: any): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === 'score' || normalized === 'classification' || normalized === 'json') {
+    return undefined;
+  }
+  return normalized;
 }
 
 function boundFieldValue(value: any, selector: string, root: string): any {

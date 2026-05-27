@@ -1147,10 +1147,22 @@ export class Worker {
       components.push({ name, componentType: 'agent', config: {}, metadata: {} });
     }
 
-    // Scorers (custom only — built-ins are handled by Rust fast path)
+    const workerExecutedBuiltinScorers = new Set(['llm_judge', 'correctness', 'faithfulness']);
+
+    // Scorers. Deterministic built-ins stay on Rust/control-plane paths, but
+    // managed judge presets need a routable SDK worker component.
     for (const [name, cfg] of ScorerRegistry.all()) {
-      if (isScorer(cfg.handler)) {
-        components.push({ name, componentType: 'scorer', config: {}, metadata: { scope: cfg.scope } });
+      if (isScorer(cfg.handler) || workerExecutedBuiltinScorers.has(name)) {
+        components.push({
+          name,
+          componentType: 'scorer',
+          config: {},
+          metadata: {
+            scope: cfg.scope,
+            description: cfg.description || '',
+            ...(workerExecutedBuiltinScorers.has(name) ? { source: 'agnt5_builtin' } : {}),
+          },
+        });
       }
     }
 

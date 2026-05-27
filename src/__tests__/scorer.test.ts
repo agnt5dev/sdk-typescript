@@ -411,6 +411,37 @@ describe('Built-in scorers', () => {
     expect(prompt).toContain('Choose exactly one label from: correct, incorrect');
   });
 
+  it('llmJudge: should append output when custom prompt template omits output variable', async () => {
+    let prompt = '';
+    const result = await llmJudge(
+      {
+        output: 'Recommendation: buy below $100.',
+        config: {
+          prompt_template: 'Judge whether the report is actionable.',
+          choice_scores: { actionable: 1, 'not actionable': 0 },
+          provider: 'openai',
+          model: 'gpt-test',
+        },
+      },
+      {
+        runId: 'r',
+        correlationId: 'c',
+        attempt: 0,
+        log: () => {},
+        llmJudgeLm: {
+          generate: async (req: any) => {
+            prompt = req.messages[1].content;
+            return { text: '{"label":"actionable","explanation":"has recommendation"}' };
+          },
+        },
+      } as any,
+    );
+
+    expect(result.score).toBe(1);
+    expect(prompt).toContain('Judge whether the report is actionable.');
+    expect(prompt).toContain('## Output to Evaluate\nRecommendation: buy below $100.');
+  });
+
   it('llmJudge: should reject labels outside configured choice scores', async () => {
     const result = await llmJudge(
       {
@@ -437,6 +468,34 @@ describe('Built-in scorers', () => {
     expect(result.label).toBe('invalid_label');
     expect(result.metadata?.invalid_label).toBe('maybe');
     expect(result.metadata?.allowed_labels).toEqual(['correct', 'incorrect']);
+  });
+
+  it('llmJudge: should infer missing choice label from a unique returned score', async () => {
+    const result = await llmJudge(
+      {
+        output: 'Analysis without recommendation.',
+        config: {
+          criteria: 'Actionability',
+          choice_scores: { actionable: 1, 'not actionable': 0 },
+          provider: 'openai',
+          model: 'gpt-test',
+        },
+      },
+      {
+        runId: 'r',
+        correlationId: 'c',
+        attempt: 0,
+        log: () => {},
+        llmJudgeLm: {
+          generate: async () => ({ text: '{"score":0,"explanation":"no recommendation"}' }),
+        },
+      } as any,
+    );
+
+    expect(result.score).toBe(0);
+    expect(result.passed).toBe(false);
+    expect(result.label).toBe('not actionable');
+    expect(result.metadata?.selected_label).toBe('not actionable');
   });
 
   it('llmJudge: should report missing custom prompt template variables', async () => {
@@ -525,6 +584,38 @@ describe('Built-in scorers', () => {
 
     expect(result.passed).toBe(true);
     expect(result.metadata?.judge_preset).toBe('correctness');
+  });
+
+  it('correctness: should allow reference-free judging', async () => {
+    let prompt = '';
+    const result = await correctness(
+      {
+        input: { question: 'What did TSLA report last quarter?' },
+        output: { answer: 'TSLA reported fictional numbers.' },
+        config: {
+          answer_field: 'output.answer',
+          model: 'gpt-test',
+        },
+      },
+      {
+        runId: 'run-1',
+        correlationId: 'corr-1',
+        attempt: 0,
+        log: () => {},
+        llmJudgeLm: {
+          generate: async ({ messages }: any) => {
+            prompt = messages[1].content;
+            return { text: '{"score":0,"passed":false,"label":"fail","explanation":"not supported"}' };
+          },
+        },
+      } as any,
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.label).toBe('fail');
+    expect(result.metadata?.judge_preset).toBe('correctness');
+    expect(prompt).toContain('## Input');
+    expect(prompt).not.toContain('## Expected Output (Reference)');
   });
 });
 
@@ -617,6 +708,24 @@ describe('Scorer decorator & registry', () => {
     expect(result.passed).toBe(false);
     expect(result.label).toBe('config_error');
     expect(result.explanation).toContain('expected array');
+  });
+
+  it('runScorer: should ignore LLM judge output modes as field binding types', async () => {
+    scorer('field_binding_output_mode_unique_ts', 'Captures output mode binding behavior')(
+      async (_ctx, request) =>
+        new ScorerResult({
+          score: request.output === 'A text report, not a numeric score.' ? 1 : 0,
+          passed: request.output === 'A text report, not a numeric score.',
+        }),
+    );
+
+    const result = await runScorer('field_binding_output_mode_unique_ts', {
+      output: 'A text report, not a numeric score.',
+      config: { output_type: 'score' },
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.score).toBe(1);
   });
 });
 
