@@ -54,6 +54,46 @@ export function event(name: string, options: EventTriggerOptions = {}): TriggerS
   };
 }
 
+export interface WebhookTriggerOptions extends EventTriggerOptions {
+  /** Event identifier within the source. The runtime dispatches on
+   *  `{source}.{event}` (e.g. `sentry.issue.created`,
+   *  `github.issues.opened`, `stripe.payment_intent.succeeded`,
+   *  `slack.app_mention`). For Standard Webhooks publishers use the
+   *  `webhook-event` header value. */
+  event: string;
+}
+
+/**
+ * Declare a webhook-event trigger for a workflow.
+ *
+ * Deliveries arriving at `POST /v1/webhooks/{source}/{integration_id}`
+ * are dispatched as events with name `{source}.{event}` — this helper
+ * wires that subscription declaratively.
+ *
+ * @param source One of `standard | sentry | stripe | github | slack`.
+ * @param options Must include `event`; supports the same filter/mapping
+ *                /batching options as `event()`.
+ */
+export function webhook(source: string, options: WebhookTriggerOptions): TriggerSpec {
+  const src = source.trim().toLowerCase();
+  const evt = options.event?.trim();
+  if (!src) {
+    throw new Error('webhook source is required');
+  }
+  if (!evt) {
+    throw new Error('webhook event is required');
+  }
+  return {
+    triggerId: options.triggerId,
+    triggerType: 'event',
+    eventName: `${src}.${evt}`,
+    filterExpression: options.filterExpression,
+    inputMapping: options.inputMapping,
+    batchWindowMs: options.batchWindowMs,
+    delayExpression: options.delayExpression,
+  };
+}
+
 /**
  * Global workflow registry
  */
