@@ -59,6 +59,12 @@ export interface Context {
   readonly attempt: number;
   /** Service name */
   readonly serviceName: string;
+  /**
+   * Cancellation signal for this invocation. Aborted when the run is
+   * cancelled (a CancelExecution arrives). Thread it into fetch/LLM SDK
+   * calls (`fetch(url, { signal: ctx.signal })`) so in-flight work stops.
+   */
+  readonly signal: AbortSignal;
 
   // State management (async for durable storage)
   /** Get value from state (async) */

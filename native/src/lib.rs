@@ -198,6 +198,9 @@ pub struct Worker {
     /// Fire-and-forget callback to JS handler. The JS side calls resolveResponse() when done.
     message_handler:
         Arc<StdMutex<Option<ThreadsafeFunction<RuntimeMessageData, ErrorStrategy::Fatal>>>>,
+    /// Fire-and-forget callback invoked with a run_id when a CancelExecution
+    /// arrives, so JS can abort the matching invocation's AbortController.
+    cancel_handler: Arc<StdMutex<Option<ThreadsafeFunction<String, ErrorStrategy::Fatal>>>>,
     /// Response channel map: invocation_id → oneshot sender for the response JSON
     response_map: Arc<StdMutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>>,
     /// Journal event queue (Arc-backed, shared with core worker's flush task)
@@ -268,6 +271,7 @@ impl Worker {
             config,
             core_worker: Arc::new(TokioMutex::new(core_worker)),
             message_handler: Arc::new(StdMutex::new(None)),
+            cancel_handler: Arc::new(StdMutex::new(None)),
             response_map: Arc::new(StdMutex::new(HashMap::new())),
             journal_queue,
             emit_worker: Arc::new(StdMutex::new(Some(emit_worker))),
@@ -321,6 +325,25 @@ impl Worker {
             .message_handler
             .lock()
             .map_err(|e| Error::from_reason(format!("Failed to lock message handler: {}", e)))?;
+        *handler = Some(tsfn);
+
+        Ok(())
+    }
+
+    /// Set the cancel handler callback. Invoked with a run_id (string) when a
+    /// CancelExecution arrives so JS can abort the matching invocation.
+    #[napi]
+    pub fn set_cancel_handler(
+        &self,
+        #[napi(ts_arg_type = "(runId: string) => void")] callback: JsFunction,
+    ) -> Result<()> {
+        let tsfn: ThreadsafeFunction<String, ErrorStrategy::Fatal> =
+            callback.create_threadsafe_function(0, |ctx| Ok(vec![ctx.value]))?;
+
+        let mut handler = self
+            .cancel_handler
+            .lock()
+            .map_err(|e| Error::from_reason(format!("Failed to lock cancel handler: {}", e)))?;
         *handler = Some(tsfn);
 
         Ok(())
@@ -544,6 +567,19 @@ impl Worker {
         // Run the core worker
         // Lock the worker for the duration of run()
         let worker = self.core_worker.lock().await;
+
+        // Register the cooperative cancel hook: forward run_id to the JS cancel
+        // handler (which aborts the matching invocation's AbortController).
+        if let Some(cancel_tsfn) = self
+            .cancel_handler
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+        {
+            worker.set_cancel_hook(move |run_id: String| {
+                cancel_tsfn.call(run_id, ThreadsafeFunctionCallMode::NonBlocking);
+            });
+        }
 
         worker
             .run(message_handler)

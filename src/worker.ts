@@ -130,6 +130,20 @@ class SimpleContext implements Context {
     private state: Map<string, any> = new Map()
   ) {}
 
+  // AbortSignal for cooperative cancellation. Set by Worker.processMessage to
+  // the per-invocation AbortController's signal; aborted when a
+  // CancelExecution arrives. Handlers thread this into fetch/LLM calls.
+  // Defaults to a never-aborted signal so it's always defined.
+  private _signal: AbortSignal = new AbortController().signal;
+
+  get signal(): AbortSignal {
+    return this._signal;
+  }
+
+  setSignal(signal: AbortSignal): void {
+    this._signal = signal;
+  }
+
   /**
    * Seed HITL replay state from incoming message metadata.
    * Called by Worker.processMessage before invoking the workflow handler.
@@ -581,6 +595,9 @@ export class Worker {
   /** Registered ChatBots (keyed by agent name) for webhook dispatch */
   private chatbots: Map<string, ChatBot> = new Map();
 
+  /** In-flight invocations keyed by run_id, for cooperative cancellation. */
+  private inflight: Map<string, AbortController> = new Map();
+
   /**
    * Register agents that can be dispatched by the worker.
    * Accepts both Agent and ChatBot instances. ChatBot instances
@@ -645,7 +662,13 @@ export class Worker {
   }): Promise<string> {
     const runId = message.metadata?.run_id || message.invocationId;
 
-    return runWithContext(
+    // Per-invocation AbortController for cooperative cancellation. The cancel
+    // handler aborts it when a CancelExecution arrives for this run; handlers
+    // observe it via ctx.signal.
+    const abortController = new AbortController();
+    this.inflight.set(runId, abortController);
+
+    return Promise.resolve(runWithContext(
       {
         runId,
         sessionId: message.metadata?.session_id,
@@ -681,6 +704,7 @@ export class Worker {
             this.serviceName,
           );
           ctx.setEmitter(emitter);
+          ctx.setSignal(abortController.signal);
           if (this.nativeWorker) {
             ctx.setNativeWorker(this.nativeWorker);
           }
@@ -976,6 +1000,18 @@ export class Worker {
             });
           }
 
+          // Cooperative cancellation: the handler errored because its
+          // ctx.signal was aborted (CancelExecution). The gateway already
+          // authored run.cancelled as the terminal event, so do NOT emit
+          // run.failed — return cleanly with no error.
+          if (abortController.signal.aborted) {
+            console.log(`🛑 Invocation cancelled: ${message.componentName} (run ${runCid})`);
+            return JSON.stringify({
+              invocationId: message.invocationId,
+              outputJson: JSON.stringify({ _cancelled: true }),
+            });
+          }
+
           // ── run.failed ──
           try {
             await emitter.emit(runFailed(runCid, parentCid, {
@@ -995,7 +1031,9 @@ export class Worker {
           });
         }
       },
-    );
+    )).finally(() => {
+      this.inflight.delete(runId);
+    });
   }
 
   /**
@@ -1181,6 +1219,12 @@ export class Worker {
 
     // Set message handler
     this.nativeWorker.setMessageHandler(this.handleMessage.bind(this));
+
+    // Cooperative cancellation: Rust calls this with a run_id when a
+    // CancelExecution arrives; abort the matching invocation's controller.
+    this.nativeWorker.setCancelHandler((runId: string) => {
+      this.inflight.get(runId)?.abort();
+    });
 
     console.log('✓ Message handler configured');
     console.log('🔗 Connecting to platform...\n');

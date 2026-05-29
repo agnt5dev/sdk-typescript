@@ -158,6 +158,8 @@ export class ContextImpl implements Context {
   private storage: StorageBackend;
   private _pauseIndex = 0;
   private _emitter?: EventEmitter;
+  /** Cancellation signal (never aborted on this context path). */
+  readonly signal: AbortSignal = new AbortController().signal;
 
   constructor(
     public readonly invocationId: string,

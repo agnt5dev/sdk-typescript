@@ -354,6 +354,8 @@ class EntityContext implements Context {
   readonly runId: string;
   readonly attempt: number = 0;
   readonly serviceName: string;
+  /** Cancellation signal (never aborted on the entity path). */
+  readonly signal: AbortSignal = new AbortController().signal;
 
   constructor(
     entityType: string,

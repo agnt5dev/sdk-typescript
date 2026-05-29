@@ -41,6 +41,7 @@ use agnt5_sdk_core::lm::{
     OpenAiProvider,
     OpenRouterConfig,
     OpenRouterProvider,
+    PromptRef,
     ReasoningEffort,
     ResponseFormat,
     StreamChunk,
@@ -411,6 +412,7 @@ impl TryFrom<JsGenerationConfig> for GenerationConfig {
 #[napi(object)]
 pub struct JsGenerateRequest {
     pub model: String,
+    pub prompt_ref: Option<JsPromptRef>,
     pub system_prompt: Option<String>,
     pub messages: Vec<JsMessage>,
     pub tools: Option<Vec<JsToolDefinition>>,
@@ -444,6 +446,7 @@ impl TryFrom<JsGenerateRequest> for GenerateRequest {
 
         Ok(GenerateRequest {
             model: req.model,
+            prompt_ref: req.prompt_ref.map(|p| p.into()),
             system_prompt: req.system_prompt,
             messages,
             tools,
@@ -453,6 +456,33 @@ impl TryFrom<JsGenerateRequest> for GenerateRequest {
             previous_response_id: None,
             otel_context: None,
         })
+    }
+}
+
+#[napi(object)]
+pub struct JsPromptRef {
+    pub id: String,
+    pub version: Option<String>,
+    pub environment_id: Option<String>,
+    pub environment_ref: Option<String>,
+    pub variables: Option<String>,
+}
+
+impl From<JsPromptRef> for PromptRef {
+    fn from(value: JsPromptRef) -> Self {
+        let variables = value
+            .variables
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .and_then(|parsed| parsed.as_object().cloned())
+            .unwrap_or_default();
+        Self {
+            id: value.id,
+            version: value.version,
+            environment_id: value.environment_id,
+            environment_ref: value.environment_ref,
+            variables,
+        }
     }
 }
 

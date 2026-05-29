@@ -96,12 +96,31 @@ export interface ToolChoiceOption {
 
 export interface GenerateRequest {
   model: string;
+  promptRef?: string | PromptRef;
+  variables?: Record<string, string | number | boolean | null>;
+  projectId?: string;
+  environment?: string;
+  environmentId?: string;
+  promptVersion?: string;
+  platformUrl?: string;
+  apiKey?: string;
   systemPrompt?: string;
-  messages: Message[];
+  messages?: Message[];
   tools?: ToolDefinition[];
   toolChoice?: ToolChoiceOption;
   userId?: string;
   config?: GenerationConfig;
+}
+
+export interface PromptRef {
+  id: string;
+  projectId?: string;
+  version?: string;
+  environmentId?: string;
+  environmentRef?: string;
+  platformUrl?: string;
+  apiKey?: string;
+  variables?: Record<string, string | number | boolean | null>;
 }
 
 export const SUPPORTED_MODEL_PROVIDERS = Object.freeze([
@@ -444,8 +463,13 @@ export class LM {
    * ```
    */
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
+    if (request.promptRef) {
+      return await runManagedPrompt(request);
+    }
     return await this.model.generate({
       ...request,
+      messages: request.messages ?? [],
+      promptRef: undefined,
       model: validateModelForProvider(request.model, this.providerName),
     });
   }
@@ -471,11 +495,77 @@ export class LM {
     request: GenerateRequest,
     callback: (chunk: StreamChunk) => void
   ): Promise<void> {
+    if (request.promptRef) {
+      callback({ chunkType: 'completed', response: await runManagedPrompt(request) });
+      return;
+    }
     return await this.model.stream({
       ...request,
+      messages: request.messages ?? [],
+      promptRef: undefined,
       model: validateModelForProvider(request.model, this.providerName),
     }, callback);
   }
+}
+
+async function runManagedPrompt(request: GenerateRequest): Promise<GenerateResponse> {
+  const promptRef = normalizePromptRef(request);
+  const projectId = promptRef.projectId || request.projectId || process.env.AGNT5_PROJECT_ID || process.env.AGNT5_PROJECT_REF;
+  if (!projectId) {
+    throw new ConfigurationError('Managed prompts require project context. Set projectId on the call or AGNT5_PROJECT_ID in the environment.');
+  }
+  const platformUrl = (promptRef.platformUrl || request.platformUrl || process.env.AGNT5_PLATFORM_URL || process.env.AGNT5_CONTROL_PLANE_URL || 'https://api.agnt5.com').replace(/\/$/, '');
+  const body: Record<string, unknown> = {
+    variables: request.variables ?? promptRef.variables ?? {},
+  };
+  const version = request.promptVersion || promptRef.version;
+  const environmentId = request.environmentId || promptRef.environmentId || process.env.AGNT5_ENVIRONMENT_ID;
+  const environmentRef = request.environment || promptRef.environmentRef || process.env.AGNT5_ENVIRONMENT || process.env.AGNT5_ENVIRONMENT_REF;
+  if (version) body.version_id = version;
+  if (environmentId) body.environment_id = environmentId;
+  else if (environmentRef) body.environment_ref = environmentRef;
+  if (request.config?.temperature !== undefined) body.temperature = request.config.temperature;
+  if (request.config?.maxOutputTokens !== undefined) body.max_tokens = request.config.maxOutputTokens;
+
+  const apiKey = promptRef.apiKey || request.apiKey || process.env.AGNT5_API_KEY;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+    headers['X-API-KEY'] = apiKey;
+  }
+
+  const response = await fetch(`${platformUrl}/api/v1/projects/${projectId}/prompts/${promptRef.id}/run`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new ConfigurationError(`Managed prompt request failed: ${response.status} ${await response.text()}`);
+  }
+  const payload = await response.json() as any;
+  const data = payload.data ?? payload;
+  return {
+    id: data.id ?? '',
+    model: data.model ?? request.model,
+    text: data.content ?? '',
+    usage: data.total_tokens !== undefined ? {
+      promptTokens: data.prompt_tokens ?? 0,
+      completionTokens: data.completion_tokens ?? 0,
+      totalTokens: data.total_tokens ?? 0,
+    } : undefined,
+    finishReason: data.finish_reason,
+    raw: JSON.stringify(data),
+  };
+}
+
+function normalizePromptRef(request: GenerateRequest): PromptRef {
+  if (!request.promptRef) {
+    throw new ConfigurationError('promptRef is required for managed prompt execution');
+  }
+  if (typeof request.promptRef === 'string') {
+    return { id: request.promptRef };
+  }
+  return request.promptRef;
 }
 
 // ============================================================================

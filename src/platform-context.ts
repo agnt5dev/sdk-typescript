@@ -14,6 +14,8 @@ export class PlatformContext implements Context {
   private stateManager: any; // StateManager from native bindings
   private span: any; // Span from native bindings
   private checkpointCounter = 0;
+  /** Cancellation signal (never aborted on this adapter path). */
+  readonly signal: AbortSignal = new AbortController().signal;
 
   constructor(
     public readonly invocationId: string,
