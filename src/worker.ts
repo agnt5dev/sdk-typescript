@@ -1214,6 +1214,10 @@ export class Worker {
     };
     const summary = Object.entries(counts).filter(([, n]) => n > 0).map(([t, n]) => `${n} ${t}(s)`).join(', ');
     console.log(`📦 Registered components: ${summary || 'none'}`);
+    const dashboardUrl = process.env.AGNT5_DASHBOARD_URL?.trim();
+    if (dashboardUrl) {
+      console.log(`Dashboard: ${dashboardUrl}`);
+    }
 
     await this.nativeWorker.setComponents(components);
 
