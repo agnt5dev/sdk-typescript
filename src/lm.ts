@@ -20,6 +20,7 @@
 import { ConfigurationError } from './errors.js';
 import type { JSONSchema } from './types.js';
 import { loadNativeBindings } from './native-loader.js';
+import { resolvePromptRefFromManifest } from './prompt-manifest.js';
 
 // ============================================================================
 // Types
@@ -510,6 +511,11 @@ export class LM {
 
 async function runManagedPrompt(request: GenerateRequest): Promise<GenerateResponse> {
   const promptRef = normalizePromptRef(request);
+  const manifestRequest = resolvePromptRefFromManifest(request, promptRef);
+  if (manifestRequest) {
+    return await runManifestPrompt(manifestRequest);
+  }
+
   const projectId = promptRef.projectId || request.projectId || process.env.AGNT5_PROJECT_ID || process.env.AGNT5_PROJECT_REF;
   if (!projectId) {
     throw new ConfigurationError('Managed prompts require project context. Set projectId on the call or AGNT5_PROJECT_ID in the environment.');
@@ -519,11 +525,7 @@ async function runManagedPrompt(request: GenerateRequest): Promise<GenerateRespo
     variables: request.variables ?? promptRef.variables ?? {},
   };
   const version = request.promptVersion || promptRef.version;
-  const environmentId = request.environmentId || promptRef.environmentId || process.env.AGNT5_ENVIRONMENT_ID;
-  const environmentRef = request.environment || promptRef.environmentRef || process.env.AGNT5_ENVIRONMENT || process.env.AGNT5_ENVIRONMENT_REF;
   if (version) body.version_id = version;
-  if (environmentId) body.environment_id = environmentId;
-  else if (environmentRef) body.environment_ref = environmentRef;
   if (request.config?.temperature !== undefined) body.temperature = request.config.temperature;
   if (request.config?.maxOutputTokens !== undefined) body.max_tokens = request.config.maxOutputTokens;
 
@@ -556,6 +558,45 @@ async function runManagedPrompt(request: GenerateRequest): Promise<GenerateRespo
     finishReason: data.finish_reason,
     raw: JSON.stringify(data),
   };
+}
+
+async function runManifestPrompt(request: GenerateRequest): Promise<GenerateResponse> {
+  const { provider } = parseModelIdentifier(request.model);
+  return await createPromptManifestLM(provider).generate({
+    ...request,
+    promptRef: undefined,
+  });
+}
+
+function createPromptManifestLM(provider: string): LM {
+  switch (provider) {
+    case 'openai':
+      return LM.openai();
+    case 'anthropic':
+      return LM.anthropic();
+    case 'groq':
+      return LM.groq();
+    case 'openrouter':
+      return LM.openrouter();
+    case 'deepseek':
+      return LM.deepseek();
+    case 'google':
+    case 'gemini':
+      return LM.google();
+    case 'mistral':
+      return LM.mistral();
+    case 'ollama':
+      return LM.ollama();
+    case 'xai':
+      return LM.xai();
+    case 'huggingface':
+    case 'hf':
+      return LM.huggingface();
+    case 'openai_chat':
+      return LM.openaiChat();
+    default:
+      throw new ConfigurationError(`Unsupported prompt manifest model provider: ${provider}`);
+  }
 }
 
 function normalizePromptRef(request: GenerateRequest): PromptRef {
