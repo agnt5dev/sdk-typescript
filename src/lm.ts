@@ -70,7 +70,7 @@ export interface StreamChunk {
 
 export type ReasoningEffort = 'minimal' | 'medium' | 'high';
 export type Modality = 'text' | 'audio' | 'image';
-export type BuiltInTool = 'web_search' | 'code_interpreter' | 'file_search';
+export type BuiltInTool = 'web_search' | 'code_interpreter' | 'file_search' | 'web_fetch';
 
 export interface GenerationConfig {
   temperature?: number;

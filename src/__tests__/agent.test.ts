@@ -7,12 +7,14 @@ import type { LanguageModel, GenerateRequest, GenerateResponse } from '../agent.
 class MockLanguageModel implements LanguageModel {
   private responses: GenerateResponse[];
   private callIndex = 0;
+  public requests: GenerateRequest[] = [];
 
   constructor(responses: GenerateResponse[]) {
     this.responses = responses;
   }
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
+    this.requests.push(request);
     const response = this.responses[this.callIndex] || this.responses[this.responses.length - 1];
     this.callIndex++;
     return response;
@@ -125,6 +127,92 @@ describe('Agent', () => {
     expect(result.output).toBe('The result is 15');
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls[0].name).toBe('calculator');
+  });
+
+  it('should record built-in tool calls without local dispatch', async () => {
+    const mockModel = new MockLanguageModel([
+      {
+        text: 'Final answer based on search results',
+        toolCalls: [
+          {
+            id: 'ws_1',
+            name: 'web_search_preview',
+            arguments: '{}'
+          }
+        ]
+      }
+    ]);
+
+    const agent = new Agent({
+      name: 'builtin-agent',
+      model: mockModel,
+      instructions: 'Use provider-hosted search.',
+      builtInTools: ['web_search']
+    });
+
+    const result = await agent.run('Search for something.');
+
+    expect(mockModel.requests[0].config?.builtInTools).toEqual(['web_search']);
+    expect(result.output).toBe('Final answer based on search results');
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0].name).toBe('web_search_preview');
+    expect(result.toolCalls[0].builtIn).toBe(true);
+  });
+
+  it('should dispatch only user tools when response mixes built-in and user calls', async () => {
+    ToolRegistry.clear();
+
+    const saveNote = tool(
+      'save_note',
+      {
+        description: 'Save a note',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string' }
+          },
+          required: ['text']
+        }
+      },
+      async (ctx, args) => `saved:${args.text}`
+    );
+
+    const mockModel = new MockLanguageModel([
+      {
+        text: 'I will search and save.',
+        toolCalls: [
+          {
+            id: 'ws_1',
+            name: 'web_search_preview',
+            arguments: '{}'
+          },
+          {
+            id: 'save_1',
+            name: 'save_note',
+            arguments: JSON.stringify({ text: 'hello' })
+          }
+        ]
+      },
+      {
+        text: 'Done.',
+        finishReason: 'stop'
+      }
+    ]);
+
+    const agent = new Agent({
+      name: 'mixed-builtin-agent',
+      model: mockModel,
+      instructions: 'Search and save.',
+      tools: [saveNote],
+      builtInTools: ['web_search']
+    });
+
+    const result = await agent.run('Search and save a note.');
+
+    expect(result.output).toBe('Done.');
+    expect(result.toolCalls).toHaveLength(2);
+    expect(result.toolCalls.find(tc => tc.name === 'web_search_preview')?.builtIn).toBe(true);
+    expect(result.toolCalls.find(tc => tc.name === 'save_note')?.builtIn).toBeUndefined();
   });
 
   it('should handle multi-turn chat', async () => {

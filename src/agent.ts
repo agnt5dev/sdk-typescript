@@ -10,6 +10,7 @@ import { ContextImpl } from './context.js';
 import { validateModelForProvider } from './lm.js';
 import type { LM } from './lm.js';
 import type {
+  BuiltInTool,
   Message as LMMessage,
   GenerateRequest as LMGenerateRequest,
   GenerateResponse as LMGenerateResponse,
@@ -78,6 +79,7 @@ export interface GenerationConfig {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
+  builtInTools?: BuiltInTool[];
 }
 
 /**
@@ -124,7 +126,13 @@ export interface LanguageModel {
  */
 export interface AgentResult {
   output: string;
-  toolCalls: Array<{ name: string; arguments: string; iteration: number }>;
+  toolCalls: Array<{
+    name: string;
+    arguments: string;
+    iteration: number;
+    id?: string;
+    builtIn?: boolean;
+  }>;
   context: Context;
   /** Name of agent control was handed off to (null if no handoff) */
   handoffTo: string | null;
@@ -293,8 +301,27 @@ export interface AgentOptions {
   temperature?: number;
   /** Maximum reasoning iterations */
   maxIterations?: number;
+  /** Provider-hosted tools that run server-side. */
+  builtInTools?: BuiltInTool[];
   /** Execution callbacks for agent/model/tool interception */
   callbacks?: AgentCallbacks;
+}
+
+const BUILT_IN_TOOL_PROVIDER_NAMES: Record<BuiltInTool, string[]> = {
+  web_search: ['web_search', 'web_search_preview'],
+  code_interpreter: ['code_interpreter'],
+  file_search: ['file_search'],
+  web_fetch: ['web_fetch'],
+};
+
+function builtInToolNames(tools: BuiltInTool[]): Set<string> {
+  const names = new Set<string>();
+  for (const tool of tools) {
+    for (const name of BUILT_IN_TOOL_PROVIDER_NAMES[tool] ?? [tool]) {
+      names.add(name);
+    }
+  }
+  return names;
 }
 
 /**
@@ -337,6 +364,7 @@ export class Agent {
   readonly modelName: string;
   readonly temperature: number;
   readonly maxIterations: number;
+  readonly builtInTools: BuiltInTool[];
   private tools: Map<string, Tool> = new Map();
   private handoffs: Handoff[] = [];
   private isNewLM: boolean;
@@ -353,6 +381,7 @@ export class Agent {
       : requestedModelName;
     this.temperature = options.temperature ?? 0.7;
     this.maxIterations = options.maxIterations || 10;
+    this.builtInTools = options.builtInTools ?? [];
     this.callbacks = options.callbacks || {};
 
     // Detect if it's the new LM class (has static factory methods)
@@ -538,6 +567,7 @@ export class Agent {
         tools: toolDefs.length > 0 ? toolDefs.map(t => this.convertToolSchema(t)) : undefined,
         config: {
           temperature: this.temperature,
+          ...(this.builtInTools.length > 0 ? { builtInTools: this.builtInTools } : {}),
         },
       } satisfies LMGenerateRequest;
     }
@@ -549,6 +579,7 @@ export class Agent {
       tools: toolDefs.length > 0 ? toolDefs : undefined,
       config: {
         temperature: this.temperature,
+        ...(this.builtInTools.length > 0 ? { builtInTools: this.builtInTools } : {}),
       },
     } satisfies GenerateRequest;
   }
@@ -784,7 +815,7 @@ export class Agent {
     (ctx as any)._agentConversation = messages;
 
     const toolNames = Array.from(this.tools.keys());
-    const allToolCalls: Array<{ name: string; arguments: string; iteration: number }> = [];
+    const allToolCalls: AgentResult['toolCalls'] = [];
 
     // ── AgentStarted ──
     yield agentStarted(this.name, agentCorrelationId, {
@@ -827,16 +858,53 @@ export class Agent {
 
         messages.push(Message.assistant(response.text));
 
-        if (response.toolCalls && response.toolCalls.length > 0) {
+        const builtInNames = builtInToolNames(this.builtInTools);
+        let localToolCalls = response.toolCalls ?? [];
+
+        if (localToolCalls.length > 0 && builtInNames.size > 0) {
+          const partitionedLocalCalls: ToolCall[] = [];
+          for (const tc of localToolCalls) {
+            if (!builtInNames.has(tc.name)) {
+              partitionedLocalCalls.push(tc);
+              continue;
+            }
+
+            const tcId = tc.id || randomUUID();
+            allToolCalls.push({
+              name: tc.name,
+              arguments: tc.arguments,
+              iteration: iteration + 1,
+              id: tc.id,
+              builtIn: true,
+            });
+
+            yield toolCallStarted(tcId, iterCorrelationId, {
+              toolName: tc.name,
+              toolCallId: tcId,
+            });
+            yield toolCallCompleted(tcId, iterCorrelationId, {
+              toolName: tc.name,
+              toolCallId: tcId,
+            });
+          }
+          localToolCalls = partitionedLocalCalls;
+        }
+
+        if (localToolCalls.length > 0) {
           // Execute tool calls
           const toolResults: Array<{ tool: string; result: string | null; error: string | null }> = [];
 
-          for (const tc of response.toolCalls) {
+          for (const tc of localToolCalls) {
             const tcId = randomUUID();
             const toolName = tc.name;
             const toolArgsStr = tc.arguments;
 
-            allToolCalls.push({ name: toolName, arguments: toolArgsStr, iteration: iteration + 1 });
+            allToolCalls.push({
+              name: toolName,
+              arguments: toolArgsStr,
+              iteration: iteration + 1,
+              id: tc.id,
+            });
 
             // ── ToolCallStarted ──
             yield toolCallStarted(tcId, iterCorrelationId, { toolName, toolCallId: tcId });
@@ -920,7 +988,7 @@ export class Agent {
           yield iterationCompleted(iterCorrelationId, agentCorrelationId, {
             iteration: iteration + 1,
             hasToolCalls: true,
-            toolCallsCount: response.toolCalls.length,
+            toolCallsCount: localToolCalls.length,
           });
 
           completedIterations = iteration + 1;
