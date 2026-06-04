@@ -6,6 +6,8 @@
 import type { Context, Logger } from './types.js';
 import { StateError, CheckpointError } from './errors.js';
 import { loadNativeBindings, tryLoadNativeBindings } from './native-loader.js';
+import { emptyRuntimeContext } from './runtime-context.js';
+import type { RuntimeContext } from './runtime-context.js';
 
 /**
  * Platform-backed context with durable state and distributed tracing
@@ -16,6 +18,7 @@ export class PlatformContext implements Context {
   private checkpointCounter = 0;
   /** Cancellation signal (never aborted on this adapter path). */
   readonly signal: AbortSignal = new AbortController().signal;
+  readonly runtime: RuntimeContext = emptyRuntimeContext();
 
   constructor(
     public readonly invocationId: string,

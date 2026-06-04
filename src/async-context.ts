@@ -14,6 +14,7 @@
  */
 
 import { AsyncLocalStorage } from 'async_hooks';
+import type { RuntimeContext } from './runtime-context.js';
 
 /**
  * Propagated context data available throughout an async execution chain.
@@ -31,6 +32,8 @@ export interface PropagatedContext {
   tenantId?: string;
   /** Arbitrary metadata */
   metadata?: Record<string, any>;
+  /** Runtime-provided execution options */
+  runtime?: RuntimeContext;
 }
 
 const asyncLocalStorage = new AsyncLocalStorage<PropagatedContext>();

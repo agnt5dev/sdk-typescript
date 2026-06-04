@@ -1,5 +1,7 @@
 import type { Context, Logger } from './types.js';
 import type { EventEmitter } from './event-emitter.js';
+import { emptyRuntimeContext } from './runtime-context.js';
+import type { RuntimeContext } from './runtime-context.js';
 import { WaitingForUserInputError } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import Database from 'better-sqlite3';
@@ -169,8 +171,10 @@ export class ContextImpl implements Context {
     options?: {
       storage?: 'memory' | 'sqlite';
       dbPath?: string;
+      runtime?: RuntimeContext;
     }
   ) {
+    this.runtime = options?.runtime ?? emptyRuntimeContext();
     const storageType = options?.storage || (process.env.AGNT5_STORAGE === 'memory' ? 'memory' : 'sqlite');
 
     if (storageType === 'sqlite') {
@@ -180,6 +184,8 @@ export class ContextImpl implements Context {
       this.storage = new MemoryStorage();
     }
   }
+
+  readonly runtime: RuntimeContext;
 
   async get<T>(key: string, defaultValue?: T): Promise<T | undefined> {
     const value = await this.storage.get(key);
