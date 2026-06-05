@@ -220,6 +220,8 @@ export type {
   ResponseFormatOption,
   ToolChoiceOption,
   GenerateRequest as LMGenerateRequest,
+  Prompt as LMPrompt,
+  PromptRef as LMPromptRef,
   OpenAIConfig,
   AnthropicConfig,
   AzureOpenAIConfig,
@@ -238,6 +240,14 @@ export type {
 // Context propagation exports
 export { runWithContext, getCurrentContext, requireContext } from './async-context.js';
 export type { PropagatedContext } from './async-context.js';
+export {
+  emptyRuntimeContext,
+  runtimeContextFromMetadata,
+} from './runtime-context.js';
+export type {
+  LLMRuntimeOptions,
+  RuntimeContext,
+} from './runtime-context.js';
 
 // State management exports
 export {

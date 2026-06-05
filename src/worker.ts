@@ -8,6 +8,8 @@ import { Agent, Message } from './agent.js';
 import type { AgentResult } from './agent.js';
 import { ChatBot } from './chat.js';
 import { runWithContext } from './async-context.js';
+import { emptyRuntimeContext, runtimeContextFromMetadata } from './runtime-context.js';
+import type { RuntimeContext } from './runtime-context.js';
 import { WaitingForUserInputError } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import { EventEmitter } from './event-emitter.js';
@@ -127,6 +129,7 @@ class SimpleContext implements Context {
     public readonly runId: string,
     public readonly attempt: number,
     public readonly serviceName: string,
+    public readonly runtime: RuntimeContext = emptyRuntimeContext(),
     private state: Map<string, any> = new Map()
   ) {}
 
@@ -661,6 +664,7 @@ export class Worker {
     metadata: Record<string, string>;
   }): Promise<string> {
     const runId = message.metadata?.run_id || message.invocationId;
+    const runtime = runtimeContextFromMetadata(message.metadata);
 
     // Per-invocation AbortController for cooperative cancellation. The cancel
     // handler aborts it when a CancelExecution arrives for this run; handlers
@@ -675,6 +679,8 @@ export class Worker {
         userId: message.metadata?.user_id,
         correlationId: message.metadata?.correlation_id || message.invocationId,
         tenantId: message.metadata?.tenant_id,
+        metadata: message.metadata,
+        runtime,
       },
       async () => {
         // Create EventEmitter wired to NAPI worker for event emission
@@ -702,6 +708,7 @@ export class Worker {
             runId,
             attempt,
             this.serviceName,
+            runtime,
           );
           ctx.setEmitter(emitter);
           ctx.setSignal(abortController.signal);

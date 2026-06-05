@@ -19,8 +19,10 @@
 
 import { ConfigurationError } from './errors.js';
 import type { JSONSchema } from './types.js';
+import { getCurrentContext } from './async-context.js';
 import { loadNativeBindings } from './native-loader.js';
-import { resolvePromptRefFromManifest } from './prompt-manifest.js';
+import { resolvePromptFromManifest } from './prompt-manifest.js';
+import type { LLMRuntimeOptions } from './runtime-context.js';
 
 // ============================================================================
 // Types
@@ -97,6 +99,8 @@ export interface ToolChoiceOption {
 
 export interface GenerateRequest {
   model: string;
+  prompt?: Prompt;
+  /** @deprecated Use prompt for managed AGNT5 prompts. */
   promptRef?: string | PromptRef;
   variables?: Record<string, string | number | boolean | null>;
   projectId?: string;
@@ -111,9 +115,11 @@ export interface GenerateRequest {
   toolChoice?: ToolChoiceOption;
   userId?: string;
   config?: GenerationConfig;
+  /** @internal Prevents runtime overrides from being applied twice after prompt resolution. */
+  __runtimeOverridesApplied?: boolean;
 }
 
-export interface PromptRef {
+export interface Prompt {
   id: string;
   projectId?: string;
   version?: string;
@@ -122,7 +128,14 @@ export interface PromptRef {
   platformUrl?: string;
   apiKey?: string;
   variables?: Record<string, string | number | boolean | null>;
+  model?: string;
+  temperature?: number;
+  maxOutputTokens?: number;
+  topP?: number;
 }
+
+/** @deprecated Use Prompt for managed AGNT5 prompts. */
+export type PromptRef = Prompt;
 
 export const SUPPORTED_MODEL_PROVIDERS = Object.freeze([
   'anthropic',
@@ -464,11 +477,14 @@ export class LM {
    * ```
    */
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
-    if (request.promptRef) {
+    request = applyRuntimeOverrides(request);
+    if (request.prompt || request.promptRef) {
       return await runManagedPrompt(request);
     }
+    const { __runtimeOverridesApplied: _runtimeOverridesApplied, ...nativeRequest } = request;
     return await this.model.generate({
-      ...request,
+      ...nativeRequest,
+      prompt: undefined,
       messages: request.messages ?? [],
       promptRef: undefined,
       model: validateModelForProvider(request.model, this.providerName),
@@ -496,12 +512,15 @@ export class LM {
     request: GenerateRequest,
     callback: (chunk: StreamChunk) => void
   ): Promise<void> {
-    if (request.promptRef) {
+    request = applyRuntimeOverrides(request);
+    if (request.prompt || request.promptRef) {
       callback({ chunkType: 'completed', response: await runManagedPrompt(request) });
       return;
     }
+    const { __runtimeOverridesApplied: _runtimeOverridesApplied, ...nativeRequest } = request;
     return await this.model.stream({
-      ...request,
+      ...nativeRequest,
+      prompt: undefined,
       messages: request.messages ?? [],
       promptRef: undefined,
       model: validateModelForProvider(request.model, this.providerName),
@@ -510,33 +529,34 @@ export class LM {
 }
 
 async function runManagedPrompt(request: GenerateRequest): Promise<GenerateResponse> {
-  const promptRef = normalizePromptRef(request);
-  const manifestRequest = resolvePromptRefFromManifest(request, promptRef);
+  const prompt = normalizePrompt(request);
+  const manifestRequest = resolvePromptFromManifest(request, prompt);
   if (manifestRequest) {
     return await runManifestPrompt(manifestRequest);
   }
 
-  const projectId = promptRef.projectId || request.projectId || process.env.AGNT5_PROJECT_ID || process.env.AGNT5_PROJECT_REF;
+  const projectId = prompt.projectId || request.projectId || process.env.AGNT5_PROJECT_ID || process.env.AGNT5_PROJECT_REF;
   if (!projectId) {
     throw new ConfigurationError('Managed prompts require project context. Set projectId on the call or AGNT5_PROJECT_ID in the environment.');
   }
-  const platformUrl = (promptRef.platformUrl || request.platformUrl || process.env.AGNT5_PLATFORM_URL || process.env.AGNT5_CONTROL_PLANE_URL || 'https://api.agnt5.com').replace(/\/$/, '');
+  const platformUrl = (prompt.platformUrl || request.platformUrl || process.env.AGNT5_PLATFORM_URL || process.env.AGNT5_CONTROL_PLANE_URL || 'https://api.agnt5.com').replace(/\/$/, '');
   const body: Record<string, unknown> = {
-    variables: request.variables ?? promptRef.variables ?? {},
+    variables: request.variables ?? prompt.variables ?? {},
   };
-  const version = request.promptVersion || promptRef.version;
+  const version = request.promptVersion || prompt.version;
   if (version) body.version_id = version;
+  if (prompt.model) body.model = prompt.model;
   if (request.config?.temperature !== undefined) body.temperature = request.config.temperature;
   if (request.config?.maxOutputTokens !== undefined) body.max_tokens = request.config.maxOutputTokens;
 
-  const apiKey = promptRef.apiKey || request.apiKey || process.env.AGNT5_API_KEY;
+  const apiKey = prompt.apiKey || request.apiKey || process.env.AGNT5_API_KEY;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (apiKey) {
     headers.Authorization = `Bearer ${apiKey}`;
     headers['X-API-KEY'] = apiKey;
   }
 
-  const response = await fetch(`${platformUrl}/api/v1/projects/${projectId}/prompts/${promptRef.id}/run`, {
+  const response = await fetch(`${platformUrl}/api/v1/projects/${projectId}/prompts/${prompt.id}/run`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
@@ -599,14 +619,78 @@ function createPromptManifestLM(provider: string): LM {
   }
 }
 
-function normalizePromptRef(request: GenerateRequest): PromptRef {
-  if (!request.promptRef) {
-    throw new ConfigurationError('promptRef is required for managed prompt execution');
+function normalizePrompt(request: GenerateRequest): Prompt {
+  const prompt = request.prompt ?? request.promptRef;
+  if (!prompt) {
+    throw new ConfigurationError('prompt is required for managed prompt execution');
   }
-  if (typeof request.promptRef === 'string') {
-    return { id: request.promptRef };
+  if (typeof prompt === 'string') {
+    return { id: prompt };
   }
-  return request.promptRef;
+  return prompt;
+}
+
+function hasRuntimeLLMValues(llm: LLMRuntimeOptions | undefined): llm is LLMRuntimeOptions {
+  if (
+    llm &&
+    (llm.model !== undefined ||
+      llm.temperature !== undefined ||
+      llm.maxOutputTokens !== undefined ||
+      llm.topP !== undefined)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function runtimeLLMOptions(promptId?: string): LLMRuntimeOptions | undefined {
+  const runtime = getCurrentContext()?.runtime;
+  const promptLLM = promptId ? runtime?.prompts?.[promptId] : undefined;
+  if (hasRuntimeLLMValues(promptLLM)) {
+    return promptLLM;
+  }
+  const llm = runtime?.llm;
+  if (hasRuntimeLLMValues(llm)) {
+    return llm;
+  }
+  return undefined;
+}
+
+function mergePromptRuntimeOverride(prompt: Prompt | string, llm: LLMRuntimeOptions): Prompt {
+  const normalized = typeof prompt === 'string' ? { id: prompt } : prompt;
+  return {
+    ...normalized,
+    model: llm.model ?? normalized.model,
+    temperature: llm.temperature ?? normalized.temperature,
+    maxOutputTokens: llm.maxOutputTokens ?? normalized.maxOutputTokens,
+    topP: llm.topP ?? normalized.topP,
+  };
+}
+
+function applyRuntimeOverrides(request: GenerateRequest): GenerateRequest {
+  if (request.__runtimeOverridesApplied) return request;
+  const prompt = request.prompt ?? request.promptRef;
+  const promptId = typeof prompt === 'string' ? prompt : prompt?.id;
+  const llm = runtimeLLMOptions(promptId);
+  if (!llm) return { ...request, __runtimeOverridesApplied: true };
+
+  const config: GenerationConfig = { ...(request.config ?? {}) };
+  if (llm.temperature !== undefined) config.temperature = llm.temperature;
+  if (llm.maxOutputTokens !== undefined) config.maxOutputTokens = llm.maxOutputTokens;
+  if (llm.topP !== undefined) config.topP = llm.topP;
+
+  return {
+    ...request,
+    __runtimeOverridesApplied: true,
+    model: llm.model ?? request.model,
+    prompt: request.prompt
+      ? mergePromptRuntimeOverride(request.prompt, llm)
+      : request.prompt,
+    promptRef: !request.prompt && request.promptRef
+      ? mergePromptRuntimeOverride(request.promptRef, llm)
+      : request.promptRef,
+    config,
+  };
 }
 
 // ============================================================================
