@@ -668,6 +668,20 @@ describe('Scorer decorator & registry', () => {
     expect(names).toContain('faithfulness');
   });
 
+  it('should reject custom scorers using built-in names', () => {
+    expect(() =>
+      scorer('exact_match', 'reserved deterministic name')((_ctx, _request) =>
+        new ScorerResult({ score: 1.0 }),
+      ),
+    ).toThrow('AGNT5 built-in scorer');
+
+    expect(() =>
+      scorer('llm_judge', 'reserved judge name')((_ctx, _request) =>
+        new ScorerResult({ score: 1.0 }),
+      ),
+    ).toThrow('AGNT5 built-in scorer');
+  });
+
   it('runScorer: should bind structured output and expected fields', async () => {
     const result = await runScorer('exact_match', {
       output: { final_output: { answer: 'Paris' }, path_length: 3 },

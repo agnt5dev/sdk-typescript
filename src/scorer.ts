@@ -123,6 +123,27 @@ export interface ScorerConfig {
   inputSchema?: Record<string, any>;
 }
 
+export const BUILTIN_DETERMINISTIC_SCORER_NAMES = [
+  'exact_match',
+  'contains',
+  'regex_match',
+  'json_valid',
+  'json_schema',
+  'numeric_range',
+  'levenshtein',
+] as const;
+
+export const BUILTIN_JUDGE_SCORER_NAMES = [
+  'llm_judge',
+  'correctness',
+  'faithfulness',
+] as const;
+
+const RESERVED_BUILTIN_SCORER_NAMES = new Set<string>([
+  ...BUILTIN_DETERMINISTIC_SCORER_NAMES,
+  ...BUILTIN_JUDGE_SCORER_NAMES,
+]);
+
 // ─── Scorer decorator ────────────────────────────────────────────────
 
 const SCORER_MARKER = Symbol('scorer');
@@ -170,25 +191,43 @@ export function getScorerConfig(fn: any): ScorerConfig | undefined {
 // ─── Registry ────────────────────────────────────────────────────────
 
 /**
- * Global registry for scorer components.
+ * Global registry for user-defined custom scorer components.
  */
 export class ScorerRegistry {
   private static _scorers = new Map<string, ScorerConfig>();
+  private static _builtinScorers = new Map<string, ScorerConfig>();
 
   static register(config: ScorerConfig): void {
+    if (RESERVED_BUILTIN_SCORER_NAMES.has(config.name)) {
+      throw new Error(
+        `Scorer name collision: '${config.name}' is an AGNT5 built-in scorer. ` +
+          'Built-in scorers are not user components; use a different custom scorer name.',
+      );
+    }
+    if (this._scorers.has(config.name)) {
+      throw new Error(`Scorer name collision: '${config.name}' is already registered.`);
+    }
     this._scorers.set(config.name, config);
   }
 
+  /** @internal Register an AGNT5-owned built-in scorer. */
+  static registerBuiltin(config: ScorerConfig): void {
+    if (!RESERVED_BUILTIN_SCORER_NAMES.has(config.name)) {
+      throw new Error(`Internal scorer '${config.name}' is not a reserved built-in scorer.`);
+    }
+    this._builtinScorers.set(config.name, config);
+  }
+
   static get(name: string): ScorerConfig | undefined {
-    return this._scorers.get(name);
+    return this._builtinScorers.get(name) ?? this._scorers.get(name);
   }
 
   static all(): Map<string, ScorerConfig> {
-    return new Map(this._scorers);
+    return new Map([...this._builtinScorers, ...this._scorers]);
   }
 
   static listNames(): string[] {
-    return Array.from(this._scorers.keys());
+    return Array.from(this.all().keys());
   }
 
   static clear(): void {
@@ -975,16 +1014,16 @@ function selectedValue(request: ScorerRequest, selector: string): any {
 }
 
 // Register built-in scorers
-ScorerRegistry.register({ name: 'exact_match', handler: (_ctx, req) => exactMatch(req), description: 'Exact string match', scope: 'item', isAsync: false });
-ScorerRegistry.register({ name: 'contains', handler: (_ctx, req) => contains(req), description: 'Substring containment check', scope: 'item', isAsync: false });
-ScorerRegistry.register({ name: 'json_valid', handler: (_ctx, req) => jsonValid(req), description: 'Valid JSON check', scope: 'item', isAsync: false });
-ScorerRegistry.register({ name: 'json_schema', handler: (_ctx, req) => jsonSchema(req), description: 'Validate against a JSON Schema', scope: 'item', isAsync: false });
-ScorerRegistry.register({ name: 'numeric_range', handler: (_ctx, req) => numericRange(req), description: 'Numeric output is in [min, max]', scope: 'item', isAsync: false });
-ScorerRegistry.register({ name: 'regex_match', handler: (_ctx, req) => regexMatch(req), description: 'Regex pattern match', scope: 'item', isAsync: false });
-ScorerRegistry.register({ name: 'levenshtein', handler: (_ctx, req) => levenshtein(req), description: 'Levenshtein edit distance', scope: 'item', isAsync: false });
-ScorerRegistry.register({ name: 'llm_judge', handler: (ctx, req) => llmJudge(req, ctx), description: 'LLM-as-judge: ask an LM to score the output against criteria', scope: 'item', isAsync: true });
-ScorerRegistry.register({ name: 'correctness', handler: (ctx, req) => correctness(req, ctx), description: 'Managed LLM judge preset for answer correctness', scope: 'item', isAsync: true });
-ScorerRegistry.register({ name: 'faithfulness', handler: (ctx, req) => faithfulness(req, ctx), description: 'Managed LLM judge preset for faithfulness to configured context', scope: 'item', isAsync: true });
+ScorerRegistry.registerBuiltin({ name: 'exact_match', handler: (_ctx, req) => exactMatch(req), description: 'Exact string match', scope: 'item', isAsync: false });
+ScorerRegistry.registerBuiltin({ name: 'contains', handler: (_ctx, req) => contains(req), description: 'Substring containment check', scope: 'item', isAsync: false });
+ScorerRegistry.registerBuiltin({ name: 'json_valid', handler: (_ctx, req) => jsonValid(req), description: 'Valid JSON check', scope: 'item', isAsync: false });
+ScorerRegistry.registerBuiltin({ name: 'json_schema', handler: (_ctx, req) => jsonSchema(req), description: 'Validate against a JSON Schema', scope: 'item', isAsync: false });
+ScorerRegistry.registerBuiltin({ name: 'numeric_range', handler: (_ctx, req) => numericRange(req), description: 'Numeric output is in [min, max]', scope: 'item', isAsync: false });
+ScorerRegistry.registerBuiltin({ name: 'regex_match', handler: (_ctx, req) => regexMatch(req), description: 'Regex pattern match', scope: 'item', isAsync: false });
+ScorerRegistry.registerBuiltin({ name: 'levenshtein', handler: (_ctx, req) => levenshtein(req), description: 'Levenshtein edit distance', scope: 'item', isAsync: false });
+ScorerRegistry.registerBuiltin({ name: 'llm_judge', handler: (ctx, req) => llmJudge(req, ctx), description: 'LLM-as-judge: ask an LM to score the output against criteria', scope: 'item', isAsync: true });
+ScorerRegistry.registerBuiltin({ name: 'correctness', handler: (ctx, req) => correctness(req, ctx), description: 'Managed LLM judge preset for answer correctness', scope: 'item', isAsync: true });
+ScorerRegistry.registerBuiltin({ name: 'faithfulness', handler: (ctx, req) => faithfulness(req, ctx), description: 'Managed LLM judge preset for faithfulness to configured context', scope: 'item', isAsync: true });
 
 // ─── Runner ──────────────────────────────────────────────────────────
 

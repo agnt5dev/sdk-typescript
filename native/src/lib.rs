@@ -2,7 +2,11 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use agnt5_sdk_core::pb::{ComponentInfo, RuntimeMessage, ServiceMessage, TriggerSpec};
+use agnt5_sdk_core::pb::{
+    dispatch_component_response, ComponentInfo, ComponentType as PbComponentType,
+    DispatchComponentRequest, DispatchComponentResponse, RuntimeMessage, ServiceMessage,
+    TriggerSpec,
+};
 use agnt5_sdk_core::worker::{Worker as CoreWorker, WorkerConfig};
 use agnt5_sdk_core::{JournalEventMessage, JournalEventQueue};
 
@@ -12,6 +16,42 @@ use tokio::sync::Mutex as TokioMutex;
 
 // For logging in Span implementation
 extern crate log;
+
+fn sdk_core_builtin_scorer_response(
+    worker_id: String,
+    request: &DispatchComponentRequest,
+) -> Option<ServiceMessage> {
+    if request.component_type != PbComponentType::Scorer as i32 {
+        return None;
+    }
+
+    let result = agnt5_sdk_core::eval::builtin_scorer::execute(
+        &request.component_name,
+        &request.input_data,
+    )?;
+    let output_data = serde_json::to_vec(&result).unwrap_or_default();
+    let response = DispatchComponentResponse {
+        invocation_id: request.invocation_id.clone(),
+        success: true,
+        result: Some(dispatch_component_response::Result::OutputData(output_data)),
+        error_message: String::new(),
+        metadata: request.metadata.clone(),
+        event_type: "run.completed".to_string(),
+        content_index: 0,
+        sequence: 0,
+        attempt: 0,
+        source_timestamp_ns: 0,
+        lease_id: request.lease_id.clone(),
+    };
+
+    Some(ServiceMessage {
+        worker_id,
+        metadata: HashMap::new(),
+        message_type: Some(
+            agnt5_sdk_core::pb::service_message::MessageType::FunctionResponse(response),
+        ),
+    })
+}
 
 // Chat SDK module
 mod chat;
@@ -471,12 +511,14 @@ impl Worker {
 
         // Shared response map for the handler closure
         let response_map = self.response_map.clone();
+        let worker_id = self.config.worker_id.clone();
 
         // Create message handler that calls TypeScript callback
         let message_handler =
             move |runtime_msg: RuntimeMessage, _tx: flume::Sender<ServiceMessage>| {
                 let handler_clone = handler.clone();
                 let response_map = response_map.clone();
+                let worker_id = worker_id.clone();
 
                 async move {
                     use agnt5_sdk_core::pb::runtime_message;
@@ -490,6 +532,12 @@ impl Worker {
                             return Ok(None);
                         }
                     };
+
+                    if let Some(response) =
+                        sdk_core_builtin_scorer_response(worker_id, &dispatch_request)
+                    {
+                        return Ok(Some(response));
+                    }
 
                     // Convert component type i32 to string (matches proto ComponentType enum values)
                     let component_type_str = match dispatch_request.component_type {
@@ -570,12 +618,7 @@ impl Worker {
 
         // Register the cooperative cancel hook: forward run_id to the JS cancel
         // handler (which aborts the matching invocation's AbortController).
-        if let Some(cancel_tsfn) = self
-            .cancel_handler
-            .lock()
-            .ok()
-            .and_then(|g| g.clone())
-        {
+        if let Some(cancel_tsfn) = self.cancel_handler.lock().ok().and_then(|g| g.clone()) {
             worker.set_cancel_hook(move |run_id: String| {
                 cancel_tsfn.call(run_id, ThreadsafeFunctionCallMode::NonBlocking);
             });
