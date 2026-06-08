@@ -185,6 +185,7 @@ export class ChatBot {
     platform: string,
     headers: Record<string, string>,
     body: Buffer,
+    botToken?: string,
   ): Promise<{ challenge: string } | null> {
     const config = this.adapters.get(platform);
     if (!config) {
@@ -194,20 +195,11 @@ export class ChatBot {
     // Map platform string to native enum
     const nativePlatform = this.toNativePlatform(platform);
 
-    // Verify webhook signature
-    const signingSecret = this.getSigningSecret(config);
-    if (signingSecret) {
-      const valid = native.verifyWebhook(nativePlatform, signingSecret, headers, body);
-      if (!valid) {
-        throw new Error('Invalid webhook signature');
-      }
-    }
-
-    // Parse event
+    // Signature verified at the gateway (ADR-009 D5) — no SDK re-verify.
     const rawEvent = native.parseEvent(nativePlatform, body);
     const event = this.normalizeEvent(rawEvent);
 
-    // Handle URL verification challenge
+    // url_verification is answered at the gateway; keep a defensive echo.
     if (event.eventType === 'url_verification' && event.challenge) {
       return { challenge: event.challenge };
     }
@@ -221,17 +213,18 @@ export class ChatBot {
     }
 
     // Send response back to platform
-    await this.sendResponse(config, event, responseText);
+    await this.sendResponse(config, event, responseText, botToken);
     return null;
   }
 
   /**
-   * Process a webhook with streaming agent response (post-then-edit).
+   * Process an inbound chat event with a streaming agent response (post-then-edit).
    */
   async handleWebhookStreaming(
     platform: string,
     headers: Record<string, string>,
     body: Buffer,
+    botToken?: string,
   ): Promise<{ challenge: string } | null> {
     const config = this.adapters.get(platform);
     if (!config) {
@@ -240,15 +233,7 @@ export class ChatBot {
 
     const nativePlatform = this.toNativePlatform(platform);
 
-    // Verify + parse
-    const signingSecret = this.getSigningSecret(config);
-    if (signingSecret) {
-      const valid = native.verifyWebhook(nativePlatform, signingSecret, headers, body);
-      if (!valid) {
-        throw new Error('Invalid webhook signature');
-      }
-    }
-
+    // Signature verified at the gateway (ADR-009 D5) — no SDK re-verify.
     const rawEvent = native.parseEvent(nativePlatform, body);
     const event = this.normalizeEvent(rawEvent);
 
@@ -263,10 +248,13 @@ export class ChatBot {
     const msg = event.message;
     const threadTs = msg.threadId || msg.id;
 
-    // Post initial "thinking" message
+    // Reply with the gateway-provided token, falling back to config.
     const slackConfig = config as SlackConfig;
+    const token = botToken || slackConfig.botToken;
+
+    // Post initial "thinking" message
     const initialReq = native.slackPostMessage(
-      slackConfig.botToken, msg.channelId, 'Thinking...', threadTs,
+      token, msg.channelId, 'Thinking...', threadTs,
     );
     const initialResp = await this.executeRequest(initialReq);
     const respData = await initialResp.json() as Record<string, any>;
@@ -285,7 +273,7 @@ export class ChatBot {
         const content = buffer.flush();
         if (content !== null && content !== undefined) {
           const updateReq = native.slackUpdateMessage(
-            slackConfig.botToken, msg.channelId, messageTs, content,
+            token, msg.channelId, messageTs, content,
           );
           await this.executeRequest(updateReq);
         }
@@ -296,7 +284,7 @@ export class ChatBot {
     const finalContent = buffer.finalize();
     if (finalContent) {
       const finalReq = native.slackUpdateMessage(
-        slackConfig.botToken, msg.channelId, messageTs, finalContent,
+        token, msg.channelId, messageTs, finalContent,
       );
       await this.executeRequest(finalReq);
     }
@@ -354,12 +342,13 @@ export class ChatBot {
     config: PlatformConfig,
     event: ChatEvent,
     text: string,
+    botToken?: string,
   ): Promise<void> {
     if (config.platform === 'slack') {
       const slackConfig = config as SlackConfig;
       const threadTs = event.message?.threadId || event.message?.id || undefined;
       const req = native.slackPostMessage(
-        slackConfig.botToken,
+        botToken || slackConfig.botToken,
         event.channelId!,
         text,
         threadTs,
@@ -425,15 +414,5 @@ export class ChatBot {
       args: raw.args,
       actionId: raw.action_id ?? raw.actionId,
     };
-  }
-
-  private getSigningSecret(config: PlatformConfig): string | null {
-    switch (config.platform) {
-      case 'slack':
-        return (config as SlackConfig).signingSecret;
-      // TODO: Discord publicKey, Teams appPassword, Telegram webhookSecret
-      default:
-        return null;
-    }
   }
 }

@@ -884,16 +884,24 @@ export class Worker {
             }
 
             case 'agent': {
-              // Check if this is a chat webhook dispatch
-              if (inputData._chat_webhook && this.chatbots.has(message.componentName)) {
+              // Inbound chat-provider event (ADR-009): route to the ChatBot
+              // when the target is one AND the input is the unified inbound
+              // event envelope (shape: `source` + `body`). A chatbot's agent
+              // also serves direct calls, so we discriminate by shape.
+              if (
+                inputData.source !== undefined &&
+                inputData.body !== undefined &&
+                this.chatbots.has(message.componentName)
+              ) {
                 const chatbot = this.chatbots.get(message.componentName)!;
-                const platform = inputData.platform as string;
+                const source = inputData.source as string;
                 const headers = (inputData.headers || {}) as Record<string, string>;
                 const body = Buffer.from(inputData.body || '', 'utf-8');
+                const botToken = inputData.bot_token as string | undefined;
 
-                console.log(`💬 Chat webhook received: platform=${platform}, bot=${message.componentName}`);
+                console.log(`💬 Inbound chat event: source=${source}, bot=${message.componentName}`);
 
-                const challengeResult = await chatbot.handleWebhook(platform, headers, body);
+                const challengeResult = await chatbot.handleWebhook(source, headers, body, botToken);
                 result = challengeResult ?? {};
                 break;
               }
