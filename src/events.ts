@@ -30,6 +30,15 @@ export interface BaseEvent {
   timestampNs: bigint;
   /** Discriminator for the event type */
   eventType: string;
+  /**
+   * Component classification for the trace/steps tree (run, function, workflow,
+   * tool, agent, lm, step). Mirrors the Python SDK's `component_type` field — the
+   * Studio trace projection uses it to label and group steps. Optional fields
+   * that are left undefined are dropped during serialization.
+   */
+  componentType?: string;
+  /** Operation type for sub-component events (iteration, tool_call). */
+  operation?: string;
   /** Arbitrary metadata */
   metadata: Record<string, any>;
 }
@@ -81,12 +90,14 @@ export interface ToolCallStarted extends BaseEvent {
   eventType: 'tool_call.started';
   toolName: string;
   toolCallId: string;
+  inputData?: any;
 }
 
 export interface ToolCallCompleted extends BaseEvent {
   eventType: 'tool_call.completed';
   toolName: string;
   toolCallId: string;
+  outputData?: any;
 }
 
 export interface ToolCallFailed extends BaseEvent {
@@ -132,8 +143,9 @@ export function agentStarted(
   opts: { agentModel: string; toolNames: string[]; maxIterations: number },
 ): AgentStarted {
   return {
-    ...baseFields(`${agentName}.started`, correlationId, null),
+    ...baseFields(agentName, correlationId, null),
     eventType: 'agent.started',
+    componentType: 'agent',
     agentName,
     agentModel: opts.agentModel,
     toolNames: opts.toolNames,
@@ -147,8 +159,9 @@ export function agentCompleted(
   opts: { iterations: number; toolCallsCount: number; handoffTo: string | null; outputLength: number },
 ): AgentCompleted {
   return {
-    ...baseFields(`${agentName}.completed`, correlationId, null),
+    ...baseFields(agentName, correlationId, null),
     eventType: 'agent.completed',
+    componentType: 'agent',
     agentName,
     iterations: opts.iterations,
     toolCallsCount: opts.toolCallsCount,
@@ -163,8 +176,9 @@ export function agentFailed(
   opts: { iterations: number; error: string },
 ): AgentFailed {
   return {
-    ...baseFields(`${agentName}.failed`, correlationId, null),
+    ...baseFields(agentName, correlationId, null),
     eventType: 'agent.failed',
+    componentType: 'agent',
     agentName,
     iterations: opts.iterations,
     error: opts.error,
@@ -177,8 +191,10 @@ export function iterationStarted(
   opts: { iteration: number; maxIterations: number },
 ): AgentIterationStarted {
   return {
-    ...baseFields('iteration.started', correlationId, parentCorrelationId),
+    ...baseFields('iteration', correlationId, parentCorrelationId),
     eventType: 'agent.iteration.started',
+    componentType: 'agent',
+    operation: 'iteration',
     iteration: opts.iteration,
     maxIterations: opts.maxIterations,
   };
@@ -190,8 +206,10 @@ export function iterationCompleted(
   opts: { iteration: number; hasToolCalls: boolean; toolCallsCount: number },
 ): AgentIterationCompleted {
   return {
-    ...baseFields('iteration.completed', correlationId, parentCorrelationId),
+    ...baseFields('iteration', correlationId, parentCorrelationId),
     eventType: 'agent.iteration.completed',
+    componentType: 'agent',
+    operation: 'iteration',
     iteration: opts.iteration,
     hasToolCalls: opts.hasToolCalls,
     toolCallsCount: opts.toolCallsCount,
@@ -201,26 +219,32 @@ export function iterationCompleted(
 export function toolCallStarted(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { toolName: string; toolCallId: string },
+  opts: { toolName: string; toolCallId: string; inputData?: any },
 ): ToolCallStarted {
   return {
-    ...baseFields(`tool.${opts.toolName}.started`, correlationId, parentCorrelationId),
+    ...baseFields(opts.toolName, correlationId, parentCorrelationId),
     eventType: 'tool_call.started',
+    componentType: 'agent',
+    operation: 'tool_call',
     toolName: opts.toolName,
     toolCallId: opts.toolCallId,
+    inputData: opts.inputData,
   };
 }
 
 export function toolCallCompleted(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { toolName: string; toolCallId: string },
+  opts: { toolName: string; toolCallId: string; outputData?: any },
 ): ToolCallCompleted {
   return {
-    ...baseFields(`tool.${opts.toolName}.completed`, correlationId, parentCorrelationId),
+    ...baseFields(opts.toolName, correlationId, parentCorrelationId),
     eventType: 'tool_call.completed',
+    componentType: 'agent',
+    operation: 'tool_call',
     toolName: opts.toolName,
     toolCallId: opts.toolCallId,
+    outputData: opts.outputData,
   };
 }
 
@@ -230,8 +254,10 @@ export function toolCallFailed(
   opts: { toolName: string; toolCallId: string; error: string },
 ): ToolCallFailed {
   return {
-    ...baseFields(`tool.${opts.toolName}.failed`, correlationId, parentCorrelationId),
+    ...baseFields(opts.toolName, correlationId, parentCorrelationId),
     eventType: 'tool_call.failed',
+    componentType: 'agent',
+    operation: 'tool_call',
     toolName: opts.toolName,
     toolCallId: opts.toolCallId,
     error: opts.error,
@@ -262,6 +288,43 @@ export function isSseOnlyEvent(eventType: string): boolean {
  */
 export function isCheckpointEvent(eventType: string): boolean {
   return !isSseOnlyEvent(eventType);
+}
+
+// ─── Log events (SSE-only, populate the Studio Logs panel) ──────────
+
+/**
+ * Application/SDK log line surfaced in the Studio Logs panel.
+ *
+ * Mirrors the Python SDK's OpenTelemetryHandler, which emits a `log.{level}`
+ * journal event (in addition to OTLP export) for every record produced inside a
+ * run. Without this, the TypeScript Logs panel shows "No logs generated" even
+ * for fully-executed runs (AGNT5-569). `log.*` is classified SSE-only, so it
+ * flows through the journal queue like Python's log events.
+ */
+export interface LogEvent extends BaseEvent {
+  level: string;
+  message: string;
+  target: string;
+  attributes?: Record<string, any>;
+}
+
+export function logEvent(
+  level: string,
+  name: string,
+  message: string,
+  correlationId: string,
+  parentCorrelationId: string | null,
+  attributes?: Record<string, any>,
+): LogEvent {
+  const upper = level.toUpperCase();
+  return {
+    ...baseFields(name, correlationId, parentCorrelationId, {}),
+    eventType: `log.${upper.toLowerCase()}`,
+    level: upper,
+    message,
+    target: name,
+    attributes: attributes && Object.keys(attributes).length > 0 ? attributes : undefined,
+  };
 }
 
 // ─── Run lifecycle events ───────────────────────────────────────────
@@ -440,11 +503,12 @@ export function generateCid(): string {
 export function runStarted(
   correlationId: string,
   parentCorrelationId: string | null,
-  opts: { inputData: any; attempt: number },
+  opts: { inputData: any; attempt: number; componentName?: string },
 ): RunStarted {
   return {
-    ...baseFields('run.started', correlationId, parentCorrelationId),
+    ...baseFields(opts.componentName ?? 'run', correlationId, parentCorrelationId),
     eventType: 'run.started',
+    componentType: 'run',
     inputData: opts.inputData,
     attempt: opts.attempt,
   };
@@ -453,11 +517,12 @@ export function runStarted(
 export function runCompleted(
   correlationId: string,
   parentCorrelationId: string | null,
-  opts: { outputData: any },
+  opts: { outputData: any; componentName?: string },
 ): RunCompleted {
   return {
-    ...baseFields('run.completed', correlationId, parentCorrelationId),
+    ...baseFields(opts.componentName ?? 'run', correlationId, parentCorrelationId),
     eventType: 'run.completed',
+    componentType: 'run',
     outputData: opts.outputData,
   };
 }
@@ -465,14 +530,15 @@ export function runCompleted(
 export function runFailed(
   correlationId: string,
   parentCorrelationId: string | null,
-  opts: { errorCode: string; errorMessage: string; attempt: number; maxAttempts: number },
+  opts: { errorCode: string; errorMessage: string; attempt: number; maxAttempts: number; componentName?: string },
 ): RunFailed {
   return {
-    ...baseFields('run.failed', correlationId, parentCorrelationId, {
+    ...baseFields(opts.componentName ?? 'run', correlationId, parentCorrelationId, {
       attempt: String(opts.attempt),
       max_attempts: String(opts.maxAttempts),
     }),
     eventType: 'run.failed',
+    componentType: 'run',
     errorCode: opts.errorCode,
     errorMessage: opts.errorMessage,
     attempt: opts.attempt,
@@ -483,11 +549,12 @@ export function runFailed(
 export function functionStarted(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { inputData: any; attempt: number },
+  opts: { inputData: any; attempt: number; componentName?: string },
 ): FunctionStarted {
   return {
-    ...baseFields('function.started', correlationId, parentCorrelationId),
+    ...baseFields(opts.componentName ?? 'function', correlationId, parentCorrelationId),
     eventType: 'function.started',
+    componentType: 'function',
     inputData: opts.inputData,
     attempt: opts.attempt,
   };
@@ -496,11 +563,12 @@ export function functionStarted(
 export function functionCompleted(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { outputData: any; durationMs: number },
+  opts: { outputData: any; durationMs: number; componentName?: string },
 ): FunctionCompleted {
   return {
-    ...baseFields('function.completed', correlationId, parentCorrelationId),
+    ...baseFields(opts.componentName ?? 'function', correlationId, parentCorrelationId),
     eventType: 'function.completed',
+    componentType: 'function',
     outputData: opts.outputData,
     durationMs: opts.durationMs,
   };
@@ -509,11 +577,12 @@ export function functionCompleted(
 export function functionFailed(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { errorCode: string; errorMessage: string; durationMs: number },
+  opts: { errorCode: string; errorMessage: string; durationMs: number; componentName?: string },
 ): FunctionFailed {
   return {
-    ...baseFields('function.failed', correlationId, parentCorrelationId),
+    ...baseFields(opts.componentName ?? 'function', correlationId, parentCorrelationId),
     eventType: 'function.failed',
+    componentType: 'function',
     errorCode: opts.errorCode,
     errorMessage: opts.errorMessage,
     durationMs: opts.durationMs,
@@ -523,11 +592,12 @@ export function functionFailed(
 export function workflowStarted(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { inputData: any; attempt: number },
+  opts: { inputData: any; attempt: number; componentName?: string },
 ): WorkflowStarted {
   return {
-    ...baseFields('workflow.started', correlationId, parentCorrelationId),
+    ...baseFields(opts.componentName ?? 'workflow', correlationId, parentCorrelationId),
     eventType: 'workflow.started',
+    componentType: 'workflow',
     inputData: opts.inputData,
     attempt: opts.attempt,
   };
@@ -536,11 +606,12 @@ export function workflowStarted(
 export function workflowCompleted(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { outputData: any; durationMs: number },
+  opts: { outputData: any; durationMs: number; componentName?: string },
 ): WorkflowCompleted {
   return {
-    ...baseFields('workflow.completed', correlationId, parentCorrelationId),
+    ...baseFields(opts.componentName ?? 'workflow', correlationId, parentCorrelationId),
     eventType: 'workflow.completed',
+    componentType: 'workflow',
     outputData: opts.outputData,
     durationMs: opts.durationMs,
   };
@@ -549,11 +620,12 @@ export function workflowCompleted(
 export function workflowFailed(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { errorCode: string; errorMessage: string; durationMs: number },
+  opts: { errorCode: string; errorMessage: string; durationMs: number; componentName?: string },
 ): WorkflowFailed {
   return {
-    ...baseFields('workflow.failed', correlationId, parentCorrelationId),
+    ...baseFields(opts.componentName ?? 'workflow', correlationId, parentCorrelationId),
     eventType: 'workflow.failed',
+    componentType: 'workflow',
     errorCode: opts.errorCode,
     errorMessage: opts.errorMessage,
     durationMs: opts.durationMs,
@@ -584,6 +656,7 @@ export function workflowPaused(
   return {
     ...baseFields('workflow.paused', correlationId, parentCorrelationId, opts.metadata || {}),
     eventType: 'workflow.paused',
+    componentType: 'workflow',
     reason: opts.reason,
     pauseData: opts.pauseData,
   };
@@ -592,11 +665,12 @@ export function workflowPaused(
 export function toolStarted(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { inputData: any; attempt: number },
+  opts: { inputData: any; attempt: number; componentName?: string },
 ): ToolStarted {
   return {
-    ...baseFields('tool.started', correlationId, parentCorrelationId),
+    ...baseFields(opts.componentName ?? 'tool', correlationId, parentCorrelationId),
     eventType: 'tool.started',
+    componentType: 'tool',
     inputData: opts.inputData,
     attempt: opts.attempt,
   };
@@ -605,11 +679,12 @@ export function toolStarted(
 export function toolCompleted(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { outputData: any; durationMs: number },
+  opts: { outputData: any; durationMs: number; componentName?: string },
 ): ToolCompleted {
   return {
-    ...baseFields('tool.completed', correlationId, parentCorrelationId),
+    ...baseFields(opts.componentName ?? 'tool', correlationId, parentCorrelationId),
     eventType: 'tool.completed',
+    componentType: 'tool',
     outputData: opts.outputData,
     durationMs: opts.durationMs,
   };
@@ -618,11 +693,12 @@ export function toolCompleted(
 export function toolFailed(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { errorCode: string; errorMessage: string; durationMs: number },
+  opts: { errorCode: string; errorMessage: string; durationMs: number; componentName?: string },
 ): ToolFailed {
   return {
-    ...baseFields('tool.failed', correlationId, parentCorrelationId),
+    ...baseFields(opts.componentName ?? 'tool', correlationId, parentCorrelationId),
     eventType: 'tool.failed',
+    componentType: 'tool',
     errorCode: opts.errorCode,
     errorMessage: opts.errorMessage,
     durationMs: opts.durationMs,
@@ -637,6 +713,7 @@ export function workflowStepStarted(
   return {
     ...baseFields(opts.stepName, correlationId, parentCorrelationId, { name: opts.stepName }),
     eventType: 'workflow.step.started',
+    componentType: 'step',
     inputData: {
       handler_name: opts.handlerName,
       input: opts.input,
@@ -654,6 +731,7 @@ export function workflowStepCompleted(
   return {
     ...baseFields(opts.stepName, correlationId, parentCorrelationId, { name: opts.stepName }),
     eventType: 'workflow.step.completed',
+    componentType: 'step',
     outputData: {
       handler_name: opts.handlerName,
       result: opts.result,
@@ -671,6 +749,7 @@ export function workflowStepFailed(
   return {
     ...baseFields(opts.stepName, correlationId, parentCorrelationId, { name: opts.stepName }),
     eventType: 'workflow.step.failed',
+    componentType: 'step',
     errorCode: opts.errorCode,
     errorMessage: opts.errorMessage,
     durationMs: opts.durationMs,
@@ -698,6 +777,7 @@ export function lmStarted(
       provider: opts.provider,
     }),
     eventType: 'lm.started',
+    componentType: 'lm',
     inputData: {
       messages: opts.messages,
       system_prompt: opts.systemPrompt,
@@ -734,6 +814,7 @@ export function lmCompleted(
       duration_ms: String(opts.durationMs),
     }),
     eventType: 'lm.completed',
+    componentType: 'lm',
     outputData: {
       output: opts.output,
       tool_calls: opts.toolCalls ?? null,
@@ -760,6 +841,7 @@ export function lmFailed(
       provider: opts.provider,
     }),
     eventType: 'lm.failed',
+    componentType: 'lm',
     errorCode: opts.errorCode,
     errorMessage: opts.errorMessage,
     durationMs: opts.durationMs,

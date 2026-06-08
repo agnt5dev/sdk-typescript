@@ -7,7 +7,7 @@ import { ScorerRegistry, isScorer } from './scorer.js';
 import { Agent, Message } from './agent.js';
 import type { AgentResult } from './agent.js';
 import { ChatBot } from './chat.js';
-import { runWithContext } from './async-context.js';
+import { runWithContext, getCurrentContext } from './async-context.js';
 import { emptyRuntimeContext, runtimeContextFromMetadata } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
 import { WaitingForUserInputError } from './errors.js';
@@ -19,6 +19,7 @@ import {
   functionStarted, functionCompleted, functionFailed,
   workflowStarted, workflowCompleted, workflowFailed, workflowPaused,
   toolStarted, toolCompleted, toolFailed,
+  logEvent,
 } from './events.js';
 import type { AgentEvent } from './events.js';
 import { loadNativeBindings, tryLoadNativeBindings } from './native-loader.js';
@@ -274,24 +275,45 @@ class SimpleContext implements Context {
     return `${handlerName}_${this._workflowStepCounter++}`;
   }
 
+  /**
+   * Emit a `log.{level}` journal event so the Studio Logs panel is populated
+   * (AGNT5-569). Mirrors the Python SDK's logging handler. Best-effort: logging
+   * must never break execution, and is a no-op when no emitter is wired (local
+   * / test mode).
+   */
+  private _emitLog(level: string, message: string, meta?: Record<string, any>): void {
+    const emitter = this._emitter;
+    if (!emitter) return;
+    const cid = this.getCurrentCorrelationId() ?? this.runId.slice(0, 8);
+    try {
+      void emitter.emit(logEvent(level, this.serviceName, message, cid, null, meta));
+    } catch {
+      /* swallow — logging must not interfere with the run */
+    }
+  }
+
   get logger() {
     const runId = this.runId;
     return {
       info: (message: string, meta?: Record<string, any>) => {
         console.log(`[INFO] ${message}`, meta || {});
         tryLoadNativeBindings()?.logFromTypescript('INFO', message, runId, null, null, meta ?? null);
+        this._emitLog('INFO', message, meta);
       },
       error: (message: string, meta?: Record<string, any>) => {
         console.error(`[ERROR] ${message}`, meta || {});
         tryLoadNativeBindings()?.logFromTypescript('ERROR', message, runId, null, null, meta ?? null);
+        this._emitLog('ERROR', message, meta);
       },
       warn: (message: string, meta?: Record<string, any>) => {
         console.warn(`[WARN] ${message}`, meta || {});
         tryLoadNativeBindings()?.logFromTypescript('WARN', message, runId, null, null, meta ?? null);
+        this._emitLog('WARN', message, meta);
       },
       debug: (message: string, meta?: Record<string, any>) => {
         console.debug(`[DEBUG] ${message}`, meta || {});
         tryLoadNativeBindings()?.logFromTypescript('DEBUG', message, runId, null, null, meta ?? null);
+        this._emitLog('DEBUG', message, meta);
       },
     };
   }
@@ -525,13 +547,16 @@ export class Worker {
 
     const native = loadNativeBindings();
 
-    // Initialize SDK
+    // Initialize SDK. Telemetry init is idempotent (OnceCell) and quiet on the
+    // happy path — only surface failures, and only in debug mode, so the
+    // startup banner stays clean (see AGNT5-586).
     try {
       native.initialize(this.serviceName, this.options.serviceVersion || '0.1.0');
-      console.log('✓ SDK initialized with telemetry');
     } catch (error) {
-      // Telemetry might already be initialized, that's okay
-      console.log('SDK initialization:', (error as Error).message);
+      // Telemetry might already be initialized, that's okay.
+      if (process.env.AGNT5_DEBUG) {
+        console.warn('SDK telemetry initialization:', (error as Error).message);
+      }
     }
 
     // Create native worker
@@ -715,15 +740,30 @@ export class Worker {
           if (this.nativeWorker) {
             ctx.setNativeWorker(this.nativeWorker);
           }
+
+          // Expose the emitter + live correlation on the propagated context so
+          // module-level loggers (getLogger / ContextLogger) emit log.* journal
+          // events tied to this run — populates the Studio Logs panel (AGNT5-569).
+          const propagated = getCurrentContext();
+          if (propagated) {
+            propagated.emitter = emitter;
+            propagated.getCorrelationId = () => ctx.getCurrentCorrelationId();
+          }
+
           // Seed HITL replay state from incoming resume metadata (no-op on
           // fresh dispatches). Mirrors sdk-python's executors which read
           // user_response/pause_index from request.metadata on resume.
           ctx.loadReplayState(message.metadata);
 
+          ctx.logger.info(
+            `run.started | ${message.componentType} ${message.componentName} | run_id=${runId}`,
+          );
+
           // ── run.started ──
           await emitter.emit(runStarted(runCid, parentCid, {
             inputData,
             attempt,
+            componentName: message.componentName,
           }));
 
           let result: any;
@@ -751,6 +791,7 @@ export class Worker {
               await emitter.emit(functionStarted(fnCid, runCid, {
                 inputData,
                 attempt,
+                componentName: message.componentName,
               }));
 
               // Push function cid onto the correlation stack so any nested
@@ -765,6 +806,7 @@ export class Worker {
                 await emitter.emit(functionCompleted(fnCid, runCid, {
                   outputData: result,
                   durationMs,
+                  componentName: message.componentName,
                 }));
               } catch (fnError) {
                 const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
@@ -774,6 +816,7 @@ export class Worker {
                   errorCode: 'FUNCTION_ERROR',
                   errorMessage: (fnError as Error).message,
                   durationMs,
+                  componentName: message.componentName,
                 }));
                 throw fnError;
               } finally {
@@ -798,6 +841,7 @@ export class Worker {
               await emitter.emit(workflowStarted(wfCid, runCid, {
                 inputData,
                 attempt,
+                componentName: message.componentName,
               }));
 
               // Push workflow cid onto the correlation stack so direct fn()
@@ -812,6 +856,7 @@ export class Worker {
                 await emitter.emit(workflowCompleted(wfCid, runCid, {
                   outputData: result,
                   durationMs,
+                  componentName: message.componentName,
                 }));
               } catch (wfError) {
                 // HITL: waitForUser already emitted workflow.paused — don't
@@ -829,6 +874,7 @@ export class Worker {
                   errorCode: 'WORKFLOW_ERROR',
                   errorMessage: (wfError as Error).message,
                   durationMs,
+                  componentName: message.componentName,
                 }));
                 throw wfError;
               } finally {
@@ -917,6 +963,7 @@ export class Worker {
               await emitter.emit(toolStarted(toolCid, runCid, {
                 inputData,
                 attempt,
+                componentName: message.componentName,
               }));
 
               try {
@@ -927,6 +974,7 @@ export class Worker {
                 await emitter.emit(toolCompleted(toolCid, runCid, {
                   outputData: result,
                   durationMs,
+                  componentName: message.componentName,
                 }));
               } catch (toolError) {
                 const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
@@ -936,6 +984,7 @@ export class Worker {
                   errorCode: 'TOOL_ERROR',
                   errorMessage: (toolError as Error).message,
                   durationMs,
+                  componentName: message.componentName,
                 }));
                 throw toolError;
               }
@@ -979,9 +1028,14 @@ export class Worker {
               throw new Error(`Unknown component type: ${message.componentType}`);
           }
 
+          ctx.logger.info(
+            `run.completed | ${message.componentType} ${message.componentName} | run_id=${runId}`,
+          );
+
           // ── run.completed ──
           await emitter.emit(runCompleted(runCid, parentCid, {
             outputData: result,
+            componentName: message.componentName,
           }));
 
           return JSON.stringify({
@@ -1026,6 +1080,7 @@ export class Worker {
               errorMessage: (error as Error).message,
               attempt,
               maxAttempts,
+              componentName: message.componentName,
             }));
           } catch (emitError) {
             console.error('Failed to emit run.failed event:', emitError);

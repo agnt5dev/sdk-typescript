@@ -633,16 +633,23 @@ impl Worker {
     }
 }
 
-/// Initialize the SDK with logging and telemetry
+/// Initialize the SDK with logging and telemetry.
+///
+/// Only `init_telemetry` is called — it installs the global tracing subscriber
+/// (OTLP exporters + a filtered, clean console fmt layer). We deliberately do
+/// NOT call `init_logging` as well: that installs a *second* subscriber with a
+/// raw `info`-level stdout layer and races `init_telemetry` for
+/// `set_global_default`, which (a) leaks internal Rust/OTEL infra logs
+/// (`MeterProvider.GlobalSet`, `LoggerProvider.Drop`, journal queue, …) to
+/// stdout and (b) makes the second init fail with "a global default trace
+/// dispatcher has already been set". The Python SDK only calls `init_telemetry`
+/// for exactly this reason; this keeps the TypeScript startup output clean and
+/// the OTLP log/trace export functional. See AGNT5-586.
 #[napi]
 pub fn initialize(service_name: String, service_version: Option<String>) -> Result<()> {
     let version = service_version.unwrap_or_else(|| "0.1.0".to_string());
 
-    // Initialize logging
-    agnt5_sdk_core::init_logging()
-        .map_err(|e| Error::from_reason(format!("Failed to init logging: {}", e)))?;
-
-    // Initialize telemetry
+    // Initialize telemetry (installs the single global tracing subscriber).
     agnt5_sdk_core::init_telemetry(&service_name, &version)
         .map_err(|e| Error::from_reason(format!("Failed to init telemetry: {}", e)))?;
 
