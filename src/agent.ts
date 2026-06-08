@@ -847,6 +847,9 @@ export class Agent {
           iteration: iteration + 1,
           maxIterations: this.maxIterations,
         });
+        ctx.logger?.info(
+          `${this.name}: iteration ${iteration + 1}/${this.maxIterations}`,
+        );
 
         // Build tool definitions and call LLM
         const toolDefs = Array.from(this.tools.values()).map(t => t.getSchema());
@@ -881,10 +884,12 @@ export class Agent {
             yield toolCallStarted(tcId, iterCorrelationId, {
               toolName: tc.name,
               toolCallId: tcId,
+              inputData: { arguments: tc.arguments, built_in: true },
             });
             yield toolCallCompleted(tcId, iterCorrelationId, {
               toolName: tc.name,
               toolCallId: tcId,
+              outputData: { server_side: true },
             });
           }
           localToolCalls = partitionedLocalCalls;
@@ -907,7 +912,12 @@ export class Agent {
             });
 
             // ── ToolCallStarted ──
-            yield toolCallStarted(tcId, iterCorrelationId, { toolName, toolCallId: tcId });
+            yield toolCallStarted(tcId, iterCorrelationId, {
+              toolName,
+              toolCallId: tcId,
+              inputData: { arguments: toolArgsStr },
+            });
+            ctx.logger?.info(`Calling tool ${toolName}`, { arguments: toolArgsStr });
 
             try {
               const toolArgs = JSON.parse(toolArgsStr);
@@ -935,7 +945,11 @@ export class Agent {
 
               // ── Handoff detection ──
               if (result && typeof result === 'object' && (result as any)._handoff) {
-                yield toolCallCompleted(tcId, iterCorrelationId, { toolName, toolCallId: tcId });
+                yield toolCallCompleted(tcId, iterCorrelationId, {
+                  toolName,
+                  toolCallId: tcId,
+                  outputData: { result: (result as any).output ?? null, handoff: true },
+                });
 
                 completedIterations = iteration + 1;
                 let handoffResult: AgentResult = {
@@ -960,7 +974,12 @@ export class Agent {
               }
 
               const resultText = JSON.stringify(result);
-              yield toolCallCompleted(tcId, iterCorrelationId, { toolName, toolCallId: tcId });
+              yield toolCallCompleted(tcId, iterCorrelationId, {
+                toolName,
+                toolCallId: tcId,
+                outputData: { result: resultText },
+              });
+              ctx.logger?.info(`Tool ${toolName} completed`);
               toolResults.push({ tool: toolName, result: resultText, error: null });
             } catch (error) {
               // HITL: WaitingForUserInputError must propagate to pause the

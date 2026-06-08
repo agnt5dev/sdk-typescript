@@ -34,6 +34,15 @@ export interface PropagatedContext {
   metadata?: Record<string, any>;
   /** Runtime-provided execution options */
   runtime?: RuntimeContext;
+  /**
+   * Active event emitter for the run. Set by the worker after dispatch so that
+   * module-level loggers (getLogger / ContextLogger) can emit `log.*` journal
+   * events tied to the current run — the Studio Logs panel is populated from
+   * these (AGNT5-569). Typed loosely to avoid an import cycle with event-emitter.
+   */
+  emitter?: { emit: (event: any) => Promise<void> | void };
+  /** Returns the innermost active correlation id, for nesting log events. */
+  getCorrelationId?: () => string | undefined;
 }
 
 const asyncLocalStorage = new AsyncLocalStorage<PropagatedContext>();

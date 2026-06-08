@@ -9,6 +9,8 @@ import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import type { Logger } from './types.js';
+import { getCurrentContext } from './async-context.js';
+import { logEvent } from './events.js';
 
 // ─── Log level management ────────────────────────────────────────────
 
@@ -155,6 +157,21 @@ export class ContextLogger implements Logger {
     const nativeLog = getNativeLogFn();
     if (nativeLog) {
       nativeLog(level, `${this._name}: ${message}`, this._runId, this._traceId, this._spanId, attrOrNull);
+    }
+
+    // Emit a log.* journal event tied to the active run so the Studio Logs
+    // panel is populated (AGNT5-569). Best-effort: never let logging break the
+    // run, and no-op outside a run scope (e.g. worker startup).
+    const propagated = getCurrentContext();
+    if (propagated?.emitter) {
+      const cid = propagated.getCorrelationId?.() ?? this._runId ?? (propagated.correlationId ?? propagated.runId ?? '');
+      try {
+        void propagated.emitter.emit(
+          logEvent(level, this._name, message, cid, null, attrOrNull ?? undefined),
+        );
+      } catch {
+        /* swallow — logging must not interfere with the run */
+      }
     }
 
     // Always log to console
