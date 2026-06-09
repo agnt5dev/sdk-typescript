@@ -52,14 +52,19 @@ export async function executePromptWorkerInput(
   const messages = renderMessages(payload.prompt.messages, variables);
   const model = normalizePromptModel(payload.prompt.model);
   const parameters = payload.prompt.parameters ?? {};
+  const temperature = optionalNumber(parameters.temperature);
+  let topP = optionalNumber(parameters.top_p);
+  if (isDirectAnthropicModel(model) && temperature !== undefined && topP !== undefined) {
+    topP = undefined;
+  }
   const responseFormat = buildResponseFormat(payload.prompt);
 
   const response = await generateFn({
     model,
     messages,
-    temperature: optionalNumber(parameters.temperature),
+    temperature,
     maxTokens: optionalNumber(parameters.max_tokens),
-    topP: optionalNumber(parameters.top_p),
+    topP,
     responseFormat,
   });
 
@@ -241,6 +246,14 @@ function parseJsonOutput(text: string): unknown {
 
 function optionalNumber(value: number | null | undefined): number | undefined {
   return value == null ? undefined : Number(value);
+}
+
+function isDirectAnthropicModel(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  if (!normalized) return false;
+  const slash = normalized.indexOf('/');
+  if (slash >= 0) return normalized.slice(0, slash) === 'anthropic';
+  return normalized.startsWith('claude-');
 }
 
 async function defaultGenerate(request: {

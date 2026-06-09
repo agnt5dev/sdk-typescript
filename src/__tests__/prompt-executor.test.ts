@@ -86,6 +86,29 @@ describe('prompt executor', () => {
     });
   });
 
+  it('omits topP for Anthropic when temperature is set', async () => {
+    const calls: any[] = [];
+
+    const result = await executePromptWorkerInput(
+      promptPayload({
+        prompt: {
+          model: 'claude-sonnet-4-6',
+          parameters: { temperature: 0.7, top_p: 1 },
+          messages: [{ role: 'user', content: 'Hello' }],
+        },
+      }),
+      async (request) => {
+        calls.push(request);
+        return { id: 'resp_1', model: request.model, text: 'ok' };
+      },
+    );
+
+    expect(result).toBe('ok');
+    expect(calls[0].model).toBe('anthropic/claude-sonnet-4-6');
+    expect(calls[0].temperature).toBe(0.7);
+    expect(calls[0].topP).toBeUndefined();
+  });
+
   it.each([
     ['gpt-5-mini', 'openai/gpt-5-mini'],
     ['o3-mini', 'openai/o3-mini'],
