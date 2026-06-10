@@ -5,13 +5,17 @@
  * - OpenAI (GPT-4, o1, o3)
  * - Anthropic (Claude)
  * - Azure OpenAI
+ * - Baseten
  * - AWS Bedrock
  * - Groq
  * - OpenRouter
  * - DeepSeek
+ * - Fireworks AI
  * - Google (Gemini)
+ * - Lepton
  * - Mistral
  * - Ollama (local LLM)
+ * - Together AI
  * - xAI (Grok)
  * - HuggingFace
  * - OpenAI Chat (custom OpenAI-compatible APIs)
@@ -140,18 +144,22 @@ export type PromptRef = Prompt;
 export const SUPPORTED_MODEL_PROVIDERS = Object.freeze([
   'anthropic',
   'azure',
+  'baseten',
   'bedrock',
   'deepseek',
+  'fireworks',
   'gemini',
   'google',
   'groq',
   'hf',
   'huggingface',
+  'lepton',
   'mistral',
   'ollama',
   'openai',
   'openai_chat',
   'openrouter',
+  'together',
   'xai',
 ]);
 
@@ -248,6 +256,12 @@ export interface AzureOpenAIConfig {
   apiVersion?: string;
 }
 
+export interface BasetenConfig {
+  apiKey?: string;
+  baseUrl?: string;
+  authScheme?: string;
+}
+
 export interface BedrockConfig {
   region?: string;
   accessKeyId?: string;
@@ -256,6 +270,11 @@ export interface BedrockConfig {
 }
 
 export interface GroqConfig {
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+export interface FireworksConfig {
   apiKey?: string;
   baseUrl?: string;
 }
@@ -280,9 +299,19 @@ export interface MistralConfig {
   baseUrl?: string;
 }
 
+export interface LeptonConfig {
+  apiKey?: string;
+  baseUrl?: string;
+}
+
 export interface OllamaConfig {
   baseUrl?: string;
   apiKey?: string;
+}
+
+export interface TogetherConfig {
+  apiKey?: string;
+  baseUrl?: string;
 }
 
 export interface XaiConfig {
@@ -364,6 +393,12 @@ export class LM {
     return new LM(bindings.LanguageModel.azure(config), 'azure');
   }
 
+  /** Create Baseten provider */
+  static baseten(config?: BasetenConfig): LM {
+    const bindings = loadNativeBindings();
+    return new LM(bindings.LanguageModel.baseten(config), 'baseten');
+  }
+
   /**
    * Create AWS Bedrock provider
    *
@@ -396,6 +431,12 @@ export class LM {
   static groq(config?: GroqConfig): LM {
     const bindings = loadNativeBindings();
     return new LM(bindings.LanguageModel.groq(config), 'groq');
+  }
+
+  /** Create Fireworks AI provider */
+  static fireworks(config?: FireworksConfig): LM {
+    const bindings = loadNativeBindings();
+    return new LM(bindings.LanguageModel.fireworks(config), 'fireworks');
   }
 
   /**
@@ -433,10 +474,22 @@ export class LM {
     return new LM(bindings.LanguageModel.mistral(config), 'mistral');
   }
 
+  /** Create Lepton provider */
+  static lepton(config?: LeptonConfig): LM {
+    const bindings = loadNativeBindings();
+    return new LM(bindings.LanguageModel.lepton(config), 'lepton');
+  }
+
   /** Create Ollama provider (local LLM) */
   static ollama(config?: OllamaConfig): LM {
     const bindings = loadNativeBindings();
     return new LM(bindings.LanguageModel.ollama(config), 'ollama');
+  }
+
+  /** Create Together AI provider */
+  static together(config?: TogetherConfig): LM {
+    const bindings = loadNativeBindings();
+    return new LM(bindings.LanguageModel.together(config), 'together');
   }
 
   /** Create xAI (Grok) provider */
@@ -594,8 +647,12 @@ function createPromptManifestLM(provider: string): LM {
       return LM.openai();
     case 'anthropic':
       return LM.anthropic();
+    case 'baseten':
+      return LM.baseten();
     case 'groq':
       return LM.groq();
+    case 'fireworks':
+      return LM.fireworks();
     case 'openrouter':
       return LM.openrouter();
     case 'deepseek':
@@ -605,8 +662,12 @@ function createPromptManifestLM(provider: string): LM {
       return LM.google();
     case 'mistral':
       return LM.mistral();
+    case 'lepton':
+      return LM.lepton();
     case 'ollama':
       return LM.ollama();
+    case 'together':
+      return LM.together();
     case 'xai':
       return LM.xai();
     case 'huggingface':
