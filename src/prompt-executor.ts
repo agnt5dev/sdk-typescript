@@ -284,8 +284,12 @@ function createLMClient(provider: string): LM {
       return LM.openai();
     case 'anthropic':
       return LM.anthropic();
+    case 'baseten':
+      return LM.baseten();
     case 'groq':
       return LM.groq();
+    case 'fireworks':
+      return LM.fireworks();
     case 'openrouter':
       return LM.openrouter();
     case 'deepseek':
@@ -295,8 +299,12 @@ function createLMClient(provider: string): LM {
       return LM.google();
     case 'mistral':
       return LM.mistral();
+    case 'lepton':
+      return LM.lepton();
     case 'ollama':
       return LM.ollama();
+    case 'together':
+      return LM.together();
     case 'xai':
       return LM.xai();
     case 'huggingface':

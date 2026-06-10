@@ -36,4 +36,19 @@ describe('LM model validation', () => {
       'meta-llama/llama-3.1-8b-instruct',
     );
   });
+
+  it('accepts OpenAI-compatible provider prefixes', () => {
+    expect(validateModelForProvider('baseten/acme/llama-3-70b', 'baseten')).toBe(
+      'baseten/acme/llama-3-70b',
+    );
+    expect(validateModelForProvider('fireworks/accounts/fireworks/models/deepseek-v3p1', 'fireworks')).toBe(
+      'fireworks/accounts/fireworks/models/deepseek-v3p1',
+    );
+    expect(validateModelForProvider('lepton/workspace/model', 'lepton')).toBe(
+      'lepton/workspace/model',
+    );
+    expect(validateModelForProvider('together/meta-llama/Llama-4-Maverick', 'together')).toBe(
+      'together/meta-llama/Llama-4-Maverick',
+    );
+  });
 });

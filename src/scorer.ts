@@ -688,16 +688,24 @@ async function makeLmForProvider(
       return LM.openai();
     case 'anthropic':
       return LM.anthropic();
+    case 'baseten':
+      return LM.baseten();
     case 'google':
       return LM.google();
     case 'mistral':
       return LM.mistral();
+    case 'fireworks':
+      return LM.fireworks();
     case 'groq':
       return LM.groq();
     case 'deepseek':
       return LM.deepseek();
     case 'openrouter':
       return LM.openrouter();
+    case 'lepton':
+      return LM.lepton();
+    case 'together':
+      return LM.together();
     case 'ollama':
       return LM.ollama();
     default:

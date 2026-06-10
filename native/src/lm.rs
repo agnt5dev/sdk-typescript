@@ -11,12 +11,16 @@ use agnt5_sdk_core::lm::{
     AnthropicProvider,
     AzureOpenAiConfig,
     AzureOpenAiProvider,
+    BasetenConfig,
+    BasetenProvider,
     BedrockConfig,
     BedrockProvider,
     BuiltInTool,
     DeepSeekConfig,
     // Additional providers
     DeepSeekProvider,
+    FireworksConfig,
+    FireworksProvider,
     GenerateRequest,
     GenerateResponse,
     GenerationConfig,
@@ -28,6 +32,8 @@ use agnt5_sdk_core::lm::{
     HuggingFaceProvider,
     JsonSchemaFormat,
     LanguageModel as LMTrait,
+    LeptonConfig,
+    LeptonProvider,
     Message,
     MessageRole,
     MistralConfig,
@@ -46,6 +52,8 @@ use agnt5_sdk_core::lm::{
     ResponseFormat,
     StreamChunk,
     StreamHandle,
+    TogetherConfig,
+    TogetherProvider,
     TokenUsage,
     ToolChoice,
     ToolDefinition,
@@ -63,12 +71,16 @@ enum ProviderKind {
     Azure(AzureOpenAiProvider),
     Bedrock(BedrockProvider),
     Anthropic(AnthropicProvider),
+    Baseten(BasetenProvider),
     Groq(GroqProvider),
+    Fireworks(FireworksProvider),
     OpenRouter(OpenRouterProvider),
     DeepSeek(DeepSeekProvider),
     Google(GoogleProvider),
+    Lepton(LeptonProvider),
     Mistral(MistralProvider),
     Ollama(OllamaProvider),
+    Together(TogetherProvider),
     Xai(XaiProvider),
     HuggingFace(HuggingFaceProvider),
     OpenAiChat(OpenAiChatProvider),
@@ -81,12 +93,16 @@ impl ProviderKind {
             ProviderKind::Azure(provider) => provider.generate(request).await,
             ProviderKind::Bedrock(provider) => provider.generate(request).await,
             ProviderKind::Anthropic(provider) => provider.generate(request).await,
+            ProviderKind::Baseten(provider) => provider.generate(request).await,
             ProviderKind::Groq(provider) => provider.generate(request).await,
+            ProviderKind::Fireworks(provider) => provider.generate(request).await,
             ProviderKind::OpenRouter(provider) => provider.generate(request).await,
             ProviderKind::DeepSeek(provider) => provider.generate(request).await,
             ProviderKind::Google(provider) => provider.generate(request).await,
+            ProviderKind::Lepton(provider) => provider.generate(request).await,
             ProviderKind::Mistral(provider) => provider.generate(request).await,
             ProviderKind::Ollama(provider) => provider.generate(request).await,
+            ProviderKind::Together(provider) => provider.generate(request).await,
             ProviderKind::Xai(provider) => provider.generate(request).await,
             ProviderKind::HuggingFace(provider) => provider.generate(request).await,
             ProviderKind::OpenAiChat(provider) => provider.generate(request).await,
@@ -99,12 +115,16 @@ impl ProviderKind {
             ProviderKind::Azure(provider) => provider.stream(request).await,
             ProviderKind::Bedrock(provider) => provider.stream(request).await,
             ProviderKind::Anthropic(provider) => provider.stream(request).await,
+            ProviderKind::Baseten(provider) => provider.stream(request).await,
             ProviderKind::Groq(provider) => provider.stream(request).await,
+            ProviderKind::Fireworks(provider) => provider.stream(request).await,
             ProviderKind::OpenRouter(provider) => provider.stream(request).await,
             ProviderKind::DeepSeek(provider) => provider.stream(request).await,
             ProviderKind::Google(provider) => provider.stream(request).await,
+            ProviderKind::Lepton(provider) => provider.stream(request).await,
             ProviderKind::Mistral(provider) => provider.stream(request).await,
             ProviderKind::Ollama(provider) => provider.stream(request).await,
+            ProviderKind::Together(provider) => provider.stream(request).await,
             ProviderKind::Xai(provider) => provider.stream(request).await,
             ProviderKind::HuggingFace(provider) => provider.stream(request).await,
             ProviderKind::OpenAiChat(provider) => provider.stream(request).await,
@@ -636,6 +656,40 @@ impl From<JsAzureOpenAiConfig> for AzureOpenAiConfig {
 }
 
 #[napi(object)]
+pub struct JsBasetenConfig {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub auth_scheme: Option<String>,
+}
+
+impl From<JsBasetenConfig> for BasetenConfig {
+    fn from(config: JsBasetenConfig) -> Self {
+        let api_key = config
+            .api_key
+            .or_else(|| env::var("BASETEN_API_KEY").ok())
+            .unwrap_or_else(|| "".to_string());
+
+        let mut cfg = BasetenConfig::new(api_key);
+
+        if let Some(url) = config
+            .base_url
+            .or_else(|| env::var("BASETEN_BASE_URL").ok())
+        {
+            cfg = cfg.with_base_url(url);
+        }
+
+        if let Some(auth_scheme) = config
+            .auth_scheme
+            .or_else(|| env::var("BASETEN_AUTH_SCHEME").ok())
+        {
+            cfg = cfg.with_auth_scheme(auth_scheme);
+        }
+
+        cfg
+    }
+}
+
+#[napi(object)]
 pub struct JsBedrockConfig {
     pub region: Option<String>,
     pub access_key_id: Option<String>,
@@ -683,6 +737,32 @@ impl From<JsGroqConfig> for GroqConfig {
         let mut cfg = GroqConfig::new(api_key);
 
         if let Some(url) = config.base_url {
+            cfg = cfg.with_base_url(url);
+        }
+
+        cfg
+    }
+}
+
+#[napi(object)]
+pub struct JsFireworksConfig {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+}
+
+impl From<JsFireworksConfig> for FireworksConfig {
+    fn from(config: JsFireworksConfig) -> Self {
+        let api_key = config
+            .api_key
+            .or_else(|| env::var("FIREWORKS_API_KEY").ok())
+            .unwrap_or_else(|| "".to_string());
+
+        let mut cfg = FireworksConfig::new(api_key);
+
+        if let Some(url) = config
+            .base_url
+            .or_else(|| env::var("FIREWORKS_BASE_URL").ok())
+        {
             cfg = cfg.with_base_url(url);
         }
 
@@ -788,6 +868,30 @@ impl From<JsMistralConfig> for MistralConfig {
 }
 
 #[napi(object)]
+pub struct JsLeptonConfig {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+}
+
+impl From<JsLeptonConfig> for LeptonConfig {
+    fn from(config: JsLeptonConfig) -> Self {
+        let api_key = config
+            .api_key
+            .or_else(|| env::var("LEPTON_API_KEY").ok())
+            .or_else(|| env::var("LEPTON_API_TOKEN").ok())
+            .unwrap_or_else(|| "".to_string());
+
+        let base_url = config
+            .base_url
+            .or_else(|| env::var("LEPTON_BASE_URL").ok())
+            .or_else(|| env::var("LEPTON_API_BASE").ok())
+            .unwrap_or_else(|| "".to_string());
+
+        LeptonConfig::new(api_key, base_url)
+    }
+}
+
+#[napi(object)]
 pub struct JsOllamaConfig {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
@@ -807,6 +911,32 @@ impl From<JsOllamaConfig> for OllamaConfig {
 
         if let Some(key) = config.api_key.or_else(|| env::var("OLLAMA_API_KEY").ok()) {
             cfg = cfg.with_api_key(key);
+        }
+
+        cfg
+    }
+}
+
+#[napi(object)]
+pub struct JsTogetherConfig {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+}
+
+impl From<JsTogetherConfig> for TogetherConfig {
+    fn from(config: JsTogetherConfig) -> Self {
+        let api_key = config
+            .api_key
+            .or_else(|| env::var("TOGETHER_API_KEY").ok())
+            .unwrap_or_else(|| "".to_string());
+
+        let mut cfg = TogetherConfig::new(api_key);
+
+        if let Some(url) = config
+            .base_url
+            .or_else(|| env::var("TOGETHER_BASE_URL").ok())
+        {
+            cfg = cfg.with_base_url(url);
         }
 
         cfg
@@ -940,6 +1070,27 @@ impl LanguageModel {
         })
     }
 
+    /// Create Baseten provider
+    #[napi(factory)]
+    pub fn baseten(config: Option<JsBasetenConfig>) -> Result<Self> {
+        let cfg: BasetenConfig = config.map(|c| c.into()).unwrap_or_else(|| {
+            let api_key = env::var("BASETEN_API_KEY").unwrap_or_else(|_| "".to_string());
+            let mut cfg = BasetenConfig::new(api_key);
+            if let Ok(base_url) = env::var("BASETEN_BASE_URL") {
+                cfg = cfg.with_base_url(base_url);
+            }
+            if let Ok(auth_scheme) = env::var("BASETEN_AUTH_SCHEME") {
+                cfg = cfg.with_auth_scheme(auth_scheme);
+            }
+            cfg
+        });
+        let provider = BasetenProvider::new(cfg)
+            .map_err(|e| Error::from_reason(format!("Failed to create Baseten provider: {}", e)))?;
+        Ok(Self {
+            provider: ProviderKind::Baseten(provider),
+        })
+    }
+
     /// Create AWS Bedrock provider
     #[napi(factory)]
     pub fn bedrock(config: JsBedrockConfig) -> Result<Self> {
@@ -962,6 +1113,25 @@ impl LanguageModel {
             .map_err(|e| Error::from_reason(format!("Failed to create Groq provider: {}", e)))?;
         Ok(Self {
             provider: ProviderKind::Groq(provider),
+        })
+    }
+
+    /// Create Fireworks AI provider
+    #[napi(factory)]
+    pub fn fireworks(config: Option<JsFireworksConfig>) -> Result<Self> {
+        let cfg: FireworksConfig = config.map(|c| c.into()).unwrap_or_else(|| {
+            let api_key = env::var("FIREWORKS_API_KEY").unwrap_or_else(|_| "".to_string());
+            let mut cfg = FireworksConfig::new(api_key);
+            if let Ok(base_url) = env::var("FIREWORKS_BASE_URL") {
+                cfg = cfg.with_base_url(base_url);
+            }
+            cfg
+        });
+        let provider = FireworksProvider::new(cfg).map_err(|e| {
+            Error::from_reason(format!("Failed to create Fireworks provider: {}", e))
+        })?;
+        Ok(Self {
+            provider: ProviderKind::Fireworks(provider),
         })
     }
 
@@ -1025,6 +1195,25 @@ impl LanguageModel {
         })
     }
 
+    /// Create Lepton provider
+    #[napi(factory)]
+    pub fn lepton(config: Option<JsLeptonConfig>) -> Result<Self> {
+        let cfg: LeptonConfig = config.map(|c| c.into()).unwrap_or_else(|| {
+            let api_key = env::var("LEPTON_API_KEY")
+                .or_else(|_| env::var("LEPTON_API_TOKEN"))
+                .unwrap_or_else(|_| "".to_string());
+            let base_url = env::var("LEPTON_BASE_URL")
+                .or_else(|_| env::var("LEPTON_API_BASE"))
+                .unwrap_or_else(|_| "".to_string());
+            LeptonConfig::new(api_key, base_url)
+        });
+        let provider = LeptonProvider::new(cfg)
+            .map_err(|e| Error::from_reason(format!("Failed to create Lepton provider: {}", e)))?;
+        Ok(Self {
+            provider: ProviderKind::Lepton(provider),
+        })
+    }
+
     /// Create Ollama provider (local LLM)
     #[napi(factory)]
     pub fn ollama(config: Option<JsOllamaConfig>) -> Result<Self> {
@@ -1033,6 +1222,25 @@ impl LanguageModel {
             .map_err(|e| Error::from_reason(format!("Failed to create Ollama provider: {}", e)))?;
         Ok(Self {
             provider: ProviderKind::Ollama(provider),
+        })
+    }
+
+    /// Create Together AI provider
+    #[napi(factory)]
+    pub fn together(config: Option<JsTogetherConfig>) -> Result<Self> {
+        let cfg: TogetherConfig = config.map(|c| c.into()).unwrap_or_else(|| {
+            let api_key = env::var("TOGETHER_API_KEY").unwrap_or_else(|_| "".to_string());
+            let mut cfg = TogetherConfig::new(api_key);
+            if let Ok(base_url) = env::var("TOGETHER_BASE_URL") {
+                cfg = cfg.with_base_url(base_url);
+            }
+            cfg
+        });
+        let provider = TogetherProvider::new(cfg).map_err(|e| {
+            Error::from_reason(format!("Failed to create Together provider: {}", e))
+        })?;
+        Ok(Self {
+            provider: ProviderKind::Together(provider),
         })
     }
 
