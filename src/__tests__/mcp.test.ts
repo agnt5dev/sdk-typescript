@@ -20,9 +20,45 @@ describe('MCPClient', () => {
     expect(client.connectedServers()).toEqual([]);
   });
 
+  it('should add Streamable HTTP server config', () => {
+    const client = new MCPClient('test');
+    client.addStreamableHttpServer('deepwiki', 'https://mcp.deepwiki.com/mcp', {
+      Authorization: 'Bearer token',
+    });
+    expect(client.connectedServers()).toEqual([]);
+  });
+
+  it('should add Streamable HTTP server config from object', () => {
+    const client = new MCPClient('test');
+    client.addStreamableHttpServer({
+      name: 'deepwiki',
+      url: 'https://mcp.deepwiki.com/mcp',
+      headers: { Authorization: 'Bearer token' },
+      timeout: 30_000,
+    });
+    expect(client.connectedServers()).toEqual([]);
+  });
+
+  it('should disconnect via async dispose', async () => {
+    const client = new MCPClient('test');
+    await client[Symbol.asyncDispose]();
+    expect(client.connectedServers()).toEqual([]);
+  });
+
   it('should parse dict config with command (stdio)', () => {
     const client = new MCPClient('test', {
       myserver: { command: 'python', args: ['-m', 'mcp_server'] },
+    });
+    expect(client.id).toBe('test');
+  });
+
+  it('should parse dict config with Streamable HTTP transport', () => {
+    const client = new MCPClient('test', {
+      deepwiki: {
+        url: 'https://mcp.deepwiki.com/mcp',
+        transport: 'streamable_http',
+        headers: { Authorization: 'Bearer token' },
+      },
     });
     expect(client.id).toBe('test');
   });

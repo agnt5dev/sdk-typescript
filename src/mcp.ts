@@ -37,12 +37,24 @@ export interface SseConfig {
   headers?: Record<string, string>;
 }
 
-export type TransportType = 'stdio' | 'sse';
+export interface StreamableHttpConfig {
+  url: string;
+  headers?: Record<string, string>;
+  timeout?: number;
+}
+
+export interface NamedStreamableHttpConfig extends StreamableHttpConfig {
+  name: string;
+  apiKey?: string;
+}
+
+export type TransportType = 'stdio' | 'sse' | 'streamable_http';
 
 export interface ServerConfig {
   transportType: TransportType;
   stdio?: StdioConfig;
   sse?: SseConfig;
+  streamableHttp?: StreamableHttpConfig;
 }
 
 export interface ServerCapabilities {
@@ -76,6 +88,20 @@ function parseServerConfig(config: Record<string, any>): ServerConfig {
     };
   }
   if (config.url) {
+    const transport = String(config.transport || 'sse').toLowerCase();
+    if (transport === 'streamable_http' || transport === 'streamable-http' || transport === 'http') {
+      return {
+        transportType: 'streamable_http',
+        streamableHttp: {
+          url: config.url,
+          headers: config.headers,
+          timeout: config.timeout,
+        },
+      };
+    }
+    if (transport !== 'sse') {
+      throw new MCPError(`Unknown transport: ${transport} (expected "sse" or "streamable_http")`);
+    }
     return {
       transportType: 'sse',
       sse: {
@@ -168,6 +194,17 @@ export class MCPClient {
       return;
     }
 
+    if (parsed.transportType === 'streamable_http' && parsed.streamableHttp) {
+      this._core.addStreamableHttpServer(
+        name,
+        parsed.streamableHttp.url,
+        parsed.streamableHttp.headers ?? {},
+        undefined,
+        parsed.streamableHttp.timeout ?? undefined,
+      );
+      return;
+    }
+
     throw new MCPError(`Unknown transport type: ${parsed.transportType}`);
   }
 
@@ -191,6 +228,37 @@ export class MCPClient {
       sse: { url, headers },
     });
     this._core.addSseServer(name, url, headers ?? {}, undefined);
+  }
+
+  addStreamableHttpServer(config: NamedStreamableHttpConfig): void;
+  addStreamableHttpServer(
+    name: string,
+    url: string,
+    headers?: Record<string, string>,
+    apiKey?: string,
+    timeout?: number,
+  ): void;
+  addStreamableHttpServer(
+    nameOrConfig: string | NamedStreamableHttpConfig,
+    url?: string,
+    headers?: Record<string, string>,
+    apiKey?: string,
+    timeout?: number,
+  ): void {
+    const name = typeof nameOrConfig === 'string' ? nameOrConfig : nameOrConfig.name;
+    const endpoint = typeof nameOrConfig === 'string' ? url : nameOrConfig.url;
+    const requestHeaders = typeof nameOrConfig === 'string' ? headers : nameOrConfig.headers;
+    const requestApiKey = typeof nameOrConfig === 'string' ? apiKey : nameOrConfig.apiKey;
+    const requestTimeout = typeof nameOrConfig === 'string' ? timeout : nameOrConfig.timeout;
+    if (!endpoint) {
+      throw new MCPError('Streamable HTTP server config requires a url');
+    }
+
+    this._configs.set(name, {
+      transportType: 'streamable_http',
+      streamableHttp: { url: endpoint, headers: requestHeaders, timeout: requestTimeout },
+    });
+    this._core.addStreamableHttpServer(name, endpoint, requestHeaders ?? {}, requestApiKey, requestTimeout);
   }
 
   async connect(): Promise<void> {
@@ -218,6 +286,10 @@ export class MCPClient {
       this._connectedServers.clear();
       this._tools.clear();
     }
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.disconnect();
   }
 
   listTools(): McpToolWithServer[] {

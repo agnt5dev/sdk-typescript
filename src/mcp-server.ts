@@ -1,3 +1,6 @@
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
+import type { AddressInfo } from 'net';
+
 import { ContextImpl } from './context.js';
 import type { JSONSchema } from './types.js';
 import { Tool } from './tool.js';
@@ -84,6 +87,13 @@ export interface MCPServerOptions {
   metadata?: Record<string, any>;
 }
 
+interface MCPServerHandle {
+  host: string;
+  port: number;
+  close(): Promise<void>;
+  closed: Promise<void>;
+}
+
 export class MCPServer {
   readonly id: string;
   readonly name: string;
@@ -157,12 +167,9 @@ export class MCPServer {
     }
   }
 
-  async runSSE(_options?: { host?: string; port?: number }): Promise<void> {
-    throw new Error('MCPServer.runSSE() is not implemented yet');
-  }
-
-  async runHTTP(_options?: { host?: string; port?: number; path?: string }): Promise<void> {
-    throw new Error('MCPServer.runHTTP() is not implemented yet');
+  async runHTTP(options?: { host?: string; port?: number; path?: string }): Promise<void> {
+    const handle = await this.startHTTP(options);
+    await handle.closed;
   }
 
   async dispatch(request: Record<string, any>): Promise<Record<string, any>> {
@@ -185,35 +192,142 @@ export class MCPServer {
   }
 
   private tryParseMessage(buffer: Buffer): { request: Record<string, any>; remaining: Buffer } | null {
-    const headerEnd = buffer.indexOf('\r\n\r\n');
-    if (headerEnd === -1) return null;
+    const lineEnd = buffer.indexOf('\n');
+    if (lineEnd === -1) return null;
 
-    const header = buffer.subarray(0, headerEnd).toString('utf8');
-    const match = header.match(/Content-Length:\s*(\d+)/i);
-    if (!match) {
-      throw new MCPServerError('Missing Content-Length header');
-    }
-
-    const contentLength = Number(match[1]);
-    const bodyStart = headerEnd + 4;
-    if (buffer.length < bodyStart + contentLength) return null;
-
-    const body = buffer.subarray(bodyStart, bodyStart + contentLength);
+    const line = buffer.subarray(0, lineEnd).toString('utf8').replace(/\r$/, '');
     return {
-      request: JSON.parse(body.toString('utf8')),
-      remaining: Buffer.from(buffer.subarray(bodyStart + contentLength)),
+      request: JSON.parse(line),
+      remaining: Buffer.from(buffer.subarray(lineEnd + 1)),
     };
   }
 
   private writeMessage(payload: Buffer): void {
-    process.stdout.write(`Content-Length: ${payload.length}\r\n\r\n`);
     process.stdout.write(payload);
+    process.stdout.write('\n');
+  }
+
+  private async startHTTP(options?: { host?: string; port?: number; path?: string }): Promise<MCPServerHandle> {
+    const host = options?.host || '127.0.0.1';
+    const port = options?.port ?? 0;
+    const path = this.normalizePath(options?.path || '/mcp');
+    const server = createServer((req, res) => {
+      this.handleStreamableHttpRequest(req, res, path).catch(error => {
+        this.writeJson(res, 500, {
+          jsonrpc: '2.0',
+          id: null,
+          error: { code: -32603, message: error?.message || String(error) },
+        });
+      });
+    });
+
+    return this.listen(server, host, port);
+  }
+
+  private async handleStreamableHttpRequest(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+    if (!this.isAllowedOrigin(req.headers.origin, req.headers.host)) {
+      this.writeText(res, 403, 'forbidden origin');
+      return;
+    }
+
+    const url = new URL(req.url || '/', 'http://localhost');
+    if (url.pathname !== path) {
+      this.writeText(res, 404, 'not found');
+      return;
+    }
+
+    if (req.method === 'GET') {
+      this.writeText(res, 405, 'GET stream is not supported');
+      return;
+    }
+    if (req.method !== 'POST') {
+      this.writeText(res, 405, 'method not allowed');
+      return;
+    }
+
+    const request = JSON.parse(await this.readBody(req));
+    if (!Object.prototype.hasOwnProperty.call(request, 'id')) {
+      await this.dispatch(request);
+      res.writeHead(202).end();
+      return;
+    }
+
+    const response = await this.dispatch(request);
+    this.writeJson(res, 200, response);
+  }
+
+  private async listen(server: Server, host: string, port: number): Promise<MCPServerHandle> {
+    const closed = new Promise<void>(resolve => {
+      server.once('close', resolve);
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => {
+        server.off('listening', onListening);
+        reject(error);
+      };
+      const onListening = () => {
+        server.off('error', onError);
+        resolve();
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port, host);
+    });
+
+    const address = server.address() as AddressInfo;
+    return {
+      host,
+      port: address.port,
+      closed,
+      close: () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
+    };
+  }
+
+  private readBody(req: IncomingMessage): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      req.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      req.on('error', reject);
+    });
+  }
+
+  private writeJson(res: ServerResponse, status: number, payload: Record<string, any>): void {
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(payload));
+  }
+
+  private writeText(res: ServerResponse, status: number, text: string): void {
+    res.writeHead(status, { 'Content-Type': 'text/plain' });
+    res.end(text);
+  }
+
+  private normalizePath(path: string): string {
+    return path.startsWith('/') ? path : `/${path}`;
+  }
+
+  private isAllowedOrigin(
+    origin: string | string[] | undefined,
+    host: string | string[] | undefined,
+  ): boolean {
+    const originValue = Array.isArray(origin) ? origin[0] : origin;
+    if (!originValue) return true;
+
+    const hostValue = Array.isArray(host) ? host[0] : host;
+    if (!hostValue) return false;
+
+    try {
+      return new URL(originValue).host === hostValue;
+    } catch {
+      return false;
+    }
   }
 
   private async handleRequest(method: string, params: Record<string, any>): Promise<any> {
     if (method === 'initialize') {
       return {
-        protocolVersion: '2024-11-05',
+        protocolVersion: '2025-11-25',
         serverInfo: { name: this.name, version: this.version },
         capabilities: {
           tools: { listChanged: false },
@@ -223,7 +337,7 @@ export class MCPServer {
       };
     }
 
-    if (method === 'initialized') return { ok: true };
+    if (method === 'notifications/initialized' || method === 'initialized') return { ok: true };
     if (method === 'ping') return { pong: true };
     if (method === 'tools/list' || method === 'tools.list') return { tools: this.listTools() };
     if (method === 'tools/call' || method === 'tools.call') {

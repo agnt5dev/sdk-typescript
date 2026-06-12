@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agnt5_sdk_core::mcp::{McpClient, ServerConfig, SseConfig, StdioConfig, ToolContent};
+use agnt5_sdk_core::mcp::{
+    McpClient, ServerConfig, SseConfig, StdioConfig, StreamableHttpConfig, ToolContent,
+};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::{json, Value};
@@ -70,6 +72,27 @@ impl McpClientCore {
 
         let mut client = self.inner.blocking_lock();
         client.add_server(name, ServerConfig::Sse(config));
+    }
+
+    #[napi(js_name = "addStreamableHttpServer")]
+    pub fn add_streamable_http_server(
+        &self,
+        name: String,
+        url: String,
+        headers: Option<HashMap<String, String>>,
+        api_key: Option<String>,
+        _timeout: Option<u32>,
+    ) {
+        let mut config = StreamableHttpConfig::new(url);
+        for (key, value) in headers.unwrap_or_default() {
+            config = config.with_header(key, value);
+        }
+        if let Some(api_key) = api_key {
+            config = config.with_api_key(api_key);
+        }
+
+        let mut client = self.inner.blocking_lock();
+        client.add_server(name, ServerConfig::StreamableHttp(config));
     }
 
     #[napi]
@@ -214,15 +237,41 @@ fn parse_server_config(config: Value) -> Result<ServerConfig> {
     }
 
     if let Some(url) = obj.get("url").and_then(Value::as_str) {
-        let mut config = SseConfig::new(url.to_string());
-        if let Some(headers) = obj.get("headers").and_then(Value::as_object) {
+        let transport = obj
+            .get("transport")
+            .and_then(Value::as_str)
+            .unwrap_or("sse")
+            .to_ascii_lowercase();
+        let headers = obj
+            .get("headers")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|items| items.iter())
+            .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+            .collect::<HashMap<_, _>>();
+
+        if transport == "sse" {
+            let mut config = SseConfig::new(url.to_string());
             for (key, value) in headers {
-                if let Some(value) = value.as_str() {
-                    config = config.with_header(key.clone(), value.to_string());
-                }
+                config = config.with_header(key, value);
             }
+            return Ok(ServerConfig::Sse(config));
         }
-        return Ok(ServerConfig::Sse(config));
+
+        if matches!(
+            transport.as_str(),
+            "streamable_http" | "streamable-http" | "http"
+        ) {
+            let mut config = StreamableHttpConfig::new(url.to_string());
+            for (key, value) in headers {
+                config = config.with_header(key, value);
+            }
+            return Ok(ServerConfig::StreamableHttp(config));
+        }
+
+        return Err(Error::from_reason(format!(
+            "Unknown transport: {transport:?} (expected 'sse' or 'streamable_http')"
+        )));
     }
 
     Err(Error::from_reason(

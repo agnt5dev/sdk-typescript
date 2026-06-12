@@ -2,6 +2,12 @@
  * Example: AGNT5 MCP Server
  *
  * Expose AGNT5 tools, agents, workflows, prompts, and resources as an MCP server.
+ *
+ * Run stdio:
+ *   tsx examples/mcp-server.ts
+ *
+ * Run Streamable HTTP:
+ *   tsx examples/mcp-server.ts --http
  */
 
 import { Agent, MCPServer, Prompt, Resource, Tool, workflow } from '../src/index.js';
@@ -76,7 +82,11 @@ const server = new MCPServer({
   },
 });
 
-server.runStdio().catch(error => {
+const run = process.argv.includes('--http')
+  ? server.runHTTP({ host: '127.0.0.1', port: 34183, path: '/mcp' })
+  : server.runStdio();
+
+run.catch(error => {
   console.error(error);
   process.exit(1);
 });
