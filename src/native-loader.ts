@@ -37,22 +37,20 @@ export function loadNativeBindings(): any {
     throw new Error(`Unsupported platform ${platform}-${arch}`);
   }
 
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  for (const suffix of [`${platform}-${arch}`, `${platform}-${arch}-gnu`]) {
+    for (const rel of ['../', '../../']) {
+      try {
+        cached = require(join(__dirname, rel, `agnt5-sdk-native.${suffix}.node`));
+        return cached;
+      } catch {}
+    }
+  }
+
   try {
     cached = require(pkgName);
     return cached;
   } catch (primaryError) {
-    // Workspace symlink fallback: look for a local napi build at the
-    // SDK package root when the optionalDependency platform package
-    // isn't installed.
-    const __dirname = dirname(fileURLToPath(import.meta.url));
-    for (const suffix of [`${platform}-${arch}`, `${platform}-${arch}-gnu`]) {
-      for (const rel of ['../', '../../']) {
-        try {
-          cached = require(join(__dirname, rel, `agnt5-sdk-native.${suffix}.node`));
-          return cached;
-        } catch {}
-      }
-    }
     throw new Error(
       `Failed to load native bindings: ${pkgName} not installed, no local build found. ` +
       `Run "pnpm run build:napi" in sdk/sdk-typescript. Original: ${(primaryError as Error).message}`
