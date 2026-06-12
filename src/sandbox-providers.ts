@@ -10,8 +10,9 @@
  * - {@link NorthflankSandboxProvider} — Northflank (REST + websocket exec; needs Node >= 22 for the global WebSocket)
  * - {@link TogetherSandboxProvider} — Together Code Interpreter (/v1/tci)
  *
- * Modal is not included: its API is gRPC-only and is integrated at the
- * Rust core level as a follow-up.
+ * Modal is not included here: its API is gRPC-only and is integrated
+ * natively in the Rust core (sdk-core); a TS surface for it would need
+ * gRPC bindings rather than fetch.
  *
  * Provider sandboxes expose the same data-plane surface as {@link Sandbox}
  * (executeCode, runCommand, writeFile, readFile, deleteFile, listFiles,
