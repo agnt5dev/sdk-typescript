@@ -9,6 +9,10 @@ import { Tool } from './tool.js';
 import { ContextImpl } from './context.js';
 import { validateModelForProvider } from './lm.js';
 import type { LM } from './lm.js';
+import type { Sandbox } from './sandbox.js';
+import { sandboxTools } from './sandbox-tools.js';
+import { Skill, makeLoadSkillTool, renderCatalog, resolveSkills, type SkillInput } from './skills.js';
+import { loadAgentsMd, renderGuidance, type AgentsMdSource } from './agents-md.js';
 import type {
   BuiltInTool,
   Message as LMMessage,
@@ -293,6 +297,8 @@ export interface AgentOptions {
   instructions: string;
   /** List of tools available to the agent */
   tools?: (Tool | any)[];
+  /** Sandbox workspace available to the agent and custom tools via ctx.sandbox */
+  sandbox?: Sandbox;
   /** Handoff targets for agent-to-agent delegation */
   handoffs?: (Agent | Handoff)[];
   /** Model name to use (e.g., "gpt-4o-mini") */
@@ -305,6 +311,20 @@ export interface AgentOptions {
   builtInTools?: BuiltInTool[];
   /** Execution callbacks for agent/model/tool interception */
   callbacks?: AgentCallbacks;
+  /**
+   * On-demand skills available to this agent. Items may be skill names
+   * (resolved against `skillsDir`) or `Skill` objects. Omit with a `skillsDir`
+   * set to load every skill in the pool.
+   */
+  skills?: SkillInput[];
+  /** Directory pool that skill names are resolved against. */
+  skillsDir?: string;
+  /**
+   * Always-on project/area guidance (AGENTS.md). A file path, a directory
+   * (uses its AGENTS.md), or an ordered list where later entries are more
+   * specific. Injected into every prompt.
+   */
+  agentsMd?: AgentsMdSource;
 }
 
 const BUILT_IN_TOOL_PROVIDER_NAMES: Record<BuiltInTool, string[]> = {
@@ -369,6 +389,10 @@ export class Agent {
   private handoffs: Handoff[] = [];
   private isNewLM: boolean;
   private callbacks: AgentCallbacks;
+  private sandbox?: Sandbox;
+  private skills: Map<string, Skill>;
+  private skillsCatalog: string;
+  private agentsMdGuidance: string;
 
   constructor(options: AgentOptions) {
     this.name = options.name;
@@ -383,11 +407,30 @@ export class Agent {
     this.maxIterations = options.maxIterations || 10;
     this.builtInTools = options.builtInTools ?? [];
     this.callbacks = options.callbacks || {};
+    this.sandbox = options.sandbox;
 
     // Detect if it's the new LM class (has static factory methods)
     this.isNewLM = 'generate' in options.model && !('stream' in (options.model as any).constructor);
 
     // Build tool registry
+    if (this.sandbox) {
+      for (const t of sandboxTools({ sandbox: this.sandbox })) {
+        this.addTool(t);
+      }
+    }
+
+    // Resolve on-demand skills and register the loader tool. Empty when no
+    // skills are configured, so skill-less agents are unchanged.
+    this.skills = resolveSkills(options.skills, options.skillsDir);
+    this.skillsCatalog = renderCatalog(this.skills);
+    if (this.skills.size > 0) {
+      this.addTool(makeLoadSkillTool(this.skills, this.sandbox));
+    }
+
+    // Always-on project/area guidance (AGENTS.md). Empty when unset, so
+    // guidance-less agents are unchanged.
+    this.agentsMdGuidance = renderGuidance(loadAgentsMd(options.agentsMd));
+
     if (options.tools) {
       for (const t of options.tools) {
         this.addTool(t);
@@ -558,11 +601,27 @@ export class Agent {
     };
   }
 
+  /**
+   * Assemble the system prompt: base instructions plus the on-demand skills
+   * catalog. Single choke point so every request path carries the same context.
+   * The catalog is empty for skill-less agents, leaving their prompt unchanged.
+   */
+  private composeSystemPrompt(): string {
+    const blocks = [this.instructions];
+    if (this.agentsMdGuidance) {
+      blocks.push(this.agentsMdGuidance);
+    }
+    if (this.skillsCatalog) {
+      blocks.push(this.skillsCatalog);
+    }
+    return blocks.join('\n\n');
+  }
+
   private buildModelRequest(messages: Message[], toolDefs: ToolSchema[]): GenerateRequest | LMGenerateRequest {
     if (this.isNewLM) {
       return {
         model: this.modelName,
-        systemPrompt: this.instructions,
+        systemPrompt: this.composeSystemPrompt(),
         messages: messages as LMMessage[],
         tools: toolDefs.length > 0 ? toolDefs.map(t => this.convertToolSchema(t)) : undefined,
         config: {
@@ -574,7 +633,7 @@ export class Agent {
 
     return {
       model: this.modelName,
-      systemPrompt: this.instructions,
+      systemPrompt: this.composeSystemPrompt(),
       messages,
       tools: toolDefs.length > 0 ? toolDefs : undefined,
       config: {
@@ -808,6 +867,9 @@ export class Agent {
       0,
       this.name,
     );
+    if (this.sandbox) {
+      (ctx as any).sandbox = this.sandbox;
+    }
 
     // Stash conversation on context for handoff history passing
     const messages: Message[] = history ? [...history] : [];
@@ -1069,6 +1131,10 @@ export class Agent {
         error: String(error),
       });
       throw error;
+    } finally {
+      if (this.sandbox) {
+        await this.sandbox.close();
+      }
     }
   }
 
