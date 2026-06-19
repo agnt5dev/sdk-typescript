@@ -107,6 +107,15 @@ export interface ToolCallFailed extends BaseEvent {
   error: string;
 }
 
+// ─── Skill events ────────────────────────────────────────────────────
+
+export interface SkillLoaded extends BaseEvent {
+  eventType: 'skill.loaded';
+  skillName: string;
+  instructionsLength: number;
+  resourcesMaterialized: number;
+}
+
 // ─── Discriminated union ─────────────────────────────────────────────
 
 export type AgentEvent =
@@ -117,7 +126,8 @@ export type AgentEvent =
   | AgentIterationCompleted
   | ToolCallStarted
   | ToolCallCompleted
-  | ToolCallFailed;
+  | ToolCallFailed
+  | SkillLoaded;
 
 // ─── Factory helpers ─────────────────────────────────────────────────
 
@@ -261,6 +271,21 @@ export function toolCallFailed(
     toolName: opts.toolName,
     toolCallId: opts.toolCallId,
     error: opts.error,
+  };
+}
+
+export function skillLoaded(
+  correlationId: string,
+  parentCorrelationId: string | null,
+  opts: { skillName: string; instructionsLength: number; resourcesMaterialized: number },
+): SkillLoaded {
+  return {
+    ...baseFields('load_skill', correlationId, parentCorrelationId),
+    eventType: 'skill.loaded',
+    componentType: 'tool',
+    skillName: opts.skillName,
+    instructionsLength: opts.instructionsLength,
+    resourcesMaterialized: opts.resourcesMaterialized,
   };
 }
 

@@ -1,4 +1,5 @@
 import type { RuntimeContext } from './runtime-context.js';
+import type { Sandbox } from './sandbox.js';
 
 /**
  * Retry policy configuration for functions
@@ -63,6 +64,8 @@ export interface Context {
   readonly serviceName: string;
   /** Runtime-provided execution options for this invocation */
   readonly runtime: RuntimeContext;
+  /** Sandbox workspace attached by Agent when configured. */
+  readonly sandbox?: Sandbox;
   /**
    * Cancellation signal for this invocation. Aborted when the run is
    * cancelled (a CancelExecution arrives). Thread it into fetch/LLM SDK

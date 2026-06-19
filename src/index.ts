@@ -110,6 +110,10 @@ export type { SlackConfig, DiscordConfig, TeamsConfig, TelegramConfig, PlatformC
 
 // Agent exports
 export { Agent, AgentRegistry, MessageRole, Message, Handoff, handoff, callbackOverride } from './agent.js';
+export { Skill, discoverSkills } from './skills.js';
+export type { SkillInput } from './skills.js';
+export { discoverAgentsMd, loadAgentsMd } from './agents-md.js';
+export type { AgentsMdSource } from './agents-md.js';
 export type {
   AgentCallbackContext,
   AgentCallbacks,
@@ -140,6 +144,7 @@ export type {
   ToolCallStarted,
   ToolCallCompleted,
   ToolCallFailed,
+  SkillLoaded,
   // Lifecycle events
   RunStarted,
   RunCompleted,
@@ -174,6 +179,7 @@ export {
   toolCallStarted,
   toolCallCompleted,
   toolCallFailed,
+  skillLoaded,
   // Lifecycle factories
   generateCid,
   runStarted,
@@ -399,6 +405,7 @@ export type {
 
 // Sandbox exports
 export { Sandbox } from './sandbox.js';
+export { sandboxTools } from './sandbox-tools.js';
 export {
   DaytonaSandbox,
   DaytonaSandboxProvider,

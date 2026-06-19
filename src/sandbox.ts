@@ -1,15 +1,14 @@
 /**
  * Sandbox — secure code execution and file I/O.
  *
- * Wraps the native Rust sandbox bindings, supporting both remote (HTTP)
- * and embedded (WASM) backends. The backend is selected automatically
- * based on available configuration.
+ * Supports provider-backed sandboxes by default, plus explicit native
+ * remote/WASM backends when `backend` is configured.
  *
  * @example
  * ```ts
  * import { Sandbox } from '@agnt5/sdk';
  *
- * const sandbox = new Sandbox({ endpoint: 'http://localhost:8080' });
+ * const sandbox = new Sandbox({ provider: 'e2b' }); // or new Sandbox() to auto-detect
  * const result = await sandbox.executeCode('console.log("hello")', 'javascript');
  * console.log(result.stdout); // "hello"
  * ```
@@ -18,10 +17,14 @@
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadProvidersFromEnv } from './sandbox-providers.js';
+import type { CreateSandboxOptions, SandboxProvider } from './sandbox-providers.js';
 
 // ── Types ──────────────────────────────────────────────────────
 
 export interface SandboxOptions {
+  /** Provider selection: "e2b", "daytona", "vercel", etc. */
+  provider?: string;
   /** Backend selection: "remote", "wasm", or "auto" (default). */
   backend?: string;
   /** HTTP endpoint for remote backend. */
@@ -32,10 +35,22 @@ export interface SandboxOptions {
   apiKey?: string;
   /** Bearer token for remote auth. */
   bearerToken?: string;
-  /** Request timeout in seconds (default: 300). */
+  /** Request timeout in seconds for native sandboxes; provider lifetime when provider-backed. */
   timeoutSecs?: number;
   /** Path to QuickJS WASI binary (for wasm backend). */
   quickjsWasmPath?: string;
+  /** Destroy provider sandboxes after close (default: true). */
+  autoDestroy?: boolean;
+  /** Template, snapshot, or image identifier for provider-backed sandboxes. */
+  template?: string;
+  /** Environment variables available inside provider-backed sandboxes. */
+  env?: Record<string, string>;
+  /** Provider metadata/labels. */
+  metadata?: Record<string, string>;
+  /** CPU cores to allocate when supported by the provider. */
+  cpuCores?: number;
+  /** Memory in MiB when supported by the provider. */
+  memoryMib?: number;
 }
 
 export interface ExecuteCodeResult {
@@ -203,9 +218,29 @@ function mapCapabilities(c: any): SandboxCapabilities {
 // ── Sandbox class ──────────────────────────────────────────────
 
 export class Sandbox {
-  private inner: any;
+  private inner: any | null = null;
+  private providerName?: string;
+  private providerClient?: SandboxProvider;
+  private providerSandbox?: any;
+  private readonly autoDestroy: boolean;
+  private readonly createOptions: CreateSandboxOptions;
 
   constructor(options?: SandboxOptions) {
+    this.autoDestroy = options?.autoDestroy ?? true;
+    this.createOptions = {
+      template: options?.template,
+      timeoutSecs: options?.timeoutSecs,
+      env: options?.env,
+      metadata: options?.metadata,
+      cpuCores: options?.cpuCores,
+      memoryMib: options?.memoryMib,
+    };
+
+    if (!options || options.provider) {
+      this.providerName = options?.provider ?? 'auto';
+      return;
+    }
+
     const native = loadNative();
     const nativeOpts = options
       ? {
@@ -223,7 +258,48 @@ export class Sandbox {
 
   /** Active backend type ("remote" or "wasm"). */
   get backend(): string {
+    if (this.providerName) return `provider:${this.providerName}`;
+    if (!this.inner) throw new Error('Sandbox is not initialized');
     return this.inner.backend;
+  }
+
+  /** Create the provider sandbox if this is provider-backed. */
+  async start(): Promise<this> {
+    await this.ensureProviderSandbox();
+    return this;
+  }
+
+  /** Destroy provider sandbox resources owned by this wrapper. */
+  async close(): Promise<void> {
+    if (this.providerSandbox) {
+      const sandboxId = this.providerSandbox.sandboxId;
+      if (this.autoDestroy && this.providerClient && sandboxId) {
+        await this.providerClient.destroy(sandboxId);
+      }
+      this.providerSandbox = undefined;
+    }
+  }
+
+  private async ensureProviderSandbox(): Promise<any | undefined> {
+    if (!this.providerName) return undefined;
+    if (this.providerSandbox) return this.providerSandbox;
+
+    const providers = loadProvidersFromEnv();
+    let name: string | undefined = this.providerName;
+    if (name === 'auto') {
+      name = Object.keys(providers)[0];
+    }
+    if (!name || !(name in providers)) {
+      const available = Object.keys(providers).sort().join(', ') || 'none';
+      throw new Error(
+        `Sandbox provider '${this.providerName}' is not configured. Available providers from environment: ${available}.`
+      );
+    }
+
+    this.providerName = name;
+    this.providerClient = providers[name];
+    this.providerSandbox = await this.providerClient.create(this.createOptions);
+    return this.providerSandbox;
   }
 
   /** Execute code in a sandboxed environment. */
@@ -232,12 +308,22 @@ export class Sandbox {
     language?: string,
     timeoutMs?: number,
   ): Promise<ExecuteCodeResult> {
+    const providerSandbox = await this.ensureProviderSandbox();
+    if (providerSandbox) {
+      return providerSandbox.executeCode(code, language, { timeoutMs });
+    }
+    if (!this.inner) throw new Error('Sandbox is not initialized');
     const r = await this.inner.executeCode(code, language, timeoutMs);
     return mapExecuteResult(r);
   }
 
   /** Write a file into the sandbox workspace. */
   async writeFile(path: string, content: Buffer | string): Promise<WriteFileResult> {
+    const providerSandbox = await this.ensureProviderSandbox();
+    if (providerSandbox) {
+      return providerSandbox.writeFile(path, content);
+    }
+    if (!this.inner) throw new Error('Sandbox is not initialized');
     const buf = typeof content === 'string' ? Buffer.from(content) : content;
     const r = await this.inner.writeFile(path, buf);
     return mapWriteResult(r);
@@ -245,29 +331,66 @@ export class Sandbox {
 
   /** Read a file from the sandbox workspace. */
   async readFile(path: string): Promise<ReadFileResult> {
+    const providerSandbox = await this.ensureProviderSandbox();
+    if (providerSandbox) {
+      return providerSandbox.readFile(path);
+    }
+    if (!this.inner) throw new Error('Sandbox is not initialized');
     const r = await this.inner.readFile(path);
     return mapReadResult(r);
   }
 
   /** Delete a file or directory from the sandbox workspace. */
   async deleteFile(path: string, recursive?: boolean): Promise<boolean> {
+    const providerSandbox = await this.ensureProviderSandbox();
+    if (providerSandbox) {
+      return providerSandbox.deleteFile(path, recursive);
+    }
+    if (!this.inner) throw new Error('Sandbox is not initialized');
     return this.inner.deleteFile(path, recursive);
   }
 
   /** List files in the sandbox workspace. */
   async listFiles(path?: string, recursive?: boolean): Promise<ListFilesResult> {
+    const providerSandbox = await this.ensureProviderSandbox();
+    if (providerSandbox) {
+      return providerSandbox.listFiles(path ?? '.', recursive);
+    }
+    if (!this.inner) throw new Error('Sandbox is not initialized');
     const r = await this.inner.listFiles(path, recursive);
     return mapListResult(r);
   }
 
   /** Check sandbox health and status. */
   async health(): Promise<HealthResult> {
+    const providerSandbox = await this.ensureProviderSandbox();
+    if (providerSandbox) {
+      return {
+        status: 'running',
+        sandboxId: providerSandbox.sandboxId ?? '',
+        uptimeMs: 0,
+        backendKind: this.backend,
+      };
+    }
+    if (!this.inner) throw new Error('Sandbox is not initialized');
     const r = await this.inner.health();
     return mapHealthResult(r);
   }
 
   /** Query sandbox capabilities (languages, features). */
   capabilities(): SandboxCapabilities {
+    if (this.providerName) {
+      return {
+        languages: ['python', 'javascript', 'bash'],
+        supportsCommands: true,
+        supportsGit: false,
+        supportsPreviewUrl: true,
+        supportsStreaming: false,
+        supportsSnapshots: false,
+        hasNetworkAccess: true,
+      };
+    }
+    if (!this.inner) throw new Error('Sandbox is not initialized');
     return mapCapabilities(this.inner.capabilities());
   }
 }

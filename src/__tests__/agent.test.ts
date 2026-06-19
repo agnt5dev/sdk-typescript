@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Agent, MessageRole } from '../agent.js';
+import { Sandbox } from '../sandbox.js';
 import { tool, ToolRegistry } from '../tool.js';
 import type { LanguageModel, GenerateRequest, GenerateResponse } from '../agent.js';
 
@@ -38,6 +39,98 @@ describe('Agent', () => {
     expect(agent.name).toBe('test-agent');
     expect(agent.modelName).toBe('test-model');
     expect(agent.temperature).toBe(0.5);
+  });
+
+  it('should add standard sandbox tools when sandbox is configured', () => {
+    const mockModel = new MockLanguageModel([
+      { text: 'Hello!', finishReason: 'stop' }
+    ]);
+
+    const agent = new Agent({
+      name: 'coder',
+      model: mockModel,
+      instructions: 'Use the sandbox.',
+      sandbox: new Sandbox(),
+    });
+
+    const toolNames = Array.from((agent as any).tools.keys());
+    expect(toolNames).toEqual(expect.arrayContaining([
+      'sandbox_execute_code',
+      'sandbox_write_file',
+      'sandbox_read_file',
+      'sandbox_list_files',
+    ]));
+  });
+
+  it('should expose sandbox on tool context and close after run', async () => {
+    const sandbox = {
+      close: vi.fn(async () => {}),
+      executeCode: vi.fn(),
+      writeFile: vi.fn(),
+      readFile: vi.fn(),
+      listFiles: vi.fn(),
+    } as any;
+    const observed: { sandbox?: unknown } = {};
+    const inspectSandbox = tool(
+      'inspect_sandbox',
+      {
+        description: 'Inspect sandbox context',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+        },
+      },
+      async (ctx) => {
+        observed.sandbox = (ctx as any).sandbox;
+        return { hasSandbox: observed.sandbox === sandbox };
+      },
+    );
+    const mockModel = new MockLanguageModel([
+      {
+        text: 'I will inspect the sandbox.',
+        toolCalls: [
+          {
+            name: 'inspect_sandbox',
+            arguments: '{}',
+          },
+        ],
+      },
+      { text: 'Sandbox is available.', finishReason: 'stop' },
+    ]);
+
+    const agent = new Agent({
+      name: 'sandbox-agent',
+      model: mockModel,
+      instructions: 'Use the sandbox.',
+      tools: [inspectSandbox],
+      sandbox,
+    });
+    const context = {
+      invocationId: 'invocation-1',
+      runId: 'run-1',
+      attempt: 0,
+      serviceName: 'test',
+      runtime: {},
+      signal: new AbortController().signal,
+      get: vi.fn(async (_key: string, defaultValue?: unknown) => defaultValue),
+      set: vi.fn(async () => {}),
+      delete: vi.fn(async () => false),
+      step: vi.fn(async (_name: string, fn: () => unknown) => fn()),
+      logger: {
+        info: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+        debug: vi.fn(),
+      },
+      emit: vi.fn(async () => {}),
+    } as any;
+
+    const result = await agent.run('Check the sandbox.', context);
+
+    expect(result.output).toBe('Sandbox is available.');
+    expect(observed.sandbox).toBe(sandbox);
+    expect(sandbox.close).toHaveBeenCalledTimes(1);
   });
 
   it('should reject unsupported provider prefixes in modelName', () => {
