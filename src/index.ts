@@ -399,6 +399,32 @@ export type {
 
 // Sandbox exports
 export { Sandbox } from './sandbox.js';
+export {
+  DaytonaSandbox,
+  DaytonaSandboxProvider,
+  E2BSandbox,
+  E2BSandboxProvider,
+  loadProvidersFromEnv,
+  NorthflankSandbox,
+  NorthflankSandboxProvider,
+  SandboxProviderError,
+  TogetherSandbox,
+  TogetherSandboxProvider,
+  VercelSandbox,
+  VercelSandboxProvider,
+} from './sandbox-providers.js';
+export type {
+  CreateSandboxOptions,
+  DaytonaProviderOptions,
+  E2BProviderOptions,
+  NorthflankProviderOptions,
+  RunCommandOptions,
+  RunCommandResult,
+  SandboxInfo,
+  SandboxProvider,
+  TogetherProviderOptions,
+  VercelProviderOptions,
+} from './sandbox-providers.js';
 export type {
   SandboxOptions,
   ExecuteCodeResult,
