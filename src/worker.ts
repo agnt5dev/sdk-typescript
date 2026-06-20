@@ -29,6 +29,7 @@ import {
   PROMPT_EXECUTOR_COMPONENT_NAME,
   PROMPT_EXECUTOR_METADATA,
 } from './prompt-executor.js';
+import { recordWorkerMemory } from './worker-memory.js';
 
 /**
  * Platform worker configuration
@@ -758,6 +759,11 @@ export class Worker {
           ctx.logger.info(
             `run.started | ${message.componentType} ${message.componentName} | run_id=${runId}`,
           );
+          recordWorkerMemory({
+            phase: 'before',
+            componentType: message.componentType,
+            componentName: message.componentName,
+          });
 
           // ── run.started ──
           await emitter.emit(runStarted(runCid, parentCid, {
@@ -1098,6 +1104,12 @@ export class Worker {
           return JSON.stringify({
             invocationId: message.invocationId,
             error: (error as Error).message,
+          });
+        } finally {
+          recordWorkerMemory({
+            phase: 'after',
+            componentType: message.componentType,
+            componentName: message.componentName,
           });
         }
       },

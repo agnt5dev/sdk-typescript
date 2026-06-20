@@ -774,6 +774,32 @@ pub fn log_from_typescript(
     Ok(())
 }
 
+/// Record one opt-in worker memory sample as an OTEL gauge sample.
+#[napi(js_name = "recordWorkerMemoryMetric")]
+pub fn record_worker_memory_metric(
+    language: String,
+    phase: String,
+    component_name: String,
+    component_type: String,
+    kind: String,
+    value: f64,
+) -> Result<()> {
+    if !value.is_finite() || value < 0.0 {
+        return Ok(());
+    }
+
+    let memory_kind = kind.strip_suffix("_bytes").unwrap_or(kind.as_str());
+    agnt5_sdk_core::record_worker_memory_bytes(
+        &language,
+        &phase,
+        &component_name,
+        &component_type,
+        memory_kind,
+        value.round() as u64,
+    );
+    Ok(())
+}
+
 /// Check if platform is reachable
 #[napi]
 pub async fn check_platform_connectivity(coordinator_url: String) -> Result<bool> {
