@@ -2,9 +2,9 @@
  * Platform adapter interfaces for connecting TypeScript SDK features
  * to the Rust core via NAPI bindings.
  *
- * These adapters provide the TypeScript-side contract. When the Rust/NAPI
- * bindings expose PollJobs, CompleteJob, platform state, and real OTel spans,
- * these adapters will bridge to them.
+ * These adapters provide older TypeScript-side contracts for direct platform
+ * integration experiments. Production worker polling now goes through the
+ * native Worker, which delegates parked PollJob execution to sdk-core.
  *
  * For now, each adapter has a stub/noop implementation that logs warnings.
  */
@@ -30,10 +30,10 @@ export interface JobCompletionResult {
 }
 
 /**
- * Adapter for platform job queue polling.
+ * Legacy adapter for platform job queue polling.
  *
- * The platform implementation will call PollJobs/CompleteJob RPCs
- * via the NAPI-exposed Rust WorkerCoordinatorClient.
+ * Production workers should prefer Worker({ workerMode: 'pull' }), which
+ * enables sdk-core's RegisterWorkerSession + parked PollJob path.
  */
 export interface JobQueueAdapter {
   pollJobs(workerId: string, componentIds: string[], maxJobs: number): Promise<JobAssignment[]>;
@@ -196,10 +196,10 @@ export interface JobQueueConfig {
 }
 
 /**
- * Run a job queue polling loop with capacity-aware exponential backoff.
+ * Run a legacy batch job queue polling loop with capacity-aware exponential backoff.
  *
- * This is the TypeScript-side orchestration. The actual poll/complete RPCs
- * go through the JobQueueAdapter (NAPI when available, stub otherwise).
+ * This is retained for tests and experimental adapters. The production worker
+ * path is native Worker parked polling, not this TypeScript timer loop.
  *
  * @returns AbortController to stop polling
  */

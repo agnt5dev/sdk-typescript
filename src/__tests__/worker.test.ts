@@ -16,7 +16,13 @@ vi.mock('../native-loader', () => {
       coordinatorEndpoint?: string;
       tenantId?: string;
       deploymentId?: string;
+      maxConcurrency?: number;
     }) {
+      const globalState = globalThis as typeof globalThis & {
+        __agnt5NativeWorkerOptions?: unknown[];
+      };
+      globalState.__agnt5NativeWorkerOptions ||= [];
+      globalState.__agnt5NativeWorkerOptions.push(options);
       this.coordinatorEndpoint = options.coordinatorEndpoint || 'http://localhost:34186';
       this.tenantId = options.tenantId || 'project-123';
       this.deploymentId = options.deploymentId || 'deployment-123';
@@ -44,9 +50,28 @@ vi.mock('../native-loader', () => {
 });
 
 let originalDashboardURL: string | undefined;
+const workerEnvKeys = [
+  'AGNT5_PROJECT_ID',
+  'AGNT5_DEPLOYMENT_ID',
+  'AGNT5_WORKER_MODE',
+  'AGNT5_PARKED_POLL_ENABLED',
+  'AGNT5_MIN_SLOTS',
+  'AGNT5_MAX_SLOTS',
+  'AGNT5_CLAIM_TIMEOUT_MS',
+] as const;
+let originalWorkerEnv: Partial<Record<(typeof workerEnvKeys)[number], string>>;
+
+function nativeWorkerOptions(): any[] {
+  return ((globalThis as any).__agnt5NativeWorkerOptions || []) as any[];
+}
 
 beforeEach(() => {
   originalDashboardURL = process.env.AGNT5_DASHBOARD_URL;
+  originalWorkerEnv = {};
+  for (const key of workerEnvKeys) {
+    originalWorkerEnv[key] = process.env[key];
+  }
+  (globalThis as any).__agnt5NativeWorkerOptions = [];
   FunctionRegistry.clear();
   WorkflowRegistry.clear();
   ToolRegistry.clear();
@@ -59,6 +84,15 @@ afterEach(() => {
   } else {
     process.env.AGNT5_DASHBOARD_URL = originalDashboardURL;
   }
+  for (const key of workerEnvKeys) {
+    const original = originalWorkerEnv[key];
+    if (original === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = original;
+    }
+  }
+  delete (globalThis as any).__agnt5NativeWorkerOptions;
   vi.restoreAllMocks();
 });
 
@@ -102,6 +136,59 @@ describe('Worker', () => {
 
     const output = logSpy.mock.calls.map((call) => String(call[0])).join('\n');
     expect(output).not.toContain('Dashboard:');
+  });
+
+  it('passes worker identity and concurrency options to the native worker', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const worker = new Worker('test-service', {
+      tenantId: 'project-abc',
+      deploymentId: 'deployment-def',
+      maxConcurrency: 24,
+    });
+    await worker.run();
+
+    expect(nativeWorkerOptions()[0]).toMatchObject({
+      tenantId: 'project-abc',
+      deploymentId: 'deployment-def',
+      maxConcurrency: 24,
+    });
+  });
+
+  it('maps pull worker options to sdk-core parked polling environment', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const worker = new Worker('test-service', {
+      tenantId: 'project-pull',
+      deploymentId: 'deployment-pull',
+      workerMode: 'pull',
+      minSlots: 2,
+      maxSlots: 10,
+      claimTimeoutMs: 120000,
+    });
+    await worker.run();
+
+    expect(process.env.AGNT5_PROJECT_ID).toBe('project-pull');
+    expect(process.env.AGNT5_DEPLOYMENT_ID).toBe('deployment-pull');
+    expect(process.env.AGNT5_WORKER_MODE).toBe('pull');
+    expect(process.env.AGNT5_PARKED_POLL_ENABLED).toBe('1');
+    expect(process.env.AGNT5_MIN_SLOTS).toBe('2');
+    expect(process.env.AGNT5_MAX_SLOTS).toBe('10');
+    expect(process.env.AGNT5_CLAIM_TIMEOUT_MS).toBe('120000');
+  });
+
+  it('keeps enableJobQueue as a parked pull compatibility alias', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const worker = new Worker('test-service', {
+      enableJobQueue: true,
+      jobQueueConcurrency: 7,
+    });
+    await worker.run();
+
+    expect(process.env.AGNT5_WORKER_MODE).toBe('pull');
+    expect(process.env.AGNT5_PARKED_POLL_ENABLED).toBe('1');
+    expect(process.env.AGNT5_MAX_SLOTS).toBe('7');
   });
 });
 

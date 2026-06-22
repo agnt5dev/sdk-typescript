@@ -50,17 +50,31 @@ export interface PlatformWorkerOptions extends WorkerOptions {
   /** Auto-discover components from registries (default: false) */
   autoRegister?: boolean;
   /**
-   * Enable pull-based job queue polling (default: false).
-   * When enabled, the worker polls the platform for pending jobs
-   * in addition to receiving push-based dispatch via streaming.
-   * Requires NAPI bindings with PollJobs/CompleteJob support.
+   * Worker assignment mode. Defaults to env `AGNT5_WORKER_MODE`, then `push`.
+   * Set to `pull` to use worker-side polling instead of push dispatch.
+   */
+  workerMode?: 'push' | 'pull';
+  /**
+   * Enable parked one-job long polling for pull workers.
+   * Defaults to true when `workerMode` is `pull`, unless explicitly set false.
+   */
+  parkedPolling?: boolean;
+  /** Minimum parked poll slots to keep open for pull workers. */
+  minSlots?: number;
+  /** Maximum parked poll slots for pull workers. */
+  maxSlots?: number;
+  /** Lease duration for claimed jobs, in milliseconds. */
+  claimTimeoutMs?: number;
+  /**
+   * @deprecated Use `workerMode: 'pull'` plus parked polling slot options.
+   * Kept as a compatibility alias for parked pull workers.
    */
   enableJobQueue?: boolean;
-  /** Maximum concurrent jobs from queue (default: 5) */
+  /** @deprecated Use `maxSlots` and/or `maxConcurrency`. */
   jobQueueConcurrency?: number;
-  /** Initial poll interval in milliseconds (default: 1000) */
+  /** @deprecated Legacy batch PollJobs backoff option; parked polling ignores this. */
   jobQueuePollIntervalMs?: number;
-  /** Maximum poll interval with exponential backoff (default: 30000) */
+  /** @deprecated Legacy batch PollJobs backoff option; parked polling ignores this. */
   jobQueueMaxPollIntervalMs?: number;
   /**
    * Max in-flight invocations this worker serves. Sets the local pool size
@@ -84,6 +98,38 @@ function isSystemComponentRegistration(component: ComponentRegistration): boolea
     Boolean(component.metadata.agnt5_builtin) ||
     component.config.builtin === 'true'
   );
+}
+
+function optionNumberToEnv(name: string, value: number | undefined): void {
+  if (value === undefined) return;
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  process.env[name] = String(value);
+}
+
+function configurePullWorkerEnvironment(options: PlatformWorkerOptions): void {
+  const workerMode = options.workerMode ??
+    (options.enableJobQueue || options.parkedPolling ? 'pull' : undefined);
+  const maxSlots = options.maxSlots ?? options.jobQueueConcurrency;
+
+  if (options.tenantId) {
+    process.env.AGNT5_PROJECT_ID = options.tenantId;
+  }
+  if (options.deploymentId) {
+    process.env.AGNT5_DEPLOYMENT_ID = options.deploymentId;
+  }
+  if (workerMode) {
+    process.env.AGNT5_WORKER_MODE = workerMode;
+  }
+  if (workerMode === 'pull' || options.parkedPolling !== undefined || options.enableJobQueue) {
+    const parkedPolling = options.parkedPolling ?? true;
+    process.env.AGNT5_PARKED_POLL_ENABLED = parkedPolling ? '1' : '0';
+  }
+
+  optionNumberToEnv('AGNT5_MIN_SLOTS', options.minSlots);
+  optionNumberToEnv('AGNT5_MAX_SLOTS', maxSlots);
+  optionNumberToEnv('AGNT5_CLAIM_TIMEOUT_MS', options.claimTimeoutMs);
 }
 
 /**
@@ -559,6 +605,8 @@ export class Worker {
         console.warn('SDK telemetry initialization:', (error as Error).message);
       }
     }
+
+    configurePullWorkerEnvironment(this.options);
 
     // Create native worker
     this.nativeWorker = new native.Worker({
