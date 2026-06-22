@@ -55,8 +55,7 @@ export interface PlatformWorkerOptions extends WorkerOptions {
    */
   workerMode?: 'push' | 'pull';
   /**
-   * Enable parked one-job long polling for pull workers.
-   * Defaults to true when `workerMode` is `pull`, unless explicitly set false.
+   * @deprecated Pull workers always use long polling. Set `workerMode: 'pull'`.
    */
   parkedPolling?: boolean;
   /** Minimum parked poll slots to keep open for pull workers. */
@@ -66,15 +65,15 @@ export interface PlatformWorkerOptions extends WorkerOptions {
   /** Lease duration for claimed jobs, in milliseconds. */
   claimTimeoutMs?: number;
   /**
-   * @deprecated Use `workerMode: 'pull'` plus parked polling slot options.
-   * Kept as a compatibility alias for parked pull workers.
+   * @deprecated Use `workerMode: 'pull'` plus slot options.
+   * Kept as a compatibility alias for long-poll pull workers.
    */
   enableJobQueue?: boolean;
   /** @deprecated Use `maxSlots` and/or `maxConcurrency`. */
   jobQueueConcurrency?: number;
-  /** @deprecated Legacy batch PollJobs backoff option; parked polling ignores this. */
+  /** @deprecated Legacy batch PollJobs backoff option; long polling ignores this. */
   jobQueuePollIntervalMs?: number;
-  /** @deprecated Legacy batch PollJobs backoff option; parked polling ignores this. */
+  /** @deprecated Legacy batch PollJobs backoff option; long polling ignores this. */
   jobQueueMaxPollIntervalMs?: number;
   /**
    * Max in-flight invocations this worker serves. Sets the local pool size
@@ -113,6 +112,10 @@ function configurePullWorkerEnvironment(options: PlatformWorkerOptions): void {
     (options.enableJobQueue || options.parkedPolling ? 'pull' : undefined);
   const maxSlots = options.maxSlots ?? options.jobQueueConcurrency;
 
+  if (workerMode === 'pull' && options.parkedPolling === false) {
+    throw new Error('pull workers always use long polling');
+  }
+
   if (options.tenantId) {
     process.env.AGNT5_PROJECT_ID = options.tenantId;
   }
@@ -121,10 +124,6 @@ function configurePullWorkerEnvironment(options: PlatformWorkerOptions): void {
   }
   if (workerMode) {
     process.env.AGNT5_WORKER_MODE = workerMode;
-  }
-  if (workerMode === 'pull' || options.parkedPolling !== undefined || options.enableJobQueue) {
-    const parkedPolling = options.parkedPolling ?? true;
-    process.env.AGNT5_PARKED_POLL_ENABLED = parkedPolling ? '1' : '0';
   }
 
   optionNumberToEnv('AGNT5_MIN_SLOTS', options.minSlots);

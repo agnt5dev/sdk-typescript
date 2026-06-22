@@ -54,7 +54,6 @@ const workerEnvKeys = [
   'AGNT5_PROJECT_ID',
   'AGNT5_DEPLOYMENT_ID',
   'AGNT5_WORKER_MODE',
-  'AGNT5_PARKED_POLL_ENABLED',
   'AGNT5_MIN_SLOTS',
   'AGNT5_MAX_SLOTS',
   'AGNT5_CLAIM_TIMEOUT_MS',
@@ -155,7 +154,7 @@ describe('Worker', () => {
     });
   });
 
-  it('maps pull worker options to sdk-core parked polling environment', async () => {
+  it('maps pull worker options to sdk-core long polling environment', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
 
     const worker = new Worker('test-service', {
@@ -171,7 +170,6 @@ describe('Worker', () => {
     expect(process.env.AGNT5_PROJECT_ID).toBe('project-pull');
     expect(process.env.AGNT5_DEPLOYMENT_ID).toBe('deployment-pull');
     expect(process.env.AGNT5_WORKER_MODE).toBe('pull');
-    expect(process.env.AGNT5_PARKED_POLL_ENABLED).toBe('1');
     expect(process.env.AGNT5_MIN_SLOTS).toBe('2');
     expect(process.env.AGNT5_MAX_SLOTS).toBe('10');
     expect(process.env.AGNT5_CLAIM_TIMEOUT_MS).toBe('120000');
@@ -187,8 +185,16 @@ describe('Worker', () => {
     await worker.run();
 
     expect(process.env.AGNT5_WORKER_MODE).toBe('pull');
-    expect(process.env.AGNT5_PARKED_POLL_ENABLED).toBe('1');
     expect(process.env.AGNT5_MAX_SLOTS).toBe('7');
+  });
+
+  it('rejects disabling long polling for pull workers', async () => {
+    const worker = new Worker('test-service', {
+      workerMode: 'pull',
+      parkedPolling: false,
+    });
+
+    await expect(worker.run()).rejects.toThrow('pull workers always use long polling');
   });
 });
 
