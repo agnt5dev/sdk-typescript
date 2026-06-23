@@ -302,6 +302,7 @@ export {
   llmJudge,
   correctness,
   faithfulness,
+  agentJudge,
   getRequestConfig,
   getTraceEvents,
   getTotalTokens,

@@ -1062,7 +1062,10 @@ export class Worker {
                 output: inputData.output,
                 expected: inputData.expected,
                 input: inputData.input,
+                trace: inputData.trace,
                 config: inputData.config,
+                peer_scores: inputData.peer_scores,
+                trace_eval_context: inputData.trace_eval_context,
               };
 
               const scorerCtx: import('./scorer.js').ScorerContext = {
@@ -1314,7 +1317,7 @@ export class Worker {
       components.push({ name, componentType: 'agent', config: {}, metadata: {} });
     }
 
-    const workerExecutedBuiltinScorers = new Set(['llm_judge', 'correctness', 'faithfulness']);
+    const workerExecutedBuiltinScorers = new Set(['llm_judge', 'correctness', 'faithfulness', 'agent_judge']);
 
     // Scorers. Deterministic built-ins stay on Rust/control-plane paths, but
     // managed judge presets need a routable SDK worker component.
