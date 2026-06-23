@@ -13,6 +13,7 @@ import {
   llmJudge,
   correctness,
   faithfulness,
+  agentJudge,
   numericRange,
   regexMatch,
   levenshtein,
@@ -617,6 +618,53 @@ describe('Built-in scorers', () => {
     expect(prompt).toContain('## Input');
     expect(prompt).not.toContain('## Expected Output (Reference)');
   });
+
+  it('agentJudge: should include trace context, tool calls, and peer scores as evidence', async () => {
+    let prompt = '';
+    const result = await agentJudge(
+      {
+        input: { question: 'Summarize refund policy' },
+        output: { answer: 'Refunds are available within 30 days.' },
+        trace: [
+          {
+            eventType: 'tool.call.completed',
+            eventId: 'event-1',
+            correlationId: 'corr-1',
+            timestampNs: 1,
+            data: { tool_name: 'web_search', status: 'ok' },
+          },
+        ],
+        trace_eval_context: {
+          schema_version: 'agnt5.eval.trace_eval_context.v1',
+          features: { tool_call_count: 1 },
+        },
+        peer_scores: [{ scorer: 'step_efficiency', score: 0.7 }],
+        config: { model: 'gpt-test', allowed_tools: ['web_search'] },
+      },
+      {
+        runId: 'run-1',
+        correlationId: 'corr-1',
+        attempt: 0,
+        log: () => {},
+        llmJudgeLm: {
+          generate: async ({ messages }: any) => {
+            prompt = messages[1].content;
+            return { text: '{"score":0.82,"passed":true,"label":"pass","explanation":"evidence supports it"}' };
+          },
+        },
+      } as any,
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.metadata?.judge_preset).toBe('agent_judge');
+    expect(result.metadata?.agent_judge_version).toBe('evidence_inspection_v1');
+    expect(result.metadata?.evidence_sources).toContain('trace_eval_context');
+    expect(result.metadata?.evidence_sources).toContain('tool_calls');
+    expect(result.metadata?.evidence_sources).toContain('peer_scores');
+    expect(prompt).toContain('agent_judge_evidence');
+    expect(prompt).toContain('web_search');
+    expect(prompt).toContain('step_efficiency');
+  });
 });
 
 describe('Scorer decorator & registry', () => {
@@ -666,6 +714,7 @@ describe('Scorer decorator & registry', () => {
     expect(names).toContain('llm_judge');
     expect(names).toContain('correctness');
     expect(names).toContain('faithfulness');
+    expect(names).toContain('agent_judge');
   });
 
   it('should reject custom scorers using built-in names', () => {
@@ -676,7 +725,31 @@ describe('Scorer decorator & registry', () => {
     ).toThrow('AGNT5 built-in scorer');
 
     expect(() =>
+      scorer('step_efficiency', 'reserved trace built-in name')((_ctx, _request) =>
+        new ScorerResult({ score: 1.0 }),
+      ),
+    ).toThrow('AGNT5 built-in scorer');
+
+    expect(() =>
+      scorer('plan_quality', 'reserved trace built-in name')((_ctx, _request) =>
+        new ScorerResult({ score: 1.0 }),
+      ),
+    ).toThrow('AGNT5 built-in scorer');
+
+    expect(() =>
+      scorer('plan_adherence', 'reserved trace built-in name')((_ctx, _request) =>
+        new ScorerResult({ score: 1.0 }),
+      ),
+    ).toThrow('AGNT5 built-in scorer');
+
+    expect(() =>
       scorer('llm_judge', 'reserved judge name')((_ctx, _request) =>
+        new ScorerResult({ score: 1.0 }),
+      ),
+    ).toThrow('AGNT5 built-in scorer');
+
+    expect(() =>
+      scorer('agent_judge', 'reserved judge name')((_ctx, _request) =>
         new ScorerResult({ score: 1.0 }),
       ),
     ).toThrow('AGNT5 built-in scorer');
