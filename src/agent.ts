@@ -56,9 +56,13 @@ export type Message = LMMessage;
  * Message factory functions
  */
 export const Message = {
-  system: (content: string): Message => ({ role: 'system', content }),
-  user: (content: string): Message => ({ role: 'user', content }),
-  assistant: (content: string): Message => ({ role: 'assistant', content })
+  // Coerce nullish content to '' — the native binding's JsMessage.content is a
+  // required String, so an assistant message that carries only tool_calls (text
+  // null) or a user message built from an undefined input field would otherwise
+  // throw `Missing field \`content\` on JsGenerateRequest.messages`.
+  system: (content: string): Message => ({ role: 'system', content: content ?? '' }),
+  user: (content: string): Message => ({ role: 'user', content: content ?? '' }),
+  assistant: (content: string): Message => ({ role: 'assistant', content: content ?? '' })
 };
 
 /**
