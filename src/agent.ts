@@ -387,6 +387,8 @@ export class Agent {
   readonly instructions: string;
   readonly modelName: string;
   readonly temperature: number;
+  /** Whether the caller explicitly set a temperature (vs the 0.7 default). */
+  private readonly temperatureExplicit: boolean;
   readonly maxIterations: number;
   readonly builtInTools: BuiltInTool[];
   private tools: Map<string, Tool> = new Map();
@@ -407,6 +409,9 @@ export class Agent {
     this.modelName = requestedModelName.includes('/') || providerName
       ? validateModelForProvider(requestedModelName, providerName)
       : requestedModelName;
+    // Track whether the caller set a temperature so reasoning models can drop
+    // the default (0.7) while still honoring an explicit value.
+    this.temperatureExplicit = options.temperature !== undefined;
     this.temperature = options.temperature ?? 0.7;
     this.maxIterations = options.maxIterations || 10;
     this.builtInTools = options.builtInTools ?? [];
@@ -621,7 +626,37 @@ export class Agent {
     return blocks.join('\n\n');
   }
 
+  /**
+   * OpenAI reasoning models (gpt-5*, o1/o3/o4 families) reject an explicit
+   * `temperature`. Detected from the resolved `openai/<model>` identifier.
+   */
+  private isOpenAiReasoningModel(): boolean {
+    if (!this.modelName.startsWith('openai/')) return false;
+    const name = this.modelName.slice('openai/'.length);
+    return (
+      name.startsWith('gpt-5') ||
+      name === 'o1' ||
+      name.startsWith('o1-') ||
+      name === 'o3' ||
+      name.startsWith('o3-') ||
+      name === 'o4' ||
+      name.startsWith('o4-')
+    );
+  }
+
+  /**
+   * Temperature to send with the model request, or `undefined` to omit it.
+   * An explicit caller value always wins; otherwise the 0.7 default is dropped
+   * for OpenAI reasoning models, which would otherwise reject the request.
+   */
+  private temperatureForRequest(): number | undefined {
+    if (this.temperatureExplicit) return this.temperature;
+    if (this.isOpenAiReasoningModel()) return undefined;
+    return this.temperature;
+  }
+
   private buildModelRequest(messages: Message[], toolDefs: ToolSchema[]): GenerateRequest | LMGenerateRequest {
+    const temperature = this.temperatureForRequest();
     if (this.isNewLM) {
       return {
         model: this.modelName,
@@ -629,7 +664,7 @@ export class Agent {
         messages: messages as LMMessage[],
         tools: toolDefs.length > 0 ? toolDefs.map(t => this.convertToolSchema(t)) : undefined,
         config: {
-          temperature: this.temperature,
+          ...(temperature !== undefined ? { temperature } : {}),
           ...(this.builtInTools.length > 0 ? { builtInTools: this.builtInTools } : {}),
         },
       } satisfies LMGenerateRequest;
@@ -641,7 +676,7 @@ export class Agent {
       messages,
       tools: toolDefs.length > 0 ? toolDefs : undefined,
       config: {
-        temperature: this.temperature,
+        ...(temperature !== undefined ? { temperature } : {}),
         ...(this.builtInTools.length > 0 ? { builtInTools: this.builtInTools } : {}),
       },
     } satisfies GenerateRequest;
