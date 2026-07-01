@@ -31,12 +31,14 @@ export {
   CheckpointError,
   RunError,
   WaitingForUserInputError,
+  SuspensionRequestedError,
   ConnectionError,
   TimeoutError,
   ValidationError,
   AuthorizationError,
   isAGNT5Error,
   isWaitingForUserInput,
+  isSuspensionRequested,
   getErrorMessage,
   createErrorFromResponse,
 } from './errors.js';
@@ -82,6 +84,16 @@ export { MCPServer, MCPServerError, Prompt, Resource } from './mcp-server.js';
 
 // Workflow exports
 export { event, webhook, workflow, WorkflowRegistry } from './workflow.js';
+export { serve } from './workerless.js';
+export type {
+  WorkerlessHandler,
+  WorkerlessBudget,
+  WorkerlessCheckpoint,
+  WorkerlessInvokePayload,
+  WorkerlessManifest,
+  WorkerlessManifestComponent,
+  WorkerlessServeOptions,
+} from './workerless.js';
 export type {
   EventTriggerOptions,
   TriggerSpec,

@@ -160,6 +160,31 @@ export class WaitingForUserInputError extends AGNT5Error {
 }
 
 /**
+ * Durable execution suspension requested by the runtime budget or another
+ * resumable boundary.
+ */
+export class SuspensionRequestedError extends AGNT5Error {
+  public readonly runId: string;
+  public readonly reason: string;
+  public readonly checkpointState: Record<string, any>;
+  public readonly deadlineMs?: number;
+
+  constructor(opts: {
+    runId: string;
+    reason: string;
+    checkpointState?: Record<string, any>;
+    deadlineMs?: number;
+  }) {
+    super(`Execution suspended: ${opts.reason}`);
+    this.name = 'SuspensionRequestedError';
+    this.runId = opts.runId;
+    this.reason = opts.reason;
+    this.checkpointState = opts.checkpointState || {};
+    this.deadlineMs = opts.deadlineMs;
+  }
+}
+
+/**
  * Connection errors (failed to connect to platform)
  */
 export class ConnectionError extends AGNT5Error {
@@ -233,6 +258,13 @@ export function isAGNT5Error(error: unknown): error is AGNT5Error {
  */
 export function isWaitingForUserInput(error: unknown): error is WaitingForUserInputError {
   return error instanceof WaitingForUserInputError;
+}
+
+/**
+ * Type guard to check if an error is a durable suspension request.
+ */
+export function isSuspensionRequested(error: unknown): error is SuspensionRequestedError {
+  return error instanceof SuspensionRequestedError;
 }
 
 /**

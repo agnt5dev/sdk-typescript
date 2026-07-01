@@ -84,6 +84,8 @@ export interface Context {
   // Checkpointing
   /** Execute and checkpoint a step */
   step<T>(stepName: string, fn: () => T | Promise<T>): Promise<T>;
+  /** Suspend when the runtime budget is close to expiring. */
+  yieldIfNeeded(reason?: string): Promise<void>;
 
   // Logging
   /** Structured logger */
