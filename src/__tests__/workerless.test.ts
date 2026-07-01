@@ -175,6 +175,47 @@ describe('workerless serve()', () => {
     });
     expect(fetchCount).toBe(1);
   });
+
+  it('verifies signed workerless invoke requests when configured', async () => {
+    workflow('hello', async (_ctx, input: { name: string }) => ({ message: `hello ${input.name}` }));
+
+    const handler = serve({ signingSecret: 'test-signing-secret-123' });
+    const body = JSON.stringify({
+      protocol_version: 'workerless.v1',
+      run_id: 'run-1',
+      component_type: 'workflow',
+      component_name: 'hello',
+      input: { name: 'Ada' },
+    });
+    const headers = await signedHeaders('test-signing-secret-123', 'run-1:0', body);
+    const response = await handler.fetch(new Request('http://localhost:8787/agnt5/invoke', {
+      method: 'POST',
+      headers,
+      body,
+    }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      status: 'completed',
+      output: { message: 'hello Ada' },
+    });
+  });
+
+  it('rejects unsigned workerless invoke requests when signing is configured', async () => {
+    workflow('hello', async (_ctx, input: { name: string }) => ({ message: `hello ${input.name}` }));
+
+    const handler = serve({ signingSecret: 'test-signing-secret-123' });
+    const response = await invoke(handler, 'workflow', 'hello', { name: 'Ada' });
+    const body = await response.json() as any;
+
+    expect(response.status).toBe(401);
+    expect(body).toMatchObject({
+      status: 'failed',
+      error: {
+        code: 'WORKERLESS_SIGNATURE_MISSING',
+      },
+    });
+  });
 });
 
 async function invoke(
@@ -197,4 +238,24 @@ async function invoke(
       budget,
     }),
   }));
+}
+
+async function signedHeaders(secret: string, attemptID: string, body: string): Promise<Headers> {
+  const timestamp = Date.now().toString();
+  const encoder = new TextEncoder();
+  const key = await globalThis.crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const message = encoder.encode(`${timestamp}.${attemptID}.${body}`);
+  const digest = new Uint8Array(await globalThis.crypto.subtle.sign('HMAC', key, message));
+  return new Headers({
+    'X-AGNT5-Signature-Version': 'workerless-hmac-sha256.v1',
+    'X-AGNT5-Timestamp': timestamp,
+    'X-AGNT5-Attempt-ID': attemptID,
+    'X-AGNT5-Signature': `sha256=${Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')}`,
+  });
 }

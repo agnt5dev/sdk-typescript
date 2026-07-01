@@ -85,6 +85,7 @@ export { MCPServer, MCPServerError, Prompt, Resource } from './mcp-server.js';
 // Workflow exports
 export { event, webhook, workflow, WorkflowRegistry } from './workflow.js';
 export { serve } from './workerless.js';
+export { serveCloudflare } from './workerless-cloudflare.js';
 export type {
   WorkerlessHandler,
   WorkerlessBudget,
@@ -93,7 +94,14 @@ export type {
   WorkerlessManifest,
   WorkerlessManifestComponent,
   WorkerlessServeOptions,
+  WorkerlessSigningSecretResolver,
 } from './workerless.js';
+export type {
+  CloudflareWorkerlessHandler,
+  WorkerlessCloudflareExecutionContext,
+  WorkerlessCloudflareServeOptions,
+  WorkerlessCloudflareSigningSecretResolver,
+} from './workerless-cloudflare.js';
 export type {
   EventTriggerOptions,
   TriggerSpec,

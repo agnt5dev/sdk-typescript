@@ -1,14 +1,24 @@
-import { ContextImpl } from './context.js';
 import { isSuspensionRequested } from './errors.js';
-import { FunctionRegistry } from './function.js';
+import { FunctionRegistry } from './function-registry.js';
 import { ToolRegistry } from './tool.js';
 import type { Context, FunctionHandler, ToolHandler, WorkflowHandler } from './types.js';
-import { WorkflowRegistry } from './workflow.js';
-import type { TriggerSpec, WorkflowConfig } from './workflow.js';
+import { WorkerlessContext } from './workerless-context.js';
+import { WorkflowRegistry } from './workflow-registry.js';
+import type { TriggerSpec, WorkflowConfig } from './workflow-registry.js';
 
 const PROTOCOL_VERSION = 'workerless.v1';
 const DEFAULT_MANIFEST_PATH = '/.well-known/agnt5';
 const INVOKE_PATH = '/agnt5/invoke';
+const SIGNATURE_VERSION = 'workerless-hmac-sha256.v1';
+const SIGNATURE_MAX_SKEW_MS = 5 * 60 * 1000;
+const SIGNATURE_HEADER = 'X-AGNT5-Signature';
+const SIGNATURE_VERSION_HEADER = 'X-AGNT5-Signature-Version';
+const SIGNATURE_TIMESTAMP_HEADER = 'X-AGNT5-Timestamp';
+const SIGNATURE_ATTEMPT_ID_HEADER = 'X-AGNT5-Attempt-ID';
+
+export type WorkerlessSigningSecretResolver =
+  | string
+  | ((request: Request) => string | undefined | Promise<string | undefined>);
 
 export interface WorkerlessServeOptions {
   serviceName?: string;
@@ -16,6 +26,7 @@ export interface WorkerlessServeOptions {
   workflows?: WorkflowHandler[];
   functions?: FunctionHandler[];
   tools?: ToolHandler[];
+  signingSecret?: WorkerlessSigningSecretResolver;
 }
 
 export interface WorkerlessManifestComponent {
@@ -95,7 +106,7 @@ export function serve(options: WorkerlessServeOptions = {}): WorkerlessHandler {
       return jsonResponse(manifest, 200);
     }
     if (request.method === 'POST' && url.pathname === INVOKE_PATH) {
-      return handleInvoke(request, components);
+      return handleInvoke(request, components, options.signingSecret);
     }
     return jsonResponse({ error: 'not_found', message: 'AGNT5 workerless route not found' }, 404);
   };
@@ -171,10 +182,26 @@ function buildWorkerlessManifest(
   };
 }
 
-async function handleInvoke(request: Request, components: ComponentEntry[]): Promise<Response> {
+async function handleInvoke(
+  request: Request,
+  components: ComponentEntry[],
+  signingSecret?: WorkerlessSigningSecretResolver,
+): Promise<Response> {
+  let bodyText: string;
+  try {
+    bodyText = await request.text();
+  } catch (err) {
+    return failedResponse('WORKERLESS_INVALID_REQUEST', errorMessage(err, 'request body could not be read'), 400);
+  }
+
+  const signatureFailure = await verifyWorkerlessInvokeRequest(request, bodyText, signingSecret);
+  if (signatureFailure) {
+    return signatureFailure;
+  }
+
   let payload: WorkerlessInvokePayload;
   try {
-    payload = await request.json() as WorkerlessInvokePayload;
+    payload = JSON.parse(bodyText) as WorkerlessInvokePayload;
   } catch (err) {
     return failedResponse('WORKERLESS_INVALID_REQUEST', errorMessage(err, 'request body must be JSON'), 400);
   }
@@ -205,13 +232,12 @@ async function handleInvoke(request: Request, components: ComponentEntry[]): Pro
   }
 
   const runID = payload.run_id || request.headers.get('X-AGNT5-Run-ID') || `workerless-${Date.now()}`;
-  const ctx = new ContextImpl(
+  const ctx = new WorkerlessContext(
     `workerless-${runID}`,
     runID,
     payload.attempt ?? 0,
     componentName,
     {
-      storage: 'memory',
       checkpoints: checkpointStorageFromPayload(payload.checkpoint),
       workerlessDeadlineMs: payload.budget?.deadline_ms,
       workerlessYieldBeforeMs: payload.budget?.yield_before_timeout_ms,
@@ -239,6 +265,96 @@ async function handleInvoke(request: Request, components: ComponentEntry[]): Pro
     ctx.close();
     return failedResponse('WORKERLESS_HANDLER_ERROR', errorMessage(err, 'workerless handler failed'), 200);
   }
+}
+
+export async function verifyWorkerlessInvokeRequest(
+  request: Request,
+  bodyText: string,
+  signingSecret?: WorkerlessSigningSecretResolver,
+): Promise<Response | undefined> {
+  const secret = await resolveWorkerlessSigningSecret(signingSecret, request);
+  if (!secret) {
+    return undefined;
+  }
+
+  const timestamp = request.headers.get(SIGNATURE_TIMESTAMP_HEADER)?.trim();
+  const attemptID = request.headers.get(SIGNATURE_ATTEMPT_ID_HEADER)?.trim();
+  const signature = request.headers.get(SIGNATURE_HEADER)?.trim();
+  const version = request.headers.get(SIGNATURE_VERSION_HEADER)?.trim();
+  if (!timestamp || !attemptID || !signature) {
+    return failedResponse('WORKERLESS_SIGNATURE_MISSING', 'workerless invoke signature headers are required', 401);
+  }
+  if (version && version !== SIGNATURE_VERSION) {
+    return failedResponse('WORKERLESS_SIGNATURE_VERSION_UNSUPPORTED', 'workerless invoke signature version is unsupported', 401);
+  }
+
+  const timestampMs = Number(timestamp);
+  if (!Number.isFinite(timestampMs)) {
+    return failedResponse('WORKERLESS_SIGNATURE_TIMESTAMP_INVALID', 'workerless invoke signature timestamp is invalid', 401);
+  }
+  if (Math.abs(Date.now() - timestampMs) > SIGNATURE_MAX_SKEW_MS) {
+    return failedResponse('WORKERLESS_SIGNATURE_EXPIRED', 'workerless invoke signature timestamp is outside the allowed window', 401);
+  }
+
+  let expected: string;
+  try {
+    expected = await signWorkerlessInvokeBody(secret, timestamp, attemptID, bodyText);
+  } catch (err) {
+    return failedResponse('WORKERLESS_SIGNATURE_ERROR', errorMessage(err, 'workerless invoke signature could not be verified'), 500);
+  }
+  if (!timingSafeEqual(signature, expected)) {
+    return failedResponse('WORKERLESS_SIGNATURE_INVALID', 'workerless invoke signature is invalid', 401);
+  }
+  return undefined;
+}
+
+async function resolveWorkerlessSigningSecret(
+  signingSecret: WorkerlessSigningSecretResolver | undefined,
+  request: Request,
+): Promise<string | undefined> {
+  const value = typeof signingSecret === 'function'
+    ? await signingSecret(request)
+    : signingSecret;
+  const secret = value?.trim();
+  return secret || undefined;
+}
+
+async function signWorkerlessInvokeBody(
+  secret: string,
+  timestamp: string,
+  attemptID: string,
+  bodyText: string,
+): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new Error('Web Crypto is required for workerless signature verification');
+  }
+  const encoder = new TextEncoder();
+  const key = await subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const message = encoder.encode(`${timestamp}.${attemptID}.${bodyText}`);
+  const digest = new Uint8Array(await subtle.sign('HMAC', key, message));
+  return `sha256=${bytesToHex(digest)}`;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let index = 0; index < a.length; index += 1) {
+    diff |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  }
+  return diff === 0;
 }
 
 function checkpointStorageFromPayload(checkpoint: WorkerlessCheckpoint | undefined): Record<string, unknown> {

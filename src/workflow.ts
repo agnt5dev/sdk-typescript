@@ -6,150 +6,31 @@
  */
 
 import type { Context, WorkflowHandler } from './types.js';
-import { ContextImpl } from './context.js';
+import {
+  event,
+  webhook,
+  WorkflowRegistry,
+} from './workflow-registry.js';
+import type {
+  EventTriggerOptions,
+  TriggerSpec,
+  WebhookTriggerOptions,
+  WorkflowConfig,
+  WorkflowOptions,
+} from './workflow-registry.js';
 
-/**
- * Workflow configuration
- */
-export interface WorkflowConfig {
-  name: string;
-  handler: WorkflowHandler;
-  /** Cron expression for scheduled execution (e.g., "0 0/6 * * *") */
-  cron?: string;
-  /** Typed trigger declarations attached to this workflow registration. */
-  triggers?: TriggerSpec[];
-}
-
-export interface TriggerSpec {
-  triggerId?: string;
-  triggerType: 'event' | 'cron' | 'webhook';
-  eventName?: string;
-  filterExpression?: string;
-  inputMapping?: string;
-  batchWindowMs?: number;
-  delayExpression?: string;
-}
-
-export interface EventTriggerOptions {
-  triggerId?: string;
-  filterExpression?: string;
-  inputMapping?: string;
-  batchWindowMs?: number;
-  delayExpression?: string;
-}
-
-export function event(name: string, options: EventTriggerOptions = {}): TriggerSpec {
-  const eventName = name.trim();
-  if (!eventName) {
-    throw new Error('event trigger name is required');
-  }
-  return {
-    triggerId: options.triggerId,
-    triggerType: 'event',
-    eventName,
-    filterExpression: options.filterExpression,
-    inputMapping: options.inputMapping,
-    batchWindowMs: options.batchWindowMs,
-    delayExpression: options.delayExpression,
-  };
-}
-
-export interface WebhookTriggerOptions extends EventTriggerOptions {
-  /** Event identifier within the source. The runtime dispatches on
-   *  `{source}.{event}` (e.g. `sentry.issue.created`,
-   *  `github.issues.opened`, `stripe.payment_intent.succeeded`,
-   *  `slack.app_mention`). For Standard Webhooks publishers use the
-   *  `webhook-event` header value. */
-  event: string;
-}
-
-/**
- * Declare a webhook-event trigger for a workflow.
- *
- * Deliveries arriving at `POST /v1/webhooks/{source}/{integration_id}`
- * are dispatched as events with name `{source}.{event}` — this helper
- * wires that subscription declaratively.
- *
- * @param source One of `standard | sentry | stripe | github | slack`.
- * @param options Must include `event`; supports the same filter/mapping
- *                /batching options as `event()`.
- */
-export function webhook(source: string, options: WebhookTriggerOptions): TriggerSpec {
-  const src = source.trim().toLowerCase();
-  const evt = options.event?.trim();
-  if (!src) {
-    throw new Error('webhook source is required');
-  }
-  if (!evt) {
-    throw new Error('webhook event is required');
-  }
-  return {
-    triggerId: options.triggerId,
-    triggerType: 'event',
-    eventName: `${src}.${evt}`,
-    filterExpression: options.filterExpression,
-    inputMapping: options.inputMapping,
-    batchWindowMs: options.batchWindowMs,
-    delayExpression: options.delayExpression,
-  };
-}
-
-/**
- * Global workflow registry
- */
-export class WorkflowRegistry {
-  private static workflows = new Map<string, WorkflowConfig>();
-
-  /**
-   * Register a workflow handler
-   */
-  static register(config: WorkflowConfig): void {
-    if (this.workflows.has(config.name)) {
-      console.warn(`Overwriting existing workflow '${config.name}'`);
-    }
-    this.workflows.set(config.name, config);
-  }
-
-  /**
-   * Get workflow configuration by name
-   */
-  static get(name: string): WorkflowConfig | undefined {
-    return this.workflows.get(name);
-  }
-
-  /**
-   * Get all registered workflows
-   */
-  static all(): Map<string, WorkflowConfig> {
-    return new Map(this.workflows);
-  }
-
-  /**
-   * List all registered workflow names
-   */
-  static listNames(): string[] {
-    return Array.from(this.workflows.keys());
-  }
-
-  /**
-   * Clear all registered workflows (for testing)
-   */
-  static clear(): void {
-    this.workflows.clear();
-  }
-}
-
-/**
- * Workflow options
- */
-export interface WorkflowOptions {
-  /** Custom workflow name (defaults to function name) */
-  name?: string;
-  /** Cron expression for scheduled execution (e.g., "0 0/6 * * *") */
-  cron?: string;
-  /** Typed trigger declarations such as event('user.created') */
-  triggers?: TriggerSpec[];
-}
+export {
+  event,
+  webhook,
+  WorkflowRegistry,
+};
+export type {
+  EventTriggerOptions,
+  TriggerSpec,
+  WebhookTriggerOptions,
+  WorkflowConfig,
+  WorkflowOptions,
+};
 
 /**
  * Decorator to mark a function as a durable workflow
@@ -157,35 +38,20 @@ export interface WorkflowOptions {
  * @example
  * ```typescript
  * const processOrder = workflow('process-order', async (ctx: Context, orderId: string) => {
- *   // Validate order
- *   const order = await ctx.step('validate', async () => {
- *     return { id: orderId, total: 100 };
- *   });
- *
- *   // Process payment
- *   const payment = await ctx.step('payment', async () => {
- *     return { status: 'success' };
- *   });
- *
- *   // Fulfill order
- *   await ctx.step('fulfill', async () => {
- *     console.log('Order fulfilled');
- *   });
- *
- *   return { status: 'completed' };
+ *   const order = await ctx.step('validate', async () => ({ id: orderId, total: 100 }));
+ *   return { status: 'completed', order };
  * });
  * ```
  */
 export function workflow<TInput = any, TOutput = any>(
   nameOrHandler: string | WorkflowHandler<TInput, TOutput>,
   handlerOrOptions?: WorkflowHandler<TInput, TOutput> | WorkflowOptions,
-  optionsParam?: WorkflowOptions
+  optionsParam?: WorkflowOptions,
 ): WorkflowHandler<TInput, TOutput> {
   let workflowName: string;
   let handler: WorkflowHandler<TInput, TOutput>;
   let options: WorkflowOptions = {};
 
-  // Parse arguments
   if (typeof nameOrHandler === 'string') {
     workflowName = nameOrHandler;
     if (typeof handlerOrOptions === 'function') {
@@ -202,12 +68,10 @@ export function workflow<TInput = any, TOutput = any>(
     throw new Error('Invalid workflow definition');
   }
 
-  // Override name if provided in options
   if (options.name) {
     workflowName = options.name;
   }
 
-  // Register workflow
   const config: WorkflowConfig = {
     name: workflowName,
     handler,
@@ -216,39 +80,32 @@ export function workflow<TInput = any, TOutput = any>(
   };
   WorkflowRegistry.register(config);
 
-  // Create wrapper that provides context
   const workflowWrapper = async (ctxOrInput: Context | TInput, input?: TInput): Promise<TOutput> => {
     let ctx: Context;
     let actualInput: TInput;
 
-    // Determine if first arg is Context or input
     if (isContext(ctxOrInput)) {
       ctx = ctxOrInput;
       actualInput = input!;
     } else {
-      // Auto-create context for direct workflow calls
+      const { ContextImpl } = await import('./context.js');
       ctx = new ContextImpl(
         `workflow-${workflowName}-${Date.now()}`,
         `run-${Date.now()}`,
         0,
-        workflowName
+        workflowName,
       );
       actualInput = ctxOrInput as TInput;
     }
 
-    // Execute workflow
     return handler(ctx, actualInput);
   };
 
-  // Attach config for introspection
   (workflowWrapper as any)._agnt5_config = config;
 
   return workflowWrapper as WorkflowHandler<TInput, TOutput>;
 }
 
-/**
- * Type guard to check if value is a Context
- */
 function isContext(value: any): value is Context {
   return (
     value &&

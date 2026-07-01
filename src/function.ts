@@ -1,7 +1,6 @@
 import type {
   Context,
   FunctionHandler,
-  FunctionOptions,
   RetryPolicy,
   BackoffPolicy,
 } from './types';
@@ -14,6 +13,8 @@ import {
   workflowStepFailed,
   workflowStepStarted,
 } from './events.js';
+import { FunctionRegistry } from './function-registry.js';
+import type { FunctionOptions } from './types.js';
 
 /**
  * Function builder for creating durable functions
@@ -190,35 +191,6 @@ export function fn<TInput = any, TOutput = any>(
   name: string
 ): FunctionBuilder<TInput, TOutput> {
   return new FunctionBuilder<TInput, TOutput>(name);
-}
-
-/**
- * Internal function registry
- */
-class FunctionRegistry {
-  private static functions = new Map<
-    string,
-    { handler: FunctionHandler; options: FunctionOptions }
-  >();
-
-  static register(
-    name: string,
-    config: { handler: FunctionHandler; options: FunctionOptions }
-  ) {
-    this.functions.set(name, config);
-  }
-
-  static get(name: string) {
-    return this.functions.get(name);
-  }
-
-  static getAll() {
-    return Array.from(this.functions.entries());
-  }
-
-  static clear() {
-    this.functions.clear();
-  }
 }
 
 export { FunctionRegistry };

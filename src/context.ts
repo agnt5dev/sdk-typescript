@@ -2,9 +2,8 @@ import type { Context, Logger } from './types.js';
 import type { EventEmitter } from './event-emitter.js';
 import { emptyRuntimeContext } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
-import { SuspensionRequestedError, WaitingForUserInputError } from './errors.js';
+import { ConfigurationError, SuspensionRequestedError, WaitingForUserInputError } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
-import Database from 'better-sqlite3';
 import { join, dirname } from 'path';
 import { mkdirSync, existsSync } from 'fs';
 import { createRequire } from 'module';
@@ -54,7 +53,7 @@ interface StorageBackend {
  * SQLite storage backend for durable state
  */
 class SQLiteStorage implements StorageBackend {
-  private db: Database.Database;
+  private db: any;
 
   constructor(dbPath: string) {
     // Ensure directory exists
@@ -64,6 +63,7 @@ class SQLiteStorage implements StorageBackend {
     }
 
     // Initialize SQLite database
+    const Database = loadBetterSqlite3();
     this.db = new Database(dbPath);
 
     // Create tables
@@ -122,6 +122,19 @@ class SQLiteStorage implements StorageBackend {
 
   close(): void {
     this.db.close();
+  }
+}
+
+function loadBetterSqlite3(): new (dbPath: string) => any {
+  try {
+    const require = createRequire(import.meta.url);
+    const loaded = require('better-sqlite3');
+    return (loaded.default ?? loaded) as new (dbPath: string) => any;
+  } catch (err) {
+    throw new ConfigurationError(
+      `SQLite storage requires the optional "better-sqlite3" dependency. ` +
+      `Install it or set AGNT5_STORAGE=memory. ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
@@ -190,7 +203,7 @@ export class ContextImpl implements Context {
     this._checkpointSnapshot = new Map(Object.entries(options?.checkpoints || {}));
     this._workerlessDeadlineMs = options?.workerlessDeadlineMs;
     this._workerlessYieldBeforeMs = options?.workerlessYieldBeforeMs ?? 1000;
-    const storageType = options?.storage || (process.env.AGNT5_STORAGE === 'memory' ? 'memory' : 'sqlite');
+    const storageType = options?.storage || (process.env.AGNT5_STORAGE === 'sqlite' ? 'sqlite' : 'memory');
 
     if (storageType === 'sqlite') {
       const dbPath = options?.dbPath || process.env.AGNT5_DB_PATH || join(process.cwd(), '.agnt5', 'state.db');
