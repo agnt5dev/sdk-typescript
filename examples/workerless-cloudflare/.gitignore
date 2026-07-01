@@ -1,0 +1,4 @@
+.agnt5-workerless-secret
+.wrangler/
+agnt5-sdk-*.tgz
+node_modules/

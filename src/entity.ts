@@ -409,6 +409,10 @@ class EntityContext implements Context {
     return result;
   }
 
+  async yieldIfNeeded(_reason?: string): Promise<void> {
+    // Entity methods run on the persistent worker path.
+  }
+
   get logger(): Logger {
     return {
       info: (message: string, meta?: Record<string, any>) => {

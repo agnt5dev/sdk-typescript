@@ -2,9 +2,8 @@ import type { Context, Logger } from './types.js';
 import type { EventEmitter } from './event-emitter.js';
 import { emptyRuntimeContext } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
-import { WaitingForUserInputError } from './errors.js';
+import { ConfigurationError, SuspensionRequestedError, WaitingForUserInputError } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
-import Database from 'better-sqlite3';
 import { join, dirname } from 'path';
 import { mkdirSync, existsSync } from 'fs';
 import { createRequire } from 'module';
@@ -54,7 +53,7 @@ interface StorageBackend {
  * SQLite storage backend for durable state
  */
 class SQLiteStorage implements StorageBackend {
-  private db: Database.Database;
+  private db: any;
 
   constructor(dbPath: string) {
     // Ensure directory exists
@@ -64,6 +63,7 @@ class SQLiteStorage implements StorageBackend {
     }
 
     // Initialize SQLite database
+    const Database = loadBetterSqlite3();
     this.db = new Database(dbPath);
 
     // Create tables
@@ -125,12 +125,31 @@ class SQLiteStorage implements StorageBackend {
   }
 }
 
+function loadBetterSqlite3(): new (dbPath: string) => any {
+  try {
+    const require = createRequire(import.meta.url);
+    const loaded = require('better-sqlite3');
+    return (loaded.default ?? loaded) as new (dbPath: string) => any;
+  } catch (err) {
+    throw new ConfigurationError(
+      `SQLite storage requires the optional "better-sqlite3" dependency. ` +
+      `Install it or set AGNT5_STORAGE=memory. ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 /**
  * In-memory storage backend for testing
  */
 class MemoryStorage implements StorageBackend {
   private state = new Map<string, any>();
   private checkpoints = new Map<string, any>();
+
+  constructor(checkpoints?: Record<string, any>) {
+    for (const [key, value] of Object.entries(checkpoints || {})) {
+      this.checkpoints.set(key, value);
+    }
+  }
 
   async get(key: string): Promise<any | undefined> {
     return this.state.get(key);
@@ -160,6 +179,9 @@ export class ContextImpl implements Context {
   private storage: StorageBackend;
   private _pauseIndex = 0;
   private _emitter?: EventEmitter;
+  private _checkpointSnapshot = new Map<string, any>();
+  private _workerlessDeadlineMs?: number;
+  private _workerlessYieldBeforeMs: number;
   /** Cancellation signal (never aborted on this context path). */
   readonly signal: AbortSignal = new AbortController().signal;
 
@@ -172,16 +194,22 @@ export class ContextImpl implements Context {
       storage?: 'memory' | 'sqlite';
       dbPath?: string;
       runtime?: RuntimeContext;
+      checkpoints?: Record<string, any>;
+      workerlessDeadlineMs?: number;
+      workerlessYieldBeforeMs?: number;
     }
   ) {
     this.runtime = options?.runtime ?? emptyRuntimeContext();
-    const storageType = options?.storage || (process.env.AGNT5_STORAGE === 'memory' ? 'memory' : 'sqlite');
+    this._checkpointSnapshot = new Map(Object.entries(options?.checkpoints || {}));
+    this._workerlessDeadlineMs = options?.workerlessDeadlineMs;
+    this._workerlessYieldBeforeMs = options?.workerlessYieldBeforeMs ?? 1000;
+    const storageType = options?.storage || (process.env.AGNT5_STORAGE === 'sqlite' ? 'sqlite' : 'memory');
 
     if (storageType === 'sqlite') {
       const dbPath = options?.dbPath || process.env.AGNT5_DB_PATH || join(process.cwd(), '.agnt5', 'state.db');
       this.storage = new SQLiteStorage(dbPath);
     } else {
-      this.storage = new MemoryStorage();
+      this.storage = new MemoryStorage(options?.checkpoints);
     }
   }
 
@@ -214,8 +242,28 @@ export class ContextImpl implements Context {
 
     // Checkpoint result
     await this.storage.setCheckpoint(checkpointKey, result);
+    this._checkpointSnapshot.set(checkpointKey, result);
 
     return result;
+  }
+
+  async yieldIfNeeded(reason = 'budget'): Promise<void> {
+    if (!this._workerlessDeadlineMs) {
+      return;
+    }
+    if (Date.now() + this._workerlessYieldBeforeMs < this._workerlessDeadlineMs) {
+      return;
+    }
+    throw new SuspensionRequestedError({
+      runId: this.runId,
+      reason,
+      checkpointState: this.checkpointSnapshot(),
+      deadlineMs: this._workerlessDeadlineMs,
+    });
+  }
+
+  checkpointSnapshot(): Record<string, any> {
+    return Object.fromEntries(this._checkpointSnapshot.entries());
   }
 
   get logger(): Logger {

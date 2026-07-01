@@ -1,5 +1,4 @@
 import type { RuntimeContext } from './runtime-context.js';
-import type { Sandbox } from './sandbox.js';
 
 /**
  * Retry policy configuration for functions
@@ -65,7 +64,7 @@ export interface Context {
   /** Runtime-provided execution options for this invocation */
   readonly runtime: RuntimeContext;
   /** Sandbox workspace attached by Agent when configured. */
-  readonly sandbox?: Sandbox;
+  readonly sandbox?: unknown;
   /**
    * Cancellation signal for this invocation. Aborted when the run is
    * cancelled (a CancelExecution arrives). Thread it into fetch/LLM SDK
@@ -84,6 +83,8 @@ export interface Context {
   // Checkpointing
   /** Execute and checkpoint a step */
   step<T>(stepName: string, fn: () => T | Promise<T>): Promise<T>;
+  /** Suspend when the runtime budget is close to expiring. */
+  yieldIfNeeded(reason?: string): Promise<void>;
 
   // Logging
   /** Structured logger */

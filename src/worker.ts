@@ -194,6 +194,10 @@ class SimpleContext implements Context {
     this._signal = signal;
   }
 
+  async yieldIfNeeded(_reason?: string): Promise<void> {
+    // Persistent workers do not need cooperative workerless suspension.
+  }
+
   /**
    * Seed HITL replay state from incoming message metadata.
    * Called by Worker.processMessage before invoking the workflow handler.

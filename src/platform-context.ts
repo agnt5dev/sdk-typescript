@@ -143,6 +143,10 @@ export class PlatformContext implements Context {
     }
   }
 
+  async yieldIfNeeded(_reason?: string): Promise<void> {
+    // Persistent workers are not bounded by an outbound serverless request budget.
+  }
+
   /**
    * Get logger with span integration
    */
