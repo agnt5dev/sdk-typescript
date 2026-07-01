@@ -41,6 +41,27 @@ describe('Agent', () => {
     expect(agent.temperature).toBe(0.5);
   });
 
+  it('forwards prompt cache options to model requests', () => {
+    const mockModel = new MockLanguageModel([
+      { text: 'Cached answer.', finishReason: 'stop' }
+    ]);
+
+    const agent = new Agent({
+      name: 'cache-agent',
+      model: mockModel,
+      instructions: 'Stable instructions.',
+      modelName: 'anthropic/claude-3-5-haiku-latest',
+      cache: { ttl: '1h' },
+    });
+
+    const request = (agent as any).buildModelRequest(
+      [{ role: 'user', content: 'Use the stable context.' }],
+      [],
+    ) as GenerateRequest;
+
+    expect(request.config?.cache).toEqual({ enabled: true, ttl: '1h' });
+  });
+
   it('should add standard sandbox tools when sandbox is configured', () => {
     const mockModel = new MockLanguageModel([
       { text: 'Hello!', finishReason: 'stop' }

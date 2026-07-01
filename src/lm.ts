@@ -56,6 +56,8 @@ export interface TokenUsage {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  cachedTokens?: number;
+  cacheCreationTokens?: number;
 }
 
 export interface GenerateResponse {
@@ -79,11 +81,39 @@ export type ReasoningEffort = 'minimal' | 'medium' | 'high';
 export type Modality = 'text' | 'audio' | 'image';
 export type BuiltInTool = 'web_search' | 'code_interpreter' | 'file_search' | 'web_fetch';
 
+export interface PromptCache {
+  enabled?: boolean;
+  /** Provider TTL hint. Anthropic maps this to its ephemeral cache TTL. */
+  ttl?: string;
+  /** Provider routing key hint. OpenAI Responses maps this to prompt_cache_key. */
+  key?: string;
+  /** Provider retention hint. OpenAI Responses maps this to prompt_cache_retention. */
+  retention?: string;
+  /** Reusable explicit context-cache resource. Gemini maps this to cachedContent. */
+  resource?: string;
+}
+
+export interface ContextCache {
+  name: string;
+  model: string;
+  provider: 'google';
+}
+
+export type CacheOption = boolean | PromptCache | ContextCache | string;
+
 export interface GenerationConfig {
   temperature?: number;
   topP?: number;
   maxOutputTokens?: number;
   responseFormat?: ResponseFormatOption;
+  /** Provider-neutral prompt cache policy. */
+  cache?: CacheOption;
+  /** @deprecated Use cache: true or cache: { ttl: '1h' }. */
+  cacheControl?: boolean;
+  /** @deprecated Use cache: { ttl: '1h' }. */
+  cacheTtl?: string;
+  /** @deprecated Use cache: { resource: 'cachedContents/abc123' }. */
+  googleCachedContent?: string;
   reasoningEffort?: ReasoningEffort;
   modalities?: Modality[];
   builtInTools?: BuiltInTool[];
@@ -236,6 +266,72 @@ export function validateModelForProvider(model: string, sdkProvider?: string): s
   }
 
   return `${parsed.provider}/${parsed.modelName}`;
+}
+
+function isContextCache(value: unknown): value is ContextCache {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as ContextCache).name === 'string' &&
+    (value as ContextCache).provider === 'google'
+  );
+}
+
+export function normalizePromptCache(cache: CacheOption | undefined): PromptCache | undefined {
+  if (cache === undefined || cache === false) {
+    return undefined;
+  }
+  if (cache === true) {
+    return { enabled: true };
+  }
+  if (typeof cache === 'string') {
+    return { enabled: true, resource: cache };
+  }
+  if (isContextCache(cache)) {
+    return { enabled: true, resource: cache.name };
+  }
+  return { ...cache, enabled: cache.enabled ?? true };
+}
+
+function normalizeGenerationConfigForNative(
+  config: GenerationConfig | undefined,
+  providerName: string,
+): Record<string, unknown> | undefined {
+  if (!config) {
+    return undefined;
+  }
+
+  const {
+    cache,
+    cacheControl,
+    cacheTtl,
+    googleCachedContent,
+    ...nativeConfig
+  } = config;
+
+  let promptCache = normalizePromptCache(cache);
+  if (
+    cacheControl !== undefined ||
+    cacheTtl !== undefined ||
+    googleCachedContent !== undefined
+  ) {
+    promptCache = {
+      enabled: cacheControl ?? promptCache?.enabled ?? true,
+      ttl: cacheTtl ?? promptCache?.ttl,
+      key: promptCache?.key,
+      retention: promptCache?.retention,
+      resource: googleCachedContent ?? promptCache?.resource,
+    };
+  }
+
+  if (promptCache?.resource && providerName !== 'google' && providerName !== 'gemini') {
+    throw new ConfigurationError('Explicit context caches can only be used with Google Gemini');
+  }
+
+  return {
+    ...nativeConfig,
+    ...(promptCache ? { cache: promptCache } : {}),
+  };
 }
 
 // Provider configs
@@ -535,13 +631,48 @@ export class LM {
       return await runManagedPrompt(request);
     }
     const { __runtimeOverridesApplied: _runtimeOverridesApplied, ...nativeRequest } = request;
+    const model = validateModelForProvider(request.model, this.providerName);
     return await this.model.generate({
       ...nativeRequest,
       prompt: undefined,
       messages: request.messages ?? [],
       promptRef: undefined,
-      model: validateModelForProvider(request.model, this.providerName),
+      config: normalizeGenerationConfigForNative(request.config, this.providerName),
+      model,
     });
+  }
+
+  /** Create a Google Gemini explicit context cache. */
+  async createCache(options: {
+    model: string;
+    contents: string | string[];
+    systemPrompt?: string;
+    ttlSeconds?: number;
+  }): Promise<ContextCache> {
+    if (this.providerName !== 'google') {
+      throw new ConfigurationError('Explicit context caching is only supported for Google Gemini');
+    }
+    const contents = Array.isArray(options.contents) ? options.contents : [options.contents];
+    if (contents.length === 0 || contents.some(item => typeof item !== 'string' || item.trim() === '')) {
+      throw new ConfigurationError('Context cache contents must include non-empty text');
+    }
+    const model = validateModelForProvider(options.model, this.providerName);
+    const name = await this.model.createCache(
+      model,
+      contents,
+      options.systemPrompt,
+      options.ttlSeconds,
+    );
+    return { name, model, provider: 'google' };
+  }
+
+  /** Delete a Google Gemini explicit context cache. */
+  async deleteCache(cache: ContextCache | string): Promise<void> {
+    if (this.providerName !== 'google') {
+      throw new ConfigurationError('Explicit context cache deletion is only supported for Google Gemini');
+    }
+    const name = typeof cache === 'string' ? cache : cache.name;
+    await this.model.deleteCache(name);
   }
 
   /**
@@ -571,12 +702,14 @@ export class LM {
       return;
     }
     const { __runtimeOverridesApplied: _runtimeOverridesApplied, ...nativeRequest } = request;
+    const model = validateModelForProvider(request.model, this.providerName);
     return await this.model.stream({
       ...nativeRequest,
       prompt: undefined,
       messages: request.messages ?? [],
       promptRef: undefined,
-      model: validateModelForProvider(request.model, this.providerName),
+      config: normalizeGenerationConfigForNative(request.config, this.providerName),
+      model,
     }, callback);
   }
 }
@@ -627,6 +760,8 @@ async function runManagedPrompt(request: GenerateRequest): Promise<GenerateRespo
       promptTokens: data.prompt_tokens ?? 0,
       completionTokens: data.completion_tokens ?? 0,
       totalTokens: data.total_tokens ?? 0,
+      cachedTokens: data.cached_tokens ?? 0,
+      cacheCreationTokens: data.cache_creation_tokens ?? 0,
     } : undefined,
     finishReason: data.finish_reason,
     raw: JSON.stringify(data),

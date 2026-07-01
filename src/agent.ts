@@ -7,7 +7,7 @@
 import type { Context, ToolSchema } from './types.js';
 import { Tool } from './tool.js';
 import { ContextImpl } from './context.js';
-import { validateModelForProvider } from './lm.js';
+import { normalizePromptCache, validateModelForProvider } from './lm.js';
 import type { LM } from './lm.js';
 import type { Sandbox } from './sandbox.js';
 import { sandboxTools } from './sandbox-tools.js';
@@ -15,9 +15,11 @@ import { Skill, makeLoadSkillTool, renderCatalog, resolveSkills, type SkillInput
 import { loadAgentsMd, renderGuidance, type AgentsMdSource } from './agents-md.js';
 import type {
   BuiltInTool,
+  CacheOption,
   Message as LMMessage,
   GenerateRequest as LMGenerateRequest,
   GenerateResponse as LMGenerateResponse,
+  PromptCache,
   ToolCall as LMToolCall,
 } from './lm.js';
 import { randomUUID } from 'crypto';
@@ -77,6 +79,8 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cachedTokens?: number;
+  cacheCreationTokens?: number;
 }
 
 /**
@@ -87,6 +91,11 @@ export interface GenerationConfig {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
+  cache?: CacheOption;
+  /** @deprecated Use cache: true or cache: { ttl: '1h' }. */
+  cacheControl?: boolean;
+  /** @deprecated Use cache: { ttl: '1h' }. */
+  cacheTtl?: string;
   builtInTools?: BuiltInTool[];
 }
 
@@ -313,6 +322,12 @@ export interface AgentOptions {
   maxIterations?: number;
   /** Provider-hosted tools that run server-side. */
   builtInTools?: BuiltInTool[];
+  /** Provider-neutral prompt cache policy. */
+  cache?: CacheOption;
+  /** @deprecated Use cache: true or cache: { ttl: '1h' }. */
+  cacheControl?: boolean;
+  /** @deprecated Use cache: { ttl: '1h' }. */
+  cacheTtl?: string;
   /** Execution callbacks for agent/model/tool interception */
   callbacks?: AgentCallbacks;
   /**
@@ -391,6 +406,11 @@ export class Agent {
   private readonly temperatureExplicit: boolean;
   readonly maxIterations: number;
   readonly builtInTools: BuiltInTool[];
+  readonly cache?: PromptCache;
+  /** @deprecated Use cache. */
+  readonly cacheControl: boolean;
+  /** @deprecated Use cache.ttl. */
+  readonly cacheTtl?: string;
   private tools: Map<string, Tool> = new Map();
   private handoffs: Handoff[] = [];
   private isNewLM: boolean;
@@ -415,6 +435,24 @@ export class Agent {
     this.temperature = options.temperature ?? 0.7;
     this.maxIterations = options.maxIterations || 10;
     this.builtInTools = options.builtInTools ?? [];
+    let cache = normalizePromptCache(options.cache);
+    if (options.cacheControl !== undefined || options.cacheTtl !== undefined) {
+      cache = {
+        ...(cache ?? { enabled: true }),
+        ...(options.cacheControl !== undefined ? { enabled: options.cacheControl } : {}),
+        ...(options.cacheTtl !== undefined ? { enabled: true, ttl: options.cacheTtl } : {}),
+      };
+    }
+    this.cache = cache;
+    if (
+      this.cache?.resource &&
+      !this.modelName.startsWith('google/') &&
+      !this.modelName.startsWith('gemini/')
+    ) {
+      throw new Error('Explicit context caches can only be used with Google Gemini models');
+    }
+    this.cacheControl = cache?.enabled ?? false;
+    this.cacheTtl = cache?.ttl;
     this.callbacks = options.callbacks || {};
     this.sandbox = options.sandbox;
 
@@ -604,6 +642,8 @@ export class Agent {
         promptTokens: response.usage.promptTokens ?? response.usage.prompt_tokens ?? 0,
         completionTokens: response.usage.completionTokens ?? response.usage.completion_tokens ?? 0,
         totalTokens: response.usage.totalTokens ?? response.usage.total_tokens ?? 0,
+        cachedTokens: response.usage.cachedTokens ?? response.usage.cached_tokens ?? 0,
+        cacheCreationTokens: response.usage.cacheCreationTokens ?? response.usage.cache_creation_tokens ?? 0,
       } : undefined,
       finishReason: response.finishReason ?? response.finish_reason,
       toolCalls: response.toolCalls ?? response.tool_calls,
@@ -665,6 +705,7 @@ export class Agent {
         tools: toolDefs.length > 0 ? toolDefs.map(t => this.convertToolSchema(t)) : undefined,
         config: {
           ...(temperature !== undefined ? { temperature } : {}),
+          ...(this.cache ? { cache: this.cache } : {}),
           ...(this.builtInTools.length > 0 ? { builtInTools: this.builtInTools } : {}),
         },
       } satisfies LMGenerateRequest;
@@ -677,6 +718,7 @@ export class Agent {
       tools: toolDefs.length > 0 ? toolDefs : undefined,
       config: {
         ...(temperature !== undefined ? { temperature } : {}),
+        ...(this.cache ? { cache: this.cache } : {}),
         ...(this.builtInTools.length > 0 ? { builtInTools: this.builtInTools } : {}),
       },
     } satisfies GenerateRequest;

@@ -5,7 +5,7 @@ use napi_derive::napi;
 use serde_json::Value;
 use std::env;
 
-use agnt5_sdk_core::error::Result as SdkResult;
+use agnt5_sdk_core::error::{Result as SdkResult, SdkError};
 use agnt5_sdk_core::lm::{
     AnthropicConfig,
     AnthropicProvider,
@@ -47,6 +47,7 @@ use agnt5_sdk_core::lm::{
     OpenAiProvider,
     OpenRouterConfig,
     OpenRouterProvider,
+    PromptCacheConfig,
     PromptRef,
     ReasoningEffort,
     ResponseFormat,
@@ -128,6 +129,37 @@ impl ProviderKind {
             ProviderKind::Xai(provider) => provider.stream(request).await,
             ProviderKind::HuggingFace(provider) => provider.stream(request).await,
             ProviderKind::OpenAiChat(provider) => provider.stream(request).await,
+        }
+    }
+
+    async fn create_cached_content(
+        &self,
+        model: &str,
+        system: Option<String>,
+        contents: Vec<String>,
+        ttl_seconds: Option<u32>,
+    ) -> SdkResult<String> {
+        match self {
+            ProviderKind::Google(provider) => {
+                provider
+                    .create_cached_content(model, system, contents, ttl_seconds)
+                    .await
+            }
+            _ => Err(SdkError::Configuration {
+                message: "explicit context caching is only supported for Google Gemini".to_string(),
+                field: Some("provider".to_string()),
+            }),
+        }
+    }
+
+    async fn delete_cached_content(&self, name: &str) -> SdkResult<()> {
+        match self {
+            ProviderKind::Google(provider) => provider.delete_cached_content(name).await,
+            _ => Err(SdkError::Configuration {
+                message: "explicit context cache deletion is only supported for Google Gemini"
+                    .to_string(),
+                field: Some("provider".to_string()),
+            }),
         }
     }
 }
@@ -369,9 +401,37 @@ pub struct JsGenerationConfig {
     pub top_p: Option<f64>,
     pub max_output_tokens: Option<u32>,
     pub response_format: Option<JsResponseFormatOption>,
+    pub cache: Option<JsPromptCacheConfig>,
+    /// Deprecated compatibility alias. Prefer cache.
+    pub cache_control: Option<bool>,
+    /// Deprecated compatibility alias. Prefer cache.ttl.
+    pub cache_ttl: Option<String>,
+    /// Deprecated compatibility alias. Prefer cache.resource.
+    pub google_cached_content: Option<String>,
     pub reasoning_effort: Option<String>,
     pub modalities: Option<Vec<String>>,
     pub built_in_tools: Option<Vec<String>>,
+}
+
+#[napi(object)]
+pub struct JsPromptCacheConfig {
+    pub enabled: Option<bool>,
+    pub ttl: Option<String>,
+    pub key: Option<String>,
+    pub retention: Option<String>,
+    pub resource: Option<String>,
+}
+
+impl From<JsPromptCacheConfig> for PromptCacheConfig {
+    fn from(cache: JsPromptCacheConfig) -> Self {
+        PromptCacheConfig {
+            enabled: cache.enabled.unwrap_or(true),
+            ttl: cache.ttl,
+            key: cache.key,
+            retention: cache.retention,
+            resource: cache.resource,
+        }
+    }
 }
 
 impl TryFrom<JsGenerationConfig> for GenerationConfig {
@@ -412,11 +472,32 @@ impl TryFrom<JsGenerationConfig> for GenerationConfig {
             })
             .unwrap_or_default();
 
+        let mut prompt_cache = config.cache.map(Into::into);
+        if config.cache_control.is_some()
+            || config.cache_ttl.is_some()
+            || config.google_cached_content.is_some()
+        {
+            let mut cache = prompt_cache.unwrap_or_else(PromptCacheConfig::enabled);
+            if let Some(enabled) = config.cache_control {
+                cache.enabled = enabled;
+            }
+            if let Some(ttl) = config.cache_ttl {
+                cache.ttl = Some(ttl);
+                cache.enabled = true;
+            }
+            if let Some(resource) = config.google_cached_content {
+                cache.resource = Some(resource);
+                cache.enabled = true;
+            }
+            prompt_cache = Some(cache);
+        }
+
         Ok(GenerationConfig {
             temperature: config.temperature.map(|t| t as f32),
             top_p: config.top_p.map(|p| p as f32),
             max_output_tokens: config.max_output_tokens,
             response_format,
+            prompt_cache,
             reasoning_effort,
             modalities,
             built_in_tools,
@@ -511,6 +592,8 @@ pub struct JsTokenUsage {
     pub prompt_tokens: Option<u32>,
     pub completion_tokens: Option<u32>,
     pub total_tokens: Option<u32>,
+    pub cached_tokens: Option<u32>,
+    pub cache_creation_tokens: Option<u32>,
 }
 
 impl From<TokenUsage> for JsTokenUsage {
@@ -519,6 +602,8 @@ impl From<TokenUsage> for JsTokenUsage {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
+            cached_tokens: usage.cached_tokens,
+            cache_creation_tokens: usage.cache_creation_tokens,
         }
     }
 }
@@ -1300,6 +1385,30 @@ impl LanguageModel {
             .await
             .map_err(|e| Error::from_reason(format!("Generate failed: {}", e)))?;
         Ok(response.into())
+    }
+
+    /// Create a Google Gemini explicit context cache.
+    #[napi]
+    pub async fn create_cache(
+        &self,
+        model: String,
+        contents: Vec<String>,
+        system_prompt: Option<String>,
+        ttl_seconds: Option<u32>,
+    ) -> Result<String> {
+        self.provider
+            .create_cached_content(&model, system_prompt, contents, ttl_seconds)
+            .await
+            .map_err(|e| Error::from_reason(format!("Create cache failed: {}", e)))
+    }
+
+    /// Delete a Google Gemini explicit context cache by resource name.
+    #[napi]
+    pub async fn delete_cache(&self, name: String) -> Result<()> {
+        self.provider
+            .delete_cached_content(&name)
+            .await
+            .map_err(|e| Error::from_reason(format!("Delete cache failed: {}", e)))
     }
 
     /// Stream a completion
