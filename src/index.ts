@@ -87,6 +87,14 @@ export { event, webhook, workflow, WorkflowRegistry } from './workflow.js';
 export { serve } from './workerless.js';
 export { serveCloudflare } from './workerless-cloudflare.js';
 export type {
+  WorkerlessHandler as ServerlessHandler,
+  WorkerlessBudget as ServerlessBudget,
+  WorkerlessCheckpoint as ServerlessCheckpoint,
+  WorkerlessInvokePayload as ServerlessInvokePayload,
+  WorkerlessManifest as ServerlessManifest,
+  WorkerlessManifestComponent as ServerlessManifestComponent,
+  WorkerlessServeOptions as ServerlessServeOptions,
+  WorkerlessSigningSecretResolver as ServerlessSigningSecretResolver,
   WorkerlessHandler,
   WorkerlessBudget,
   WorkerlessCheckpoint,
@@ -97,6 +105,10 @@ export type {
   WorkerlessSigningSecretResolver,
 } from './workerless.js';
 export type {
+  CloudflareWorkerlessHandler as CloudflareServerlessHandler,
+  WorkerlessCloudflareExecutionContext as ServerlessCloudflareExecutionContext,
+  WorkerlessCloudflareServeOptions as ServerlessCloudflareServeOptions,
+  WorkerlessCloudflareSigningSecretResolver as ServerlessCloudflareSigningSecretResolver,
   CloudflareWorkerlessHandler,
   WorkerlessCloudflareExecutionContext,
   WorkerlessCloudflareServeOptions,

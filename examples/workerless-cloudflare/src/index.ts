@@ -1,6 +1,7 @@
-import { serveCloudflare, workflow } from '@agnt5/sdk/workerless/cloudflare';
+import { serve, workflow } from '@agnt5/sdk/serverless';
 
 interface Env {
+  AGNT5_SERVERLESS_SIGNING_SECRET?: string;
   AGNT5_WORKERLESS_SIGNING_SECRET?: string;
 }
 
@@ -23,9 +24,10 @@ const research = workflow('research', async (ctx, input: { title?: string }) => 
   };
 });
 
-export default serveCloudflare<Env>({
-  serviceName: 'agnt5-workerless-cloudflare',
+export default serve<Env>({
+  serviceName: 'agnt5-serverless-cloudflare',
   serviceVersion: 'm3',
-  signingSecret: (env) => env?.AGNT5_WORKERLESS_SIGNING_SECRET,
+  signingSecret: (_request, env) =>
+    env?.AGNT5_SERVERLESS_SIGNING_SECRET ?? env?.AGNT5_WORKERLESS_SIGNING_SECRET,
   workflows: [hello, research],
 });

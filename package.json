@@ -11,6 +11,16 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./serverless": {
+      "types": "./dist/serverless.d.ts",
+      "import": "./dist/serverless.js",
+      "default": "./dist/serverless.js"
+    },
+    "./serverless/cloudflare": {
+      "types": "./dist/serverless-cloudflare.d.ts",
+      "import": "./dist/serverless-cloudflare.js",
+      "default": "./dist/serverless-cloudflare.js"
+    },
     "./workerless/cloudflare": {
       "types": "./dist/workerless-cloudflare.d.ts",
       "import": "./dist/workerless-cloudflare.js",

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { FunctionRegistry } from '../function.js';
 import { ToolRegistry } from '../tool.js';
 import { WorkflowRegistry } from '../workflow.js';
-import { serveCloudflare, workflow } from '../workerless-cloudflare.js';
+import { serveCloudflare, workflow } from '../serverless-cloudflare.js';
 
 describe('serveCloudflare()', () => {
   beforeEach(() => {
@@ -42,7 +42,7 @@ describe('serveCloudflare()', () => {
     expect(handler.manifest()).toMatchObject({ service_name: 'cloudflare-workerless' });
   });
 
-  it('preserves checkpoint replay and budget suspension through the Cloudflare adapter', async () => {
+  it('preserves checkpoint replay and budget suspension through the Cloudflare compatibility shim', async () => {
     let fetchCount = 0;
     workflow('research', async (ctx, input: { title: string }) => {
       const page = await ctx.step('fetch', async () => {
@@ -102,9 +102,9 @@ describe('serveCloudflare()', () => {
   it('verifies signed invokes from a Cloudflare env secret', async () => {
     workflow('hello', async (_ctx, input: { name: string }) => ({ message: `hello ${input.name}` }));
 
-    const handler = serveCloudflare<{ AGNT5_WORKERLESS_SIGNING_SECRET?: string }>({
+    const handler = serveCloudflare<{ AGNT5_SERVERLESS_SIGNING_SECRET?: string }>({
       serviceName: 'cloudflare-workerless',
-      signingSecret: (env) => env?.AGNT5_WORKERLESS_SIGNING_SECRET,
+      signingSecret: (env) => env?.AGNT5_SERVERLESS_SIGNING_SECRET,
     });
     const body = JSON.stringify({
       protocol_version: 'workerless.v1',
@@ -120,7 +120,7 @@ describe('serveCloudflare()', () => {
       headers: await signedHeaders('test-signing-secret-123', 'cloudflare-workerless-test:0', body),
       body,
     }), {
-      AGNT5_WORKERLESS_SIGNING_SECRET: 'test-signing-secret-123',
+      AGNT5_SERVERLESS_SIGNING_SECRET: 'test-signing-secret-123',
     });
     const result = await response.json() as any;
 

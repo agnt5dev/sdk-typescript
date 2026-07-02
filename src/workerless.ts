@@ -16,17 +16,21 @@ const SIGNATURE_VERSION_HEADER = 'X-AGNT5-Signature-Version';
 const SIGNATURE_TIMESTAMP_HEADER = 'X-AGNT5-Timestamp';
 const SIGNATURE_ATTEMPT_ID_HEADER = 'X-AGNT5-Attempt-ID';
 
-export type WorkerlessSigningSecretResolver =
+export type WorkerlessSigningSecretResolver<Env = unknown, RuntimeContext = unknown> =
   | string
-  | ((request: Request) => string | undefined | Promise<string | undefined>);
+  | ((
+      request: Request,
+      env?: Env,
+      ctx?: RuntimeContext,
+    ) => string | undefined | Promise<string | undefined>);
 
-export interface WorkerlessServeOptions {
+export interface WorkerlessServeOptions<Env = unknown, RuntimeContext = unknown> {
   serviceName?: string;
   serviceVersion?: string;
   workflows?: WorkflowHandler[];
   functions?: FunctionHandler[];
   tools?: ToolHandler[];
-  signingSecret?: WorkerlessSigningSecretResolver;
+  signingSecret?: WorkerlessSigningSecretResolver<Env, RuntimeContext>;
 }
 
 export interface WorkerlessManifestComponent {
@@ -62,9 +66,9 @@ export interface WorkerlessInvokePayload {
   budget?: WorkerlessBudget;
 }
 
-export interface WorkerlessHandler {
-  (request: Request): Promise<Response>;
-  fetch(request: Request): Promise<Response>;
+export interface WorkerlessHandler<Env = unknown, RuntimeContext = unknown> {
+  (request: Request, env?: Env, ctx?: RuntimeContext): Promise<Response>;
+  fetch(request: Request, env?: Env, ctx?: RuntimeContext): Promise<Response>;
   manifest(): WorkerlessManifest;
 }
 
@@ -96,22 +100,24 @@ type ComponentEntry = {
   triggers?: WorkerlessTriggerSpec[];
 };
 
-export function serve(options: WorkerlessServeOptions = {}): WorkerlessHandler {
+export function serve<Env = unknown, RuntimeContext = unknown>(
+  options: WorkerlessServeOptions<Env, RuntimeContext> = {},
+): WorkerlessHandler<Env, RuntimeContext> {
   const components = collectWorkerlessComponents();
   const manifest = buildWorkerlessManifest(options, components);
 
-  const handler = async (request: Request): Promise<Response> => {
+  const handler = async (request: Request, env?: Env, ctx?: RuntimeContext): Promise<Response> => {
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === DEFAULT_MANIFEST_PATH) {
       return jsonResponse(manifest, 200);
     }
     if (request.method === 'POST' && url.pathname === INVOKE_PATH) {
-      return handleInvoke(request, components, options.signingSecret);
+      return handleInvoke(request, components, options.signingSecret, env, ctx);
     }
     return jsonResponse({ error: 'not_found', message: 'AGNT5 workerless route not found' }, 404);
   };
 
-  const workerlessHandler = handler as WorkerlessHandler;
+  const workerlessHandler = handler as WorkerlessHandler<Env, RuntimeContext>;
   workerlessHandler.fetch = handler;
   workerlessHandler.manifest = () => manifest;
   void options.workflows;
@@ -158,7 +164,7 @@ function collectWorkerlessComponents(): ComponentEntry[] {
 }
 
 function buildWorkerlessManifest(
-  options: WorkerlessServeOptions,
+  options: { serviceName?: string; serviceVersion?: string },
   components: ComponentEntry[],
 ): WorkerlessManifest {
   return {
@@ -182,10 +188,12 @@ function buildWorkerlessManifest(
   };
 }
 
-async function handleInvoke(
+async function handleInvoke<Env, RuntimeContext>(
   request: Request,
   components: ComponentEntry[],
-  signingSecret?: WorkerlessSigningSecretResolver,
+  signingSecret?: WorkerlessSigningSecretResolver<Env, RuntimeContext>,
+  env?: Env,
+  runtimeContext?: RuntimeContext,
 ): Promise<Response> {
   let bodyText: string;
   try {
@@ -194,7 +202,7 @@ async function handleInvoke(
     return failedResponse('WORKERLESS_INVALID_REQUEST', errorMessage(err, 'request body could not be read'), 400);
   }
 
-  const signatureFailure = await verifyWorkerlessInvokeRequest(request, bodyText, signingSecret);
+  const signatureFailure = await verifyWorkerlessInvokeRequest(request, bodyText, signingSecret, env, runtimeContext);
   if (signatureFailure) {
     return signatureFailure;
   }
@@ -267,12 +275,14 @@ async function handleInvoke(
   }
 }
 
-export async function verifyWorkerlessInvokeRequest(
+export async function verifyWorkerlessInvokeRequest<Env = unknown, RuntimeContext = unknown>(
   request: Request,
   bodyText: string,
-  signingSecret?: WorkerlessSigningSecretResolver,
+  signingSecret?: WorkerlessSigningSecretResolver<Env, RuntimeContext>,
+  env?: Env,
+  ctx?: RuntimeContext,
 ): Promise<Response | undefined> {
-  const secret = await resolveWorkerlessSigningSecret(signingSecret, request);
+  const secret = await resolveWorkerlessSigningSecret(signingSecret, request, env, ctx);
   if (!secret) {
     return undefined;
   }
@@ -308,12 +318,14 @@ export async function verifyWorkerlessInvokeRequest(
   return undefined;
 }
 
-async function resolveWorkerlessSigningSecret(
-  signingSecret: WorkerlessSigningSecretResolver | undefined,
+async function resolveWorkerlessSigningSecret<Env, RuntimeContext>(
+  signingSecret: WorkerlessSigningSecretResolver<Env, RuntimeContext> | undefined,
   request: Request,
+  env?: Env,
+  ctx?: RuntimeContext,
 ): Promise<string | undefined> {
   const value = typeof signingSecret === 'function'
-    ? await signingSecret(request)
+    ? await signingSecret(request, env, ctx)
     : signingSecret;
   const secret = value?.trim();
   return secret || undefined;
