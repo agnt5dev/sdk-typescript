@@ -1,4 +1,6 @@
 import type { RuntimeContext } from './runtime-context.js';
+import type { HITLInputType, HITLOption } from './errors.js';
+import type { WorkerlessFlowControlPolicy } from './flow-control.js';
 
 /**
  * Retry policy configuration for functions
@@ -34,6 +36,14 @@ export interface FunctionOptions {
   backoff?: BackoffPolicy;
   /** Timeout in milliseconds for function execution */
   timeout_ms?: number;
+  /** Declarative workerless flow-control policy emitted in the manifest. */
+  flowControl?: WorkerlessFlowControlPolicy;
+  /** Manifest-shaped alias accepted for generated code and config imports. */
+  flow_control?: WorkerlessFlowControlPolicy;
+  /** Legacy/static scheduling priority emitted as top-level manifest metadata. */
+  priority?: number;
+  /** Legacy/static active concurrency limit emitted as top-level manifest metadata. */
+  maxConcurrency?: number;
 }
 
 /**
@@ -63,6 +73,8 @@ export interface Context {
   readonly serviceName: string;
   /** Runtime-provided execution options for this invocation */
   readonly runtime: RuntimeContext;
+  /** Runtime dispatch metadata for this invocation. */
+  readonly metadata?: Record<string, string>;
   /** Sandbox workspace attached by Agent when configured. */
   readonly sandbox?: unknown;
   /**
@@ -85,6 +97,20 @@ export interface Context {
   step<T>(stepName: string, fn: () => T | Promise<T>): Promise<T>;
   /** Suspend when the runtime budget is close to expiring. */
   yieldIfNeeded(reason?: string): Promise<void>;
+  /** Sleep until a future time, using durable suspension when supported. */
+  sleep(durationMs: number, name?: string): Promise<void>;
+  /** Pause workflow execution until a user response is supplied. */
+  waitForUser(
+    question: string,
+    options?: {
+      inputType?: HITLInputType;
+      options?: HITLOption[];
+      allowCustom?: boolean;
+      skippable?: boolean;
+    },
+  ): Promise<string | null>;
+  /** Pause workflow execution until an external signal is supplied. */
+  waitForSignal<T = unknown>(signalName: string, name?: string): Promise<T>;
 
   // Logging
   /** Structured logger */

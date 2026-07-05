@@ -5,6 +5,8 @@
  */
 
 import type { Context, EntityMethod, Logger } from './types.js';
+import { ConfigurationError } from './errors.js';
+import type { HITLInputType, HITLOption } from './errors.js';
 import Database from 'better-sqlite3';
 import { join } from 'path';
 import { mkdirSync, existsSync } from 'fs';
@@ -19,6 +21,12 @@ interface EntityStorageBackend {
   getAll(entityKey: string): Promise<Map<string, any>>;
   acquireLock(entityKey: string): Promise<void>;
   releaseLock(entityKey: string): Promise<void>;
+}
+
+function validateSleepDuration(durationMs: number): void {
+  if (!Number.isSafeInteger(durationMs) || durationMs < 0) {
+    throw new Error('sleep durationMs must be a non-negative safe integer');
+  }
 }
 
 /**
@@ -411,6 +419,30 @@ class EntityContext implements Context {
 
   async yieldIfNeeded(_reason?: string): Promise<void> {
     // Entity methods run on the persistent worker path.
+  }
+
+  async sleep(durationMs: number, _name?: string): Promise<void> {
+    validateSleepDuration(durationMs);
+    if (durationMs === 0) {
+      return;
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, durationMs));
+  }
+
+  async waitForUser(
+    _question: string,
+    _options?: {
+      inputType?: HITLInputType;
+      options?: HITLOption[];
+      allowCustom?: boolean;
+      skippable?: boolean;
+    },
+  ): Promise<string | null> {
+    throw new ConfigurationError('ctx.waitForUser is not supported in entity methods');
+  }
+
+  async waitForSignal<T = unknown>(_signalName: string, _name?: string): Promise<T> {
+    throw new ConfigurationError('ctx.waitForSignal is not supported in entity methods');
   }
 
   get logger(): Logger {

@@ -22,7 +22,7 @@ import type {
   PromptCache,
   ToolCall as LMToolCall,
 } from './lm.js';
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 import type { AgentEvent } from './events.js';
 import {
   agentStarted,

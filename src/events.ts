@@ -13,7 +13,7 @@
  *   - SSE-only events (streaming): queued → flush task → EventStream
  */
 
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 
 // ─── Base event fields ───────────────────────────────────────────────
 

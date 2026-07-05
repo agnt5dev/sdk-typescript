@@ -415,21 +415,7 @@ export async function sleep(
   durationMs: number,
   name?: string,
 ): Promise<void> {
-  const sleepName = name || `sleep_${durationMs}ms`;
-
-  // ctx.step() checkpoints the start time — on replay it returns the cached value
-  const startTime = await ctx.step(sleepName, () => Date.now());
-
-  const elapsed = Date.now() - startTime;
-  const remaining = durationMs - elapsed;
-
-  if (remaining > 0) {
-    ctx.logger.info(`Starting durable sleep '${sleepName}': ${remaining}ms`);
-    await new Promise<void>(resolve => setTimeout(resolve, remaining));
-    ctx.logger.info(`Sleep '${sleepName}' completed`);
-  } else {
-    ctx.logger.info(`Sleep '${sleepName}' already elapsed (${elapsed}ms ago)`);
-  }
+  await ctx.sleep(durationMs, name);
 }
 
 export async function retryWorkflow<TInput = any, TOutput = any>(

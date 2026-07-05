@@ -10,7 +10,7 @@ import { ChatBot } from './chat.js';
 import { runWithContext, getCurrentContext } from './async-context.js';
 import { emptyRuntimeContext, runtimeContextFromMetadata } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
-import { WaitingForUserInputError } from './errors.js';
+import { ConfigurationError, WaitingForUserInputError } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import { EventEmitter } from './event-emitter.js';
 import {
@@ -99,6 +99,12 @@ function isSystemComponentRegistration(component: ComponentRegistration): boolea
   );
 }
 
+function validateSleepDuration(durationMs: number): void {
+  if (!Number.isSafeInteger(durationMs) || durationMs < 0) {
+    throw new Error('sleep durationMs must be a non-negative safe integer');
+  }
+}
+
 function optionNumberToEnv(name: string, value: number | undefined): void {
   if (value === undefined) return;
   if (!Number.isInteger(value) || value <= 0) {
@@ -177,7 +183,8 @@ class SimpleContext implements Context {
     public readonly attempt: number,
     public readonly serviceName: string,
     public readonly runtime: RuntimeContext = emptyRuntimeContext(),
-    private state: Map<string, any> = new Map()
+    private state: Map<string, any> = new Map(),
+    public readonly metadata: Record<string, string> = {}
   ) {}
 
   // AbortSignal for cooperative cancellation. Set by Worker.processMessage to
@@ -196,6 +203,14 @@ class SimpleContext implements Context {
 
   async yieldIfNeeded(_reason?: string): Promise<void> {
     // Persistent workers do not need cooperative workerless suspension.
+  }
+
+  async sleep(durationMs: number, _name?: string): Promise<void> {
+    validateSleepDuration(durationMs);
+    if (durationMs === 0) {
+      return;
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, durationMs));
   }
 
   /**
@@ -486,6 +501,10 @@ class SimpleContext implements Context {
       skippable: options?.skippable,
       stepName,
     });
+  }
+
+  async waitForSignal<T = unknown>(_signalName: string, _name?: string): Promise<T> {
+    throw new ConfigurationError('ctx.waitForSignal is only supported by workerless workflows');
   }
 
   /**
@@ -786,6 +805,8 @@ export class Worker {
             attempt,
             this.serviceName,
             runtime,
+            undefined,
+            message.metadata,
           );
           ctx.setEmitter(emitter);
           ctx.setSignal(abortController.signal);
@@ -1321,7 +1342,7 @@ export class Worker {
       components.push({ name, componentType: 'agent', config: {}, metadata: {} });
     }
 
-    const workerExecutedBuiltinScorers = new Set(['llm_judge', 'correctness', 'faithfulness', 'agent_judge']);
+    const workerExecutedBuiltinScorers = new Set(['llm_judge', 'correctness', 'faithfulness', 'goal_success', 'agent_judge']);
 
     // Scorers. Deterministic built-ins stay on Rust/control-plane paths, but
     // managed judge presets need a routable SDK worker component.

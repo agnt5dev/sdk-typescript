@@ -128,6 +128,7 @@ export class WaitingForUserInputError extends AGNT5Error {
   public readonly skippable: boolean;
   public readonly checkpointState: Record<string, any>;
   public readonly stepName: string | undefined;
+  public readonly stepEvents?: Record<string, string | null>;
 
   /** @deprecated Use `question` instead */
   get prompt(): string { return this.question; }
@@ -144,6 +145,7 @@ export class WaitingForUserInputError extends AGNT5Error {
     skippable?: boolean;
     checkpointState?: Record<string, any>;
     stepName?: string;
+    stepEvents?: Record<string, string | null>;
   }) {
     super(`Waiting for user input: ${opts.question}`);
     this.name = 'WaitingForUserInputError';
@@ -156,6 +158,7 @@ export class WaitingForUserInputError extends AGNT5Error {
     this.skippable = opts.skippable ?? false;
     this.checkpointState = opts.checkpointState || {};
     this.stepName = opts.stepName;
+    this.stepEvents = opts.stepEvents;
   }
 }
 
@@ -168,12 +171,20 @@ export class SuspensionRequestedError extends AGNT5Error {
   public readonly reason: string;
   public readonly checkpointState: Record<string, any>;
   public readonly deadlineMs?: number;
+  public readonly readyAtMs?: number;
+  public readonly timerKey?: string;
+  public readonly signalName?: string;
+  public readonly waitingStep?: string;
 
   constructor(opts: {
     runId: string;
     reason: string;
     checkpointState?: Record<string, any>;
     deadlineMs?: number;
+    readyAtMs?: number;
+    timerKey?: string;
+    signalName?: string;
+    waitingStep?: string;
   }) {
     super(`Execution suspended: ${opts.reason}`);
     this.name = 'SuspensionRequestedError';
@@ -181,6 +192,10 @@ export class SuspensionRequestedError extends AGNT5Error {
     this.reason = opts.reason;
     this.checkpointState = opts.checkpointState || {};
     this.deadlineMs = opts.deadlineMs;
+    this.readyAtMs = opts.readyAtMs;
+    this.timerKey = opts.timerKey;
+    this.signalName = opts.signalName;
+    this.waitingStep = opts.waitingStep;
   }
 }
 

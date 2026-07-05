@@ -4,10 +4,17 @@
  */
 
 import type { Context, Logger } from './types.js';
-import { StateError, CheckpointError } from './errors.js';
+import { StateError, CheckpointError, ConfigurationError } from './errors.js';
+import type { HITLInputType, HITLOption } from './errors.js';
 import { loadNativeBindings, tryLoadNativeBindings } from './native-loader.js';
 import { emptyRuntimeContext } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
+
+function validateSleepDuration(durationMs: number): void {
+  if (!Number.isSafeInteger(durationMs) || durationMs < 0) {
+    throw new Error('sleep durationMs must be a non-negative safe integer');
+  }
+}
 
 /**
  * Platform-backed context with durable state and distributed tracing
@@ -145,6 +152,30 @@ export class PlatformContext implements Context {
 
   async yieldIfNeeded(_reason?: string): Promise<void> {
     // Persistent workers are not bounded by an outbound serverless request budget.
+  }
+
+  async sleep(durationMs: number, _name?: string): Promise<void> {
+    validateSleepDuration(durationMs);
+    if (durationMs === 0) {
+      return;
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, durationMs));
+  }
+
+  async waitForUser(
+    _question: string,
+    _options?: {
+      inputType?: HITLInputType;
+      options?: HITLOption[];
+      allowCustom?: boolean;
+      skippable?: boolean;
+    },
+  ): Promise<string | null> {
+    throw new ConfigurationError('ctx.waitForUser is not supported in PlatformContext');
+  }
+
+  async waitForSignal<T = unknown>(_signalName: string, _name?: string): Promise<T> {
+    throw new ConfigurationError('ctx.waitForSignal is not supported in PlatformContext');
   }
 
   /**

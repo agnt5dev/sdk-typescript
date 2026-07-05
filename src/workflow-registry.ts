@@ -1,4 +1,5 @@
 import type { WorkflowHandler } from './types.js';
+import type { WorkerlessFlowControlPolicy } from './flow-control.js';
 
 export interface WorkflowConfig {
   name: string;
@@ -7,6 +8,14 @@ export interface WorkflowConfig {
   cron?: string;
   /** Typed trigger declarations attached to this workflow registration. */
   triggers?: TriggerSpec[];
+  /** Declarative workerless flow-control policy emitted in the manifest. */
+  flowControl?: WorkerlessFlowControlPolicy;
+  /** Manifest-shaped alias accepted for generated code and config imports. */
+  flow_control?: WorkerlessFlowControlPolicy;
+  /** Legacy/static scheduling priority emitted as top-level manifest metadata. */
+  priority?: number;
+  /** Legacy/static active concurrency limit emitted as top-level manifest metadata. */
+  maxConcurrency?: number;
 }
 
 export interface TriggerSpec {
@@ -43,6 +52,14 @@ export interface WorkflowOptions {
   cron?: string;
   /** Typed trigger declarations such as event('user.created') */
   triggers?: TriggerSpec[];
+  /** Declarative workerless flow-control policy emitted in the manifest. */
+  flowControl?: WorkerlessFlowControlPolicy;
+  /** Manifest-shaped alias accepted for generated code and config imports. */
+  flow_control?: WorkerlessFlowControlPolicy;
+  /** Legacy/static scheduling priority emitted as top-level manifest metadata. */
+  priority?: number;
+  /** Legacy/static active concurrency limit emitted as top-level manifest metadata. */
+  maxConcurrency?: number;
 }
 
 export function event(name: string, options: EventTriggerOptions = {}): TriggerSpec {

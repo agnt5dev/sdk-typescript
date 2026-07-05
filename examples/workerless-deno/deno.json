@@ -1,0 +1,12 @@
+{
+  "tasks": {
+    "build:sdk": "cd ../.. && npm run build:ts",
+    "dev": "deno task build:sdk && deno run --allow-net --allow-env --allow-read=../../dist,../../native main.ts"
+  },
+  "imports": {
+    "@agnt5/sdk/serverless": "../../dist/serverless.js"
+  },
+  "compilerOptions": {
+    "strict": true
+  }
+}

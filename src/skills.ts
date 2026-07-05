@@ -26,7 +26,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 
 import { Tool } from './tool.js';
 import { skillLoaded } from './events.js';

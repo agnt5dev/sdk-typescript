@@ -21,10 +21,20 @@
       "import": "./dist/serverless-cloudflare.js",
       "default": "./dist/serverless-cloudflare.js"
     },
+    "./serverless/node": {
+      "types": "./dist/serverless-node.d.ts",
+      "import": "./dist/serverless-node.js",
+      "default": "./dist/serverless-node.js"
+    },
     "./workerless/cloudflare": {
       "types": "./dist/workerless-cloudflare.d.ts",
       "import": "./dist/workerless-cloudflare.js",
       "default": "./dist/workerless-cloudflare.js"
+    },
+    "./workerless/node": {
+      "types": "./dist/workerless-node.d.ts",
+      "import": "./dist/workerless-node.js",
+      "default": "./dist/workerless-node.js"
     },
     "./package.json": "./package.json"
   },

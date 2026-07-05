@@ -4,6 +4,7 @@ import type {
   RetryPolicy,
   BackoffPolicy,
 } from './types';
+import type { WorkerlessFlowControlPolicy } from './flow-control.js';
 import {
   functionCompleted,
   functionFailed,
@@ -47,6 +48,30 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
    */
   timeout(ms: number): this {
     this.config.timeout_ms = ms;
+    return this;
+  }
+
+  /**
+   * Declare workerless flow-control policy for generated manifests.
+   */
+  flowControl(policy: WorkerlessFlowControlPolicy): this {
+    this.config.flowControl = policy;
+    return this;
+  }
+
+  /**
+   * Declare a static scheduling priority for generated manifests.
+   */
+  priority(priority: number): this {
+    this.config.priority = priority;
+    return this;
+  }
+
+  /**
+   * Declare a static active concurrency limit for generated manifests.
+   */
+  maxConcurrency(limit: number): this {
+    this.config.maxConcurrency = limit;
     return this;
   }
 
