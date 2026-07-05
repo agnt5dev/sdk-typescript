@@ -13,6 +13,7 @@ import {
   llmJudge,
   correctness,
   faithfulness,
+  goalSuccess,
   agentJudge,
   numericRange,
   regexMatch,
@@ -665,6 +666,46 @@ describe('Built-in scorers', () => {
     expect(prompt).toContain('web_search');
     expect(prompt).toContain('step_efficiency');
   });
+
+  it('goalSuccess: should include trace context and session evidence', async () => {
+    let prompt = '';
+    const result = await goalSuccess(
+      {
+        input: { goal: 'Refund the order' },
+        output: { status: 'refunded' },
+        expected: { status: 'refunded' },
+        trace_eval_context: {
+          schema_version: 'agnt5.eval.trace_eval_context.v1',
+          features: { tool_call_count: 2, error_count: 0 },
+        },
+        config: {
+          model: 'gpt-test',
+          session_fields: ['session.goal'],
+          journal_event_fields: ['journal.events'],
+        },
+      },
+      {
+        runId: 'run-1',
+        correlationId: 'corr-1',
+        attempt: 0,
+        log: () => {},
+        llmJudgeLm: {
+          generate: async ({ messages }: any) => {
+            prompt = messages[1].content;
+            return { text: '{"score":0.9,"passed":true,"label":"pass","explanation":"goal achieved"}' };
+          },
+        },
+      } as any,
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.metadata?.judge_preset).toBe('goal_success');
+    expect(result.metadata?.evidence_sources).toContain('trace_eval_context');
+    expect(result.metadata?.evidence_sources).toContain('session_fields');
+    expect(result.metadata?.evidence_sources).toContain('journal_event_fields');
+    expect(prompt).toContain('goal_success_evidence');
+    expect(prompt).toContain('session.goal');
+  });
 });
 
 describe('Scorer decorator & registry', () => {
@@ -714,6 +755,7 @@ describe('Scorer decorator & registry', () => {
     expect(names).toContain('llm_judge');
     expect(names).toContain('correctness');
     expect(names).toContain('faithfulness');
+    expect(names).toContain('goal_success');
     expect(names).toContain('agent_judge');
   });
 
@@ -738,6 +780,24 @@ describe('Scorer decorator & registry', () => {
 
     expect(() =>
       scorer('plan_adherence', 'reserved trace built-in name')((_ctx, _request) =>
+        new ScorerResult({ score: 1.0 }),
+      ),
+    ).toThrow('AGNT5 built-in scorer');
+
+    expect(() =>
+      scorer('tool_sequence', 'reserved trace built-in name')((_ctx, _request) =>
+        new ScorerResult({ score: 1.0 }),
+      ),
+    ).toThrow('AGNT5 built-in scorer');
+
+    expect(() =>
+      scorer('tool_failure_recovered', 'reserved trace built-in name')((_ctx, _request) =>
+        new ScorerResult({ score: 1.0 }),
+      ),
+    ).toThrow('AGNT5 built-in scorer');
+
+    expect(() =>
+      scorer('goal_success', 'reserved judge name')((_ctx, _request) =>
         new ScorerResult({ score: 1.0 }),
       ),
     ).toThrow('AGNT5 built-in scorer');

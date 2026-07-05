@@ -55,6 +55,44 @@ describe('Tool', () => {
     expect(result).toBe(15);
   });
 
+  it('injects eval-only tool faults from runtime metadata', async () => {
+    const search = tool(
+      'search',
+      { description: 'Search' },
+      async (_ctx, args: { query: string }) => ({ title: args.query })
+    );
+    const ctx = new ContextImpl('inv-1', 'run-1', 0, 'test', {
+      metadata: {
+        agnt5_eval_role: 'target',
+        'agnt5.eval.tool_faults': JSON.stringify([
+          {
+            tool: 'search',
+            error_code: 'SIMULATED_TIMEOUT',
+            message: 'search timed out',
+            times: 1,
+          },
+        ]),
+      },
+    });
+
+    await expect(search(ctx, { query: 'first' })).rejects.toThrow(
+      'SIMULATED_TIMEOUT: search timed out'
+    );
+    await expect(search(ctx, { query: 'second' })).resolves.toEqual({
+      title: 'second',
+    });
+
+    const nonTarget = new ContextImpl('inv-2', 'run-2', 0, 'test', {
+      metadata: {
+        agnt5_eval_role: 'scorer',
+        'agnt5.eval.tool_faults': JSON.stringify([{ tool: 'search' }]),
+      },
+    });
+    await expect(search(nonTarget, { query: 'safe' })).resolves.toEqual({
+      title: 'safe',
+    });
+  });
+
   it('should get tool schema', () => {
     tool(
       'schema_test',

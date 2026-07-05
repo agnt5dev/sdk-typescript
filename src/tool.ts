@@ -10,6 +10,19 @@ import type { Context, ToolHandler, ToolOptions, ToolSchema, JSONSchema } from '
 import type { ContextImpl } from './context.js';
 import { ConfigurationError } from './errors.js';
 
+type EvalToolFaultSpec = {
+  tool?: string;
+  name?: string;
+  error_code?: string;
+  errorCode?: string;
+  message?: string;
+  times?: number;
+  after_calls?: number;
+  afterCalls?: number;
+};
+
+const evalToolFaultCounts = new WeakMap<object, Map<string, number>>();
+
 /**
  * Tool class representing a callable tool for agents
  */
@@ -52,6 +65,11 @@ export class Tool<TInput = any, TOutput = any> {
 
     ctx.logger.debug(`Invoking tool '${this.name}' with args: ${Object.keys(args).join(', ')}`);
 
+    const injectedFault = consumeEvalToolFault(ctx, this.name);
+    if (injectedFault) {
+      throw new Error(injectedFault);
+    }
+
     // Execute handler
     const result = await this.handler(ctx, args);
 
@@ -70,6 +88,63 @@ export class Tool<TInput = any, TOutput = any> {
       requires_confirmation: this.confirmation
     };
   }
+}
+
+function consumeEvalToolFault(ctx: Context, toolName: string): string | undefined {
+  const metadata = ctx.metadata;
+  if (!metadata || metadata.agnt5_eval_role !== 'target') {
+    return undefined;
+  }
+  const raw = metadata['agnt5.eval.tool_faults'] || metadata.agnt5_eval_tool_faults;
+  if (!raw) {
+    return undefined;
+  }
+  let specs: EvalToolFaultSpec[];
+  try {
+    const parsed = JSON.parse(raw);
+    specs = Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return undefined;
+  }
+  if (specs.length === 0) {
+    return undefined;
+  }
+
+  let counts = evalToolFaultCounts.get(ctx as object);
+  if (!counts) {
+    counts = new Map();
+    evalToolFaultCounts.set(ctx as object, counts);
+  }
+  const callCount = counts.get(toolName) || 0;
+  counts.set(toolName, callCount + 1);
+
+  const spec = specs.find(candidate => {
+    const candidateTool = (candidate.tool || candidate.name || '').trim();
+    if (candidateTool !== toolName) return false;
+    const afterCalls = numberOrDefault(candidate.after_calls ?? candidate.afterCalls, 0);
+    const times = numberOrDefault(candidate.times, 1);
+    return callCount >= afterCalls && callCount < afterCalls + times;
+  });
+  if (!spec) {
+    return undefined;
+  }
+
+  const code = (spec.error_code || spec.errorCode || 'AGNT5_EVAL_TOOL_FAULT').trim();
+  const message = (spec.message || `simulated eval tool fault for ${toolName}`).trim();
+  return `${code}: ${message}`;
+}
+
+function numberOrDefault(value: unknown, defaultValue: number): number {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.floor(parsed);
+    }
+  }
+  return defaultValue;
 }
 
 /**

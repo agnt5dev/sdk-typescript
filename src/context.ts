@@ -4,10 +4,10 @@ import { emptyRuntimeContext } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
 import { ConfigurationError, SuspensionRequestedError, WaitingForUserInputError } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
-import { join, dirname } from 'path';
-import { mkdirSync, existsSync } from 'fs';
-import { createRequire } from 'module';
-import { fileURLToPath } from 'url';
+import { existsSync, mkdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Lazy-loaded native log function for OTLP export
 let _nativeLogFn: ((level: string, message: string, runId: string | null, traceId: string | null, spanId: string | null, attributes: Record<string, string> | null) => void) | null | undefined;
@@ -138,6 +138,12 @@ function loadBetterSqlite3(): new (dbPath: string) => any {
   }
 }
 
+function validateSleepDuration(durationMs: number): void {
+  if (!Number.isSafeInteger(durationMs) || durationMs < 0) {
+    throw new Error('sleep durationMs must be a non-negative safe integer');
+  }
+}
+
 /**
  * In-memory storage backend for testing
  */
@@ -194,12 +200,14 @@ export class ContextImpl implements Context {
       storage?: 'memory' | 'sqlite';
       dbPath?: string;
       runtime?: RuntimeContext;
+      metadata?: Record<string, string>;
       checkpoints?: Record<string, any>;
       workerlessDeadlineMs?: number;
       workerlessYieldBeforeMs?: number;
     }
   ) {
     this.runtime = options?.runtime ?? emptyRuntimeContext();
+    this.metadata = options?.metadata;
     this._checkpointSnapshot = new Map(Object.entries(options?.checkpoints || {}));
     this._workerlessDeadlineMs = options?.workerlessDeadlineMs;
     this._workerlessYieldBeforeMs = options?.workerlessYieldBeforeMs ?? 1000;
@@ -214,6 +222,7 @@ export class ContextImpl implements Context {
   }
 
   readonly runtime: RuntimeContext;
+  readonly metadata?: Record<string, string>;
 
   async get<T>(key: string, defaultValue?: T): Promise<T | undefined> {
     const value = await this.storage.get(key);
@@ -260,6 +269,14 @@ export class ContextImpl implements Context {
       checkpointState: this.checkpointSnapshot(),
       deadlineMs: this._workerlessDeadlineMs,
     });
+  }
+
+  async sleep(durationMs: number, _name?: string): Promise<void> {
+    validateSleepDuration(durationMs);
+    if (durationMs === 0) {
+      return;
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, durationMs));
   }
 
   checkpointSnapshot(): Record<string, any> {
@@ -327,6 +344,10 @@ export class ContextImpl implements Context {
   async setUserResponse(pauseIndex: number, response: string | null): Promise<void> {
     const responseKey = `user_response:${this.runId}:${pauseIndex}`;
     await this.storage.setCheckpoint(responseKey, response);
+  }
+
+  async waitForSignal<T = unknown>(_signalName: string, _name?: string): Promise<T> {
+    throw new ConfigurationError('ctx.waitForSignal is only supported by managed worker runtimes');
   }
 
   /**

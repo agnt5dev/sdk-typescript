@@ -65,6 +65,26 @@ describe('RunResponse', () => {
     expect(resp.output).toEqual({ greeting: 'Hello from output_data' });
   });
 
+  it('should parse output_ref from workerless large-output responses', () => {
+    const resp = new RunResponse({
+      run_id: 'run-ref',
+      status: 'completed',
+      output_ref: {
+        kind: 'agnt5.object_store.ref.v1',
+        ref: 'workerless/payloads/project=p/deployment=d/run=r/attempt=0/output.json',
+        size_bytes: 12,
+        sha256: 'a'.repeat(64),
+        content_type: 'application/json',
+      },
+      status_code: 200,
+    });
+
+    expect(resp.isSuccess).toBe(true);
+    expect(resp.output).toBeUndefined();
+    expect(resp.hasOutputRef).toBe(true);
+    expect(resp.outputRef?.ref).toBe('workerless/payloads/project=p/deployment=d/run=r/attempt=0/output.json');
+  });
+
   it('should parse nested legacy result output_data responses', () => {
     const resp = new RunResponse({
       run_id: 'run-5',
@@ -192,6 +212,81 @@ describe('Client', () => {
     expect(headers['X-User-ID']).toBe('user-1');
   });
 
+  it('should include ambient deployment ID for default headers', () => {
+    const origDeploymentId = process.env.AGNT5_DEPLOYMENT_ID;
+    try {
+      process.env.AGNT5_DEPLOYMENT_ID = 'dep-env';
+      const client = new Client();
+      const headers = (client as any).buildHeaders();
+
+      expect(headers['X-Deployment-ID']).toBe('dep-env');
+    } finally {
+      if (origDeploymentId !== undefined) {
+        process.env.AGNT5_DEPLOYMENT_ID = origDeploymentId;
+      } else {
+        delete process.env.AGNT5_DEPLOYMENT_ID;
+      }
+    }
+  });
+
+  it('should omit ambient deployment ID when component execution opts out', () => {
+    const origDeploymentId = process.env.AGNT5_DEPLOYMENT_ID;
+    try {
+      process.env.AGNT5_DEPLOYMENT_ID = 'dep-env';
+      const client = new Client();
+      const headers = (client as any).buildHeaders(undefined, undefined, {
+        includeAmbientDeploymentId: false,
+      });
+
+      expect(headers['X-Deployment-ID']).toBeUndefined();
+    } finally {
+      if (origDeploymentId !== undefined) {
+        process.env.AGNT5_DEPLOYMENT_ID = origDeploymentId;
+      } else {
+        delete process.env.AGNT5_DEPLOYMENT_ID;
+      }
+    }
+  });
+
+  it('should keep explicit deployment ID when component execution opts out of ambient routing', () => {
+    const origDeploymentId = process.env.AGNT5_DEPLOYMENT_ID;
+    try {
+      process.env.AGNT5_DEPLOYMENT_ID = 'dep-env';
+      const client = new Client({ deploymentId: 'dep-explicit' });
+      const headers = (client as any).buildHeaders(undefined, undefined, {
+        includeAmbientDeploymentId: false,
+      });
+
+      expect(headers['X-Deployment-ID']).toBe('dep-explicit');
+    } finally {
+      if (origDeploymentId !== undefined) {
+        process.env.AGNT5_DEPLOYMENT_ID = origDeploymentId;
+      } else {
+        delete process.env.AGNT5_DEPLOYMENT_ID;
+      }
+    }
+  });
+
+  it('should allow per-call deployment ID to override ambient execution routing', () => {
+    const origDeploymentId = process.env.AGNT5_DEPLOYMENT_ID;
+    try {
+      process.env.AGNT5_DEPLOYMENT_ID = 'dep-env';
+      const client = new Client();
+      const headers = (client as any).buildHeaders(undefined, undefined, {
+        deploymentId: 'dep-call',
+        includeAmbientDeploymentId: false,
+      });
+
+      expect(headers['X-Deployment-ID']).toBe('dep-call');
+    } finally {
+      if (origDeploymentId !== undefined) {
+        process.env.AGNT5_DEPLOYMENT_ID = origDeploymentId;
+      } else {
+        delete process.env.AGNT5_DEPLOYMENT_ID;
+      }
+    }
+  });
+
   it('should read API key from environment', () => {
     const origEnv = process.env.AGNT5_API_KEY;
     try {
@@ -219,6 +314,135 @@ describe('Client', () => {
       } else {
         delete process.env.AGNT5_API_KEY;
       }
+    }
+  });
+
+  it('getOutput should dereference output through the run output endpoint', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      run_id: 'run/with spaces',
+      status: 'completed',
+      output: { ok: true },
+      source: 'object_store',
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test', apiKey: 'agnt5_sk_test' });
+
+      const output = await client.getOutput('run/with spaces');
+
+      expect(output).toEqual({ ok: true });
+      expect(fetchMock).toHaveBeenCalledWith('http://gateway.test/v1/runs/run%2Fwith%20spaces/output', expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          'X-API-KEY': 'agnt5_sk_test',
+        }),
+      }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('resolveOutput should return inline output without an extra fetch', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test', apiKey: 'agnt5_sk_test' });
+      const result = new RunResponse({
+        run_id: 'run-inline',
+        status: 'completed',
+        output: { inline: true },
+        status_code: 200,
+      });
+
+      await expect(client.resolveOutput(result)).resolves.toEqual({ inline: true });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('resolveOutput should dereference workerless output_ref responses', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      output: { large: true },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test', apiKey: 'agnt5_sk_test' });
+      const result = new RunResponse({
+        run_id: 'run-ref',
+        status: 'completed',
+        output_ref: {
+          kind: 'agnt5.object_store.ref.v1',
+          ref: 'workerless/payloads/project=p/deployment=d/run=run-ref/attempt=0/output.json',
+          size_bytes: 14,
+          sha256: 'b'.repeat(64),
+          content_type: 'application/json',
+        },
+        status_code: 200,
+      });
+
+      await expect(client.resolveOutput(result)).resolves.toEqual({ large: true });
+      expect(fetchMock).toHaveBeenCalledWith('http://gateway.test/v1/runs/run-ref/output', expect.objectContaining({
+        method: 'GET',
+      }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('waitForOutput should wait for completion and dereference output_ref', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/v1/status/run-ref')) {
+        return new Response(JSON.stringify({
+          run_id: 'run-ref',
+          status: 'completed',
+          status_code: 200,
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/v1/result/run-ref')) {
+        return new Response(JSON.stringify({
+          run_id: 'run-ref',
+          status: 'completed',
+          output_ref: {
+            kind: 'agnt5.object_store.ref.v1',
+            ref: 'workerless/payloads/project=p/deployment=d/run=run-ref/attempt=0/output.json',
+            size_bytes: 14,
+            sha256: 'c'.repeat(64),
+            content_type: 'application/json',
+          },
+          status_code: 200,
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/v1/runs/run-ref/output')) {
+        return new Response(JSON.stringify({
+          output: { final: true },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ error: `unexpected URL: ${url}` }), { status: 500 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test', apiKey: 'agnt5_sk_test' });
+
+      await expect(client.waitForOutput('run-ref', 1000, 1)).resolves.toEqual({ final: true });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });

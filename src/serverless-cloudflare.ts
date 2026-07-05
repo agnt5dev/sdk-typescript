@@ -27,6 +27,9 @@ export type {
   WorkerlessInvokePayload as ServerlessInvokePayload,
   WorkerlessManifest as ServerlessManifest,
   WorkerlessManifestComponent as ServerlessManifestComponent,
+  WorkerlessOutputRef as ServerlessOutputRef,
+  WorkerlessOutputUpload as ServerlessOutputUpload,
+  WorkerlessPayloadRef as ServerlessPayloadRef,
   WorkerlessServeOptions as ServerlessServeOptions,
   WorkerlessSigningSecretResolver as ServerlessSigningSecretResolver,
 } from './workerless.js';

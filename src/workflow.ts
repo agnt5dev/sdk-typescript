@@ -77,6 +77,10 @@ export function workflow<TInput = any, TOutput = any>(
     handler,
     cron: options.cron,
     triggers: options.triggers,
+    flowControl: options.flowControl,
+    flow_control: options.flow_control,
+    priority: options.priority,
+    maxConcurrency: options.maxConcurrency,
   };
   WorkflowRegistry.register(config);
 

@@ -15,7 +15,7 @@ export { PlatformContext } from './platform-context.js';
 
 // Client exports
 export { Client, RunResponse, WorkflowProxy, SessionProxy } from './client.js';
-export type { ClientOptions, RunOptions, RunStatus, RunErrorDetail, SubmitResponse, ReceivedEvent, EventRecord, EventsResponse } from './client.js';
+export type { ClientOptions, RunOptions, RunStatus, RunErrorDetail, OutputRef, SubmitResponse, ReceivedEvent, EventRecord, EventsResponse } from './client.js';
 
 // Batch exports
 export { BatchResult, BatchStatusResult } from './batch.js';
@@ -93,6 +93,9 @@ export type {
   WorkerlessInvokePayload as ServerlessInvokePayload,
   WorkerlessManifest as ServerlessManifest,
   WorkerlessManifestComponent as ServerlessManifestComponent,
+  WorkerlessOutputRef as ServerlessOutputRef,
+  WorkerlessOutputUpload as ServerlessOutputUpload,
+  WorkerlessPayloadRef as ServerlessPayloadRef,
   WorkerlessServeOptions as ServerlessServeOptions,
   WorkerlessSigningSecretResolver as ServerlessSigningSecretResolver,
   WorkerlessHandler,
@@ -101,6 +104,9 @@ export type {
   WorkerlessInvokePayload,
   WorkerlessManifest,
   WorkerlessManifestComponent,
+  WorkerlessOutputRef,
+  WorkerlessOutputUpload,
+  WorkerlessPayloadRef,
   WorkerlessServeOptions,
   WorkerlessSigningSecretResolver,
 } from './workerless.js';
@@ -121,6 +127,20 @@ export type {
   WorkflowConfig,
   WorkflowOptions,
 } from './workflow.js';
+export type {
+  WorkerlessBackoffType,
+  WorkerlessBatchPolicy,
+  WorkerlessConcurrencyPolicy,
+  WorkerlessDebouncePolicy,
+  WorkerlessFlowControlPolicy,
+  WorkerlessFlowControlPriority,
+  WorkerlessFlowControlScope,
+  WorkerlessIdempotencyPolicy,
+  WorkerlessPriorityPolicy,
+  WorkerlessRetryPolicy,
+  WorkerlessSingletonPolicy,
+  WorkerlessWindowPolicy,
+} from './flow-control.js';
 export {
   parallel,
   gather,
@@ -334,6 +354,7 @@ export {
   llmJudge,
   correctness,
   faithfulness,
+  goalSuccess,
   agentJudge,
   getRequestConfig,
   getTraceEvents,

@@ -79,12 +79,26 @@ export type {
   WorkflowOptions,
 };
 export type {
+  WorkerlessBatchPolicy as CloudflareServerlessBatchPolicy,
+  WorkerlessConcurrencyPolicy as CloudflareServerlessConcurrencyPolicy,
+  WorkerlessDebouncePolicy as CloudflareServerlessDebouncePolicy,
+  WorkerlessFlowControlPolicy as CloudflareServerlessFlowControlPolicy,
+  WorkerlessIdempotencyPolicy as CloudflareServerlessIdempotencyPolicy,
+  WorkerlessPriorityPolicy as CloudflareServerlessPriorityPolicy,
+  WorkerlessRetryPolicy as CloudflareServerlessRetryPolicy,
+  WorkerlessSingletonPolicy as CloudflareServerlessSingletonPolicy,
+  WorkerlessWindowPolicy as CloudflareServerlessWindowPolicy,
+} from './flow-control.js';
+export type {
   WorkerlessBudget,
   WorkerlessCheckpoint,
   WorkerlessHandler,
   WorkerlessInvokePayload,
   WorkerlessManifest,
   WorkerlessManifestComponent,
+  WorkerlessOutputRef,
+  WorkerlessOutputUpload,
+  WorkerlessPayloadRef,
   WorkerlessServeOptions,
   WorkerlessSigningSecretResolver,
 } from './workerless.js';

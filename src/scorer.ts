@@ -135,15 +135,31 @@ export const BUILTIN_DETERMINISTIC_SCORER_NAMES = [
   'json_schema',
   'numeric_range',
   'levenshtein',
+  'tool_called',
+  'tool_not_called',
+  'tool_sequence',
+  'tool_sequence_in_order',
+  'tool_sequence_exact',
+  'tool_sequence_any_order',
+  'tool_trajectory',
+  'tool_params_match',
+  'max_tool_calls',
+  'max_llm_calls',
+  'max_tokens',
+  'duration_under',
+  'no_errors',
+  'tool_failure_recovered',
   'step_efficiency',
   'plan_quality',
   'plan_adherence',
+  'state_equals',
 ] as const;
 
 export const BUILTIN_JUDGE_SCORER_NAMES = [
   'llm_judge',
   'correctness',
   'faithfulness',
+  'goal_success',
   'agent_judge',
 ] as const;
 
@@ -527,6 +543,9 @@ const CORRECTNESS_JUDGE_CRITERIA =
 
 const FAITHFULNESS_JUDGE_CRITERIA =
   'Evaluate whether the output is faithful to the provided context. Penalize claims that are unsupported, contradicted by context, or omit critical context needed for the answer.';
+
+const GOAL_SUCCESS_JUDGE_CRITERIA =
+  'Evaluate whether the overall session achieved the user\'s goal. Use available trace-eval context, journal events, session state, input, output, and expected result when provided. Penalize incomplete task completion, missing required actions, tool failures that affected the outcome, and unsupported success claims.';
 
 const AGENT_JUDGE_DEFAULT_CRITERIA =
   'Investigate the provided evidence before scoring. Check factual correctness, grounding in the trace and tool evidence, appropriate tool usage, and whether the final output is supported by the observed execution. Penalize unsupported claims, missing evidence, tool misuse, and reasoning that conflicts with the trace.';
@@ -963,6 +982,29 @@ export async function faithfulness(
   });
 }
 
+export async function goalSuccess(
+  request: ScorerRequest,
+  ctx?: ScorerContext,
+): Promise<ScorerResult> {
+  const cfg = request.config ?? {};
+  const { evidence, sources } = goalSuccessEvidence(request, cfg);
+  const result = await llmJudge({
+    ...request,
+    config: {
+      provider: cfg.provider ?? 'openai',
+      model: cfg.model ?? 'gpt-4o-mini',
+      criteria: GOAL_SUCCESS_JUDGE_CRITERIA,
+      include_input: cfg.include_input ?? true,
+      temperature: cfg.temperature ?? 0.0,
+      context_data: sources.length > 0 ? { goal_success_evidence: evidence } : undefined,
+    },
+  }, ctx);
+  return mergeJudgeMetadata(result, {
+    judge_preset: 'goal_success',
+    evidence_sources: sources,
+  });
+}
+
 export async function agentJudge(
   request: ScorerRequest,
   ctx?: ScorerContext,
@@ -1063,6 +1105,37 @@ function agentJudgeEvidence(
   return { evidence: truncateAgentJudgeEvidence(evidence, maxEvidenceChars), sources };
 }
 
+function goalSuccessEvidence(
+  request: ScorerRequest,
+  config: Record<string, any>,
+): { evidence: Record<string, any>; sources: string[] } {
+  const evidence: Record<string, any> = {};
+  const providedContext = config.context_data ?? config.context;
+  if (providedContext !== undefined && providedContext !== null) {
+    evidence.provided_context = providedContext;
+  }
+  const traceEvalContext = request.trace_eval_context ?? config.trace_eval_context;
+  if (traceEvalContext !== undefined && traceEvalContext !== null) {
+    evidence.trace_eval_context = traceEvalContext;
+  }
+  if (config.include_trace !== false && request.trace?.length) {
+    evidence.trace = request.trace;
+  }
+  if (request.peer_scores?.length) {
+    evidence.peer_scores = request.peer_scores;
+  }
+  const sessionFields = configStringList(config, 'session_fields');
+  if (sessionFields.length > 0) {
+    evidence.session_fields = sessionFields;
+  }
+  const journalEventFields = configStringList(config, 'journal_event_fields');
+  if (journalEventFields.length > 0) {
+    evidence.journal_event_fields = journalEventFields;
+  }
+  const sources = Object.keys(evidence).sort();
+  return { evidence, sources };
+}
+
 function configStringList(config: Record<string, any>, ...keys: string[]): string[] {
   const values: string[] = [];
   for (const key of keys) {
@@ -1148,6 +1221,7 @@ ScorerRegistry.registerBuiltin({ name: 'levenshtein', handler: (_ctx, req) => le
 ScorerRegistry.registerBuiltin({ name: 'llm_judge', handler: (ctx, req) => llmJudge(req, ctx), description: 'LLM-as-judge: ask an LM to score the output against criteria', scope: 'item', isAsync: true });
 ScorerRegistry.registerBuiltin({ name: 'correctness', handler: (ctx, req) => correctness(req, ctx), description: 'Managed LLM judge preset for answer correctness', scope: 'item', isAsync: true });
 ScorerRegistry.registerBuiltin({ name: 'faithfulness', handler: (ctx, req) => faithfulness(req, ctx), description: 'Managed LLM judge preset for faithfulness to configured context', scope: 'item', isAsync: true });
+ScorerRegistry.registerBuiltin({ name: 'goal_success', handler: (ctx, req) => goalSuccess(req, ctx), description: 'Managed LLM judge preset for session goal success', scope: 'session', isAsync: true });
 ScorerRegistry.registerBuiltin({ name: 'agent_judge', handler: (ctx, req) => agentJudge(req, ctx), description: 'Managed agent-as-a-judge scorer over trace and tool evidence', scope: 'item', isAsync: true });
 
 // ─── Runner ──────────────────────────────────────────────────────────

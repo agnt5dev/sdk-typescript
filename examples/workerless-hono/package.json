@@ -1,0 +1,18 @@
+{
+  "name": "agnt5-workerless-hono-example",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/app.js"
+  },
+  "dependencies": {
+    "@agnt5/sdk": "file:../..",
+    "@hono/node-server": "^1.13.8",
+    "hono": "^4.6.15"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3"
+  }
+}

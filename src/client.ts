@@ -45,6 +45,8 @@ export interface ClientOptions {
 export interface RunOptions {
   /** Component type (default: "function") */
   componentType?: 'function' | 'workflow' | 'agent' | 'tool';
+  /** Explicit deployment ID for this call. Ambient AGNT5_DEPLOYMENT_ID is not used for component execution. */
+  deploymentId?: string;
   /** Session ID for multi-turn conversations */
   sessionId?: string;
   /** User ID for user-scoped memory */
@@ -91,6 +93,7 @@ interface RawRunResponse {
   status?: string;
   output?: any;
   output_data?: any;
+  output_ref?: OutputRef;
   error?: any;
   error_message?: string;
   error_code?: string;
@@ -110,6 +113,14 @@ interface RawRunResponse {
     };
     [key: string]: any;
   };
+}
+
+export interface OutputRef {
+  kind?: string;
+  ref: string;
+  size_bytes?: number;
+  sha256?: string;
+  content_type?: string;
 }
 
 /**
@@ -132,6 +143,7 @@ export class RunResponse<T = any> {
   readonly statusCode: number;
   readonly status: RunStatus;
   readonly output: T | undefined;
+  readonly outputRef: OutputRef | undefined;
   readonly error: RunErrorDetail | undefined;
   readonly durationMs: number | undefined;
   readonly traceId: string | undefined;
@@ -154,6 +166,7 @@ export class RunResponse<T = any> {
       nestedOutput?.output_data ??
       nestedOutput
     ) as T | undefined;
+    this.outputRef = raw.output_ref;
     this.durationMs = raw.duration_ms;
     this.traceId = raw.trace_id;
     this.component = raw.component;
@@ -198,6 +211,11 @@ export class RunResponse<T = any> {
   /** Execution duration as milliseconds (undefined if not available) */
   get elapsed(): number | undefined {
     return this.durationMs;
+  }
+
+  /** True when the final output is stored out of band and must be dereferenced. */
+  get hasOutputRef(): boolean {
+    return this.outputRef !== undefined;
   }
 
   /** Throw RunError if the run failed */
@@ -320,6 +338,7 @@ export class Client {
   private readonly apiKey: string | undefined;
   private readonly tenantId: string | undefined;
   private readonly deploymentId: string | undefined;
+  private readonly deploymentIdIsAmbient: boolean;
   private readonly timeout: number;
   private readonly maxRetries: number;
   private readonly retryDelayMs: number;
@@ -330,6 +349,7 @@ export class Client {
     this.apiKey = options.apiKey || env?.AGNT5_API_KEY;
     this.tenantId = options.tenantId || env?.AGNT5_TENANT_ID;
     this.deploymentId = options.deploymentId || env?.AGNT5_DEPLOYMENT_ID;
+    this.deploymentIdIsAmbient = !options.deploymentId && !!env?.AGNT5_DEPLOYMENT_ID;
     this.timeout = options.timeout || 30000;
     this.maxRetries = options.maxRetries ?? 3;
     this.retryDelayMs = options.retryDelayMs || 1000;
@@ -339,7 +359,11 @@ export class Client {
    * Build request headers with authentication and routing. `tenantOverride`
    * wins over the client-level `tenantId` when set.
    */
-  private buildHeaders(extra?: Record<string, string>, tenantOverride?: string): Record<string, string> {
+  private buildHeaders(
+    extra?: Record<string, string>,
+    tenantOverride?: string,
+    options: { deploymentId?: string; includeAmbientDeploymentId?: boolean } = {},
+  ): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
@@ -350,8 +374,12 @@ export class Client {
     if (effectiveTenant) {
       headers['X-Tenant-ID'] = effectiveTenant;
     }
-    if (this.deploymentId) {
-      headers['X-Deployment-ID'] = this.deploymentId;
+    const deploymentId = options.deploymentId
+      || (options.includeAmbientDeploymentId === false && this.deploymentIdIsAmbient
+        ? undefined
+        : this.deploymentId);
+    if (deploymentId) {
+      headers['X-Deployment-ID'] = deploymentId;
     }
     if (extra) {
       Object.assign(headers, extra);
@@ -414,7 +442,10 @@ export class Client {
 
       const response = await fetch(url, {
         method: 'POST',
-        headers: this.buildHeaders(extra, options.tenant),
+        headers: this.buildHeaders(extra, options.tenant, {
+          deploymentId: options.deploymentId,
+          includeAmbientDeploymentId: false,
+        }),
         body: JSON.stringify(inputData),
         signal: AbortSignal.timeout(this.timeout),
       });
@@ -433,13 +464,16 @@ export class Client {
   /**
    * Submit a component for async execution and return immediately.
    */
-  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant'> = {}): Promise<SubmitResponse> {
+  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId'> = {}): Promise<SubmitResponse> {
     const componentType = options.componentType || 'function';
     const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/submit`;
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: this.buildHeaders(undefined, options.tenant),
+      headers: this.buildHeaders(undefined, options.tenant, {
+        deploymentId: options.deploymentId,
+        includeAmbientDeploymentId: false,
+      }),
       body: JSON.stringify(inputData),
       signal: AbortSignal.timeout(this.timeout),
     });
@@ -506,6 +540,51 @@ export class Client {
   }
 
   /**
+   * Get the output payload for a completed run, dereferencing workerless
+   * output_ref payloads when the runtime stored large output out of band.
+   */
+  async getOutput<T = any>(runId: string): Promise<T> {
+    const url = `${this.gatewayUrl}/v1/runs/${encodeURIComponent(runId)}/output`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: this.buildHeaders(),
+      signal: AbortSignal.timeout(this.timeout),
+    });
+
+    if (response.status === 404) {
+      throw new RunError('Run not found', runId);
+    }
+
+    if (!response.ok) {
+      const errorData = (await response.json().catch(() => ({}))) as any;
+      const message = errorData.message || errorData.error || `HTTP ${response.status}: Failed to get output`;
+      throw createErrorFromResponse(response.status, message, runId, url);
+    }
+
+    const data = (await response.json()) as { output?: T };
+    return data.output as T;
+  }
+
+  /**
+   * Return the final output for a completed response, dereferencing output_ref
+   * payloads when workerless stored large output out of band.
+   */
+  async resolveOutput<T = any>(result: RunResponse<T>): Promise<T | undefined> {
+    result.raiseForStatus();
+    if (!result.isSuccess) {
+      return undefined;
+    }
+    if (result.hasOutputRef) {
+      if (!result.runId) {
+        throw new RunError('Run output reference cannot be dereferenced without a run ID', result.runId, result.status);
+      }
+      return await this.getOutput<T>(result.runId);
+    }
+    return result.output;
+  }
+
+  /**
    * Wait for a run to complete and return the result.
    */
   async waitForResult<T = any>(runId: string, timeoutMs: number = 300000, pollIntervalMs: number = 1000): Promise<RunResponse<T>> {
@@ -528,10 +607,20 @@ export class Client {
   }
 
   /**
+   * Wait for a run to complete and return only its final output.
+   *
+   * Large workerless outputs are dereferenced through the run output endpoint.
+   */
+  async waitForOutput<T = any>(runId: string, timeoutMs: number = 300000, pollIntervalMs: number = 1000): Promise<T | undefined> {
+    const result = await this.waitForResult<T>(runId, timeoutMs, pollIntervalMs);
+    return await this.resolveOutput<T>(result);
+  }
+
+  /**
    * Stream text chunks from a component using SSE.
    * For typed events, use events() instead.
    */
-  async *stream(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType'> = {}): AsyncGenerator<string, void, unknown> {
+  async *stream(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId'> = {}): AsyncGenerator<string, void, unknown> {
     for await (const event of this.events(component, inputData, options)) {
       if (event.data.chunk !== undefined) {
         yield event.data.chunk;
@@ -556,13 +645,16 @@ export class Client {
    * }
    * ```
    */
-  async *events(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType'> = {}): AsyncGenerator<ReceivedEvent, void, unknown> {
+  async *events(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId'> = {}): AsyncGenerator<ReceivedEvent, void, unknown> {
     const componentType = options.componentType || 'function';
     const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/stream`;
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: this.buildHeaders(),
+      headers: this.buildHeaders(undefined, options.tenant, {
+        deploymentId: options.deploymentId,
+        includeAmbientDeploymentId: false,
+      }),
       body: JSON.stringify(inputData),
       signal: AbortSignal.timeout(300000), // 5 minute timeout for streaming
     });
@@ -738,7 +830,7 @@ export class Client {
   async batch(
     component: string,
     items: Array<Record<string, any> | BatchItemInput>,
-    options: BatchConfig & { componentType?: string; metadata?: Record<string, string> } = {},
+    options: BatchConfig & { componentType?: string; metadata?: Record<string, string>; deploymentId?: string } = {},
   ): Promise<BatchResult> {
     const componentType = options.componentType || 'function';
     const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/batch`;
@@ -767,7 +859,10 @@ export class Client {
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: this.buildHeaders(),
+      headers: this.buildHeaders(undefined, undefined, {
+        deploymentId: options.deploymentId,
+        includeAmbientDeploymentId: false,
+      }),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(options.batchTimeoutMs || 3600000),
     });
@@ -855,6 +950,7 @@ export class Client {
       expected?: any;
       scorers?: Array<string | LLMJudge | EvaluatorPreset | Record<string, any>>;
       componentType?: string;
+      deploymentId?: string;
       sessionId?: string;
       userId?: string;
       timeout?: number;
@@ -887,7 +983,10 @@ export class Client {
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: this.buildHeaders(extra),
+      headers: this.buildHeaders(extra, undefined, {
+        deploymentId: options.deploymentId,
+        includeAmbientDeploymentId: false,
+      }),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(options.timeout || this.timeout),
     });
@@ -929,6 +1028,7 @@ export class Client {
       scorers?: Array<string | LLMJudge | EvaluatorPreset | Record<string, any>>;
       expected?: any[];
       componentType?: string;
+      deploymentId?: string;
       maxConcurrency?: number;
       timeout?: number;
     } = {},
@@ -948,6 +1048,7 @@ export class Client {
           expected: item.expected,
           scorers: options.scorers,
           componentType: options.componentType,
+          deploymentId: options.deploymentId,
           timeout: options.timeout,
         });
         results.push(BatchEvalItemResult.fromEvalResponse(evalResponse, idx, item.itemId));
@@ -1022,12 +1123,14 @@ export class WorkflowProxy {
   /** Execute the workflow synchronously */
   async run<T = any>(
     input?: Record<string, any>,
-    options?: { sessionId?: string; userId?: string },
+    options?: { sessionId?: string; userId?: string; tenant?: string; deploymentId?: string },
   ): Promise<RunResponse<T>> {
     return this.client.run<T>(this.workflowName, input, {
       componentType: 'workflow',
       sessionId: options?.sessionId,
       userId: options?.userId,
+      tenant: options?.tenant,
+      deploymentId: options?.deploymentId,
     });
   }
 
@@ -1035,27 +1138,36 @@ export class WorkflowProxy {
   async chat<T = any>(
     message: string,
     sessionId?: string,
-    options?: { userId?: string; extra?: Record<string, any> },
+    options?: { userId?: string; extra?: Record<string, any>; tenant?: string; deploymentId?: string },
   ): Promise<RunResponse<T>> {
     const input = { message, ...(options?.extra || {}) };
     return this.client.run<T>(this.workflowName, input, {
       componentType: 'workflow',
       sessionId,
       userId: options?.userId,
+      tenant: options?.tenant,
+      deploymentId: options?.deploymentId,
     });
   }
 
   /** Submit the workflow for async execution */
-  async submit(input?: Record<string, any>): Promise<SubmitResponse> {
-    return this.client.submit(this.workflowName, input, { componentType: 'workflow' });
+  async submit(input?: Record<string, any>, options?: { tenant?: string; deploymentId?: string }): Promise<SubmitResponse> {
+    return this.client.submit(this.workflowName, input, {
+      componentType: 'workflow',
+      tenant: options?.tenant,
+      deploymentId: options?.deploymentId,
+    });
   }
 
   /** Stream events from workflow execution */
   async *events(
     input?: Record<string, any>,
+    options?: { tenant?: string; deploymentId?: string },
   ): AsyncGenerator<ReceivedEvent> {
     yield* this.client.events(this.workflowName, input, {
       componentType: 'workflow',
+      tenant: options?.tenant,
+      deploymentId: options?.deploymentId,
     });
   }
 }
