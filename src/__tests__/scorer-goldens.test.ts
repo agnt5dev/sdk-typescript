@@ -35,7 +35,7 @@ interface Golden {
   expect: { score: number; passed: boolean; label?: string };
 }
 
-const fixturePath = path.resolve(__dirname, '../../../test-fixtures/eval/builtin_goldens.json');
+const fixturePath = path.resolve(__dirname, '../../test-fixtures/eval/builtin_goldens.json');
 const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8')) as { cases: Golden[] };
 
 function runScorer(name: string, req: ScorerRequest): ScorerResult {

@@ -91,8 +91,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/agnt5dev",
-    "directory": "sdk/sdk-typescript"
+    "url": "https://github.com/agnt5dev/sdk-typescript"
   },
   "keywords": [
     "agnt5",
@@ -104,5 +103,5 @@
     "typescript"
   ],
   "author": "AGNT5 Team",
-  "license": "MIT"
+  "license": "Apache-2.0"
 }

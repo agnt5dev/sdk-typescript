@@ -12,8 +12,8 @@ crate-type = ["cdylib"]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 
-# Link to sdk-core (with wasm features - will be added later)
-agnt5-sdk-core = { path = "../../sdk-core", default-features = false }
+# Shared AGNT5 runtime foundation
+agnt5-sdk-core = { version = "0.1.1", default-features = false }
 
 # Async for WASM
 js-sys = "0.3"

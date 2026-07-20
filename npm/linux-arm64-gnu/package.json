@@ -19,14 +19,13 @@
     "typescript"
   ],
   "author": "AGNT5 Team",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=18.0.0"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/agnt5dev",
-    "directory": "sdk/sdk-typescript"
+    "url": "https://github.com/agnt5dev/sdk-typescript"
   },
   "publishConfig": {
     "access": "public"

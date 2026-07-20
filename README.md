@@ -170,14 +170,14 @@ See the [`examples/`](./examples/) directory for complete working examples:
 
 ## Contributing
 
-See [CONTRIBUTING.md](../../CONTRIBUTING.md) for development guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 
 ## License
 
-MIT - See [LICENSE](../../LICENSE) for details.
+Apache-2.0 - See [LICENSE](LICENSE) for details.
 
 ## Resources
 
-- [AGNT5 Documentation](../../docs/)
-- [GitHub Repository](https://github.com/agnt5/agnt5)
-- [SDK Architecture](../../sdk/CLAUDE.md)
+- [AGNT5 Documentation](https://agnt5.com/docs)
+- [GitHub Repository](https://github.com/agnt5dev/sdk-typescript)
+- [Shared SDK Core](https://github.com/agnt5dev/sdk-core)

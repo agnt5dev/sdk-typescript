@@ -303,7 +303,7 @@ const response = await executeWithRetry(
 ## Support
 
 - 📚 [Full Documentation](./lm.md)
-- 🐛 [Report Issues](https://github.com/agnt5/agnt5/issues)
+- 🐛 [Report Issues](https://github.com/agnt5dev/sdk-typescript/issues)
 - 💬 [Community Discord](https://discord.gg/agnt5)
 
 ---

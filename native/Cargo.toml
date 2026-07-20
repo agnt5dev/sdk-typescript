@@ -12,8 +12,8 @@ crate-type = ["cdylib"]
 napi = { version = "2", features = ["async", "tokio_rt"] }
 napi-derive = "2"
 
-# Link to sdk-core
-agnt5-sdk-core = { path = "../../sdk-core" }
+# Shared AGNT5 runtime foundation
+agnt5-sdk-core = "0.1.1"
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }

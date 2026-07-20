@@ -55,7 +55,7 @@ export function loadNativeBindings(): any {
   } catch (primaryError) {
     throw new Error(
       `Failed to load native bindings: ${pkgName} not installed, no local build found. ` +
-      `Run "pnpm run build:napi" in sdk/sdk-typescript. Original: ${(primaryError as Error).message}`
+      `Run "pnpm run build:napi" from the repository root. Original: ${(primaryError as Error).message}`
     );
   }
 }

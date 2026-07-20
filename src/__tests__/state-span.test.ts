@@ -27,7 +27,7 @@ describe('State and Span NAPI Bindings', () => {
       throw new Error(`Unsupported platform: ${key}`);
     }
 
-    const nativePath = join(__dirname, '../../native', `agnt5-sdk-native.${platformSuffix}.node`);
+    const nativePath = join(__dirname, '../..', `agnt5-sdk-native.${platformSuffix}.node`);
     native = require(nativePath);
   });
 
