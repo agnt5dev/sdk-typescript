@@ -80,8 +80,7 @@ pub struct WorkerOptions {
     /// Coordinator endpoint URL
     pub coordinator_endpoint: Option<String>,
     /// Legacy engine routing key (falls back to AGNT5_PROJECT_ID). On
-    /// worker/runtime paths this currently carries project identity; the
-    /// metadata key flips to sub-tenant in Phase B of the identity cleanup.
+    /// worker/runtime paths this currently carries project identity.
     pub tenant_id: Option<String>,
     /// Deployment ID (falls back to AGNT5_DEPLOYMENT_ID env var)
     pub deployment_id: Option<String>,

@@ -1,6 +1,5 @@
 /**
- * Platform-backed Context implementation using native State and Span bindings
- * Phase 2: Durable state and distributed tracing
+ * Platform-backed Context implementation using native State and Span bindings.
  */
 
 import type { Context, Logger } from './types.js';

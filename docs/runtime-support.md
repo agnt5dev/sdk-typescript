@@ -544,24 +544,6 @@ import { getBindingType } from '@agnt5/sdk/internal';
 console.log(getBindingType()); // Should print "napi" not "wasm"
 ```
 
-## Future Roadmap
-
-### Phase 1 (Current): Core Bindings
-- ✅ NAPI-RS bindings for Node.js/Bun/Deno
-- ✅ WASM bindings for edge runtimes
-- ✅ Conditional exports
-- ✅ Platform-specific pre-built binaries
-
-### Phase 2: Optimization
-- 🔄 WASM SIMD optimizations
-- 🔄 Streaming support for large payloads
-- 🔄 Zero-copy serialization where possible
-
-### Phase 3: Advanced Features
-- 📋 React Native support (via different WASM target)
-- 📋 Browser support (client-side AGNT5 workers)
-- 📋 Electron support
-
 ## Related Documentation
 
 - [Function Component](function.md) - Function API documentation

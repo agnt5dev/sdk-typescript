@@ -14,10 +14,11 @@ impl Worker {
         Worker { service_name }
     }
 
-    /// Run the worker (starts listening for invocations)
+    /// Log worker startup.
+    ///
+    /// Dispatch transport is not available in the WASM binding.
     #[wasm_bindgen]
     pub async fn run(&self) -> Result<(), JsValue> {
-        // TODO: Connect to agnt5-sdk-core worker implementation
         web_sys::console::log_1(&format!("Worker '{}' running (WASM binding)", self.service_name).into());
         Ok(())
     }

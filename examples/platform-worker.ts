@@ -5,17 +5,7 @@
  * using NAPI bindings to the Rust sdk-core.
  */
 
-import { Worker, fn, checkPlatformConnectivity } from '../src/index.js';
-
-// Define a simple function
-// TODO: Update once function registration is implemented in Worker
-// const greet = fn('greet')
-//   .input<{ name: string }>()
-//   .output<string>()
-//   .handler(async (ctx, input) => {
-//     ctx.logger.info(`Greeting user: ${input.name}`);
-//     return `Hello, ${input.name}! Welcome to AGNT5.`;
-//   });
+import { Worker, checkPlatformConnectivity } from '../src/index.js';
 
 async function main() {
   console.log('🚀 AGNT5 TypeScript Platform Worker Example\n');

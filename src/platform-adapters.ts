@@ -6,7 +6,7 @@
  * integration experiments. Production worker polling now goes through the
  * native Worker, which delegates parked PollJob execution to sdk-core.
  *
- * For now, each adapter has a stub/noop implementation that logs warnings.
+ * Unsupported operations use compatibility no-op implementations and log warnings.
  */
 
 import type { StateAdapter } from './state.js';
@@ -56,7 +56,7 @@ export class StubJobQueueAdapter implements JobQueueAdapter {
 
   async pollJobs(): Promise<JobAssignment[]> {
     if (!this.warned) {
-      console.warn('[agnt5] Job queue polling requires NAPI bindings (Phase D1). Using stub adapter.');
+      console.warn('[agnt5] Job queue polling requires NAPI bindings. Using compatibility adapter.');
       this.warned = true;
     }
     return [];
@@ -75,14 +75,14 @@ export class StubJobQueueAdapter implements JobQueueAdapter {
  * When connected, state operations flow through NAPI → Rust core → gRPC
  * to the platform's state service.
  *
- * TODO(D1): Replace StubPlatformStateAdapter with actual NAPI bridge.
+ * This compatibility adapter reports unsupported persistence operations.
  */
 export class StubPlatformStateAdapter implements StateAdapter {
   private warned = false;
 
   private warn(): void {
     if (!this.warned) {
-      console.warn('[agnt5] Platform state adapter requires NAPI bindings (Phase D1). State is not persisted.');
+      console.warn('[agnt5] Platform state adapter requires NAPI bindings. State is not persisted.');
       this.warned = true;
     }
   }

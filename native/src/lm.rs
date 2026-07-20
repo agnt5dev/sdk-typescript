@@ -1510,7 +1510,7 @@ impl LanguageModel {
                 }
                 Ok(StreamChunk::ContentBlockStart { .. })
                 | Ok(StreamChunk::ContentBlockStop { .. }) => {
-                    // Content block markers — skip for now
+                    // Content block markers do not contain response text.
                     continue;
                 }
                 Err(e) => {

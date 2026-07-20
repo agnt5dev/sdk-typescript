@@ -2,8 +2,6 @@
  * Tool component for Agent capabilities.
  *
  * Tools wrap functions with structured interfaces for agent invocation.
- * Phase 1: In-memory execution with basic schema support
- * Phase 2: Platform integration with durable execution
  */
 
 import type { Context, ToolHandler, ToolOptions, ToolSchema, JSONSchema } from './types.js';
@@ -59,7 +57,7 @@ export class Tool<TInput = any, TOutput = any> {
   async invoke(ctx: Context, args: Record<string, any>): Promise<TOutput> {
     if (this.confirmation) {
       ctx.logger.warn(
-        `Tool '${this.name}' requires confirmation but confirmation is not implemented in Phase 1`
+        `Tool '${this.name}' requires confirmation; no approval handler is configured`
       );
     }
 

@@ -1,8 +1,7 @@
 /**
  * Workflow component for multi-step orchestration.
  *
- * Phase 1: In-memory orchestration with basic coordination
- * Phase 2: Durable execution with checkpoint/replay and distributed tasks
+ * Supports durable execution with checkpoint/replay and distributed tasks.
  */
 
 import type { Context, WorkflowHandler } from './types.js';

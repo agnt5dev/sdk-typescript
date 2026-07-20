@@ -1,7 +1,7 @@
 /**
  * Workflow utilities for parallel execution and orchestration.
  *
- * Phase 4.3: Enhanced workflow capabilities including:
+ * Workflow capabilities include:
  * - Parallel execution with Promise.all
  * - Gather with named results
  * - Child workflow execution

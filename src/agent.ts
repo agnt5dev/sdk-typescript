@@ -133,7 +133,7 @@ export interface LanguageModel {
   generate(request: GenerateRequest): Promise<GenerateResponse>;
 
   /**
-   * Stream completion from LLM (Phase 2)
+   * Stream completion from LLM
    */
   stream?(request: GenerateRequest): AsyncIterableIterator<string>;
 }

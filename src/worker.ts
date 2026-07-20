@@ -405,9 +405,7 @@ class SimpleContext implements Context {
    * user's response in metadata; loadReplayState seeds _userResponses, and
    * the next call at the matching pauseIndex returns the cached value.
    *
-   * Mirrors sdk-python/src/agnt5/workflow.py wait_for_user. The TS resume
-   * cache currently only restores the LATEST pause — see the FIXME at
-   * _userResponses for the multi-step replay limitation.
+   * The resume cache restores the latest pause response.
    */
   async waitForUser(
     question: string,
@@ -708,9 +706,7 @@ export class Worker {
     for (const item of agents) {
       if (item instanceof ChatBot) {
         this.chatbots.set(item.name, item);
-        // ChatBot wraps an agent — register the agent for the platform
-        // (The ChatBot.agent getter would need to be public for this)
-        // For now, just track by name — webhook dispatch uses ChatBot directly
+        // Webhook dispatch resolves ChatBot instances by name.
         console.log(`Registered ChatBot for agent '${item.name}'`);
       } else {
         this.agents.set(item.name, item);

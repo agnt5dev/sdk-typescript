@@ -10,10 +10,9 @@ npm run build:ts
 echo "✅ TypeScript build complete"
 echo ""
 
-# Note: NAPI and WASM builds require Rust toolchain
-# These will be set up in Phase 2 when we integrate with sdk-core
+# NAPI and WASM builds require the Rust toolchain and their dedicated build commands.
 
-echo "⚠️  NAPI and WASM builds skipped (Phase 2)"
+echo "⚠️  NAPI and WASM builds skipped"
 echo "   To build bindings, you'll need:"
 echo "   - Rust toolchain (rustup)"
 echo "   - wasm-pack for WASM builds"

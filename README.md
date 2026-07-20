@@ -8,8 +8,7 @@ Durable AI workflows and agents for TypeScript.
 - ✅ **Checkpointing** - Resume from last successful step on failure
 - ✅ **Multi-Runtime** - Works on Node.js, Bun, Deno, and Edge runtimes
 - ✅ **Type-Safe** - Full TypeScript support with type inference
-- 🔄 **Phase 1** - Local execution (current)
-- 📋 **Phase 2** - Platform integration (coming soon)
+- ✅ **Platform Integration** - Native worker and runtime bindings
 
 ## Installation
 
@@ -86,9 +85,9 @@ The SDK automatically detects and adapts to your runtime:
 | Node.js | NAPI (native) | ⚡ Fastest | ✅ Supported |
 | Bun | NAPI (native) | ⚡ Fastest | ✅ Supported |
 | Deno | NAPI (compat) | ⚡ Fastest | ✅ Supported |
-| Cloudflare Workers | WASM | 🔥 Fast | 📋 Phase 2 |
-| Vercel Edge | WASM | 🔥 Fast | 📋 Phase 2 |
-| Next.js Edge | WASM | 🔥 Fast | 📋 Phase 2 |
+| Cloudflare Workers | WASM | 🔥 Fast | Check runtime requirements |
+| Vercel Edge | WASM | 🔥 Fast | Check runtime requirements |
+| Next.js Edge | WASM | 🔥 Fast | Check runtime requirements |
 
 No configuration needed - the right binding is automatically selected!
 
@@ -98,10 +97,10 @@ No configuration needed - the right binding is automatically selected!
 - [Function Component](./docs/function.md) - Durable functions API
 - [Context API](./docs/context.md) - Execution context capabilities
 - [Runtime Support](./docs/runtime-support.md) - Multi-runtime architecture
-- [Tool Component](./docs/tool.md) - Agent capabilities (Phase 2)
-- [Agent Component](./docs/agent.md) - LLM-driven agents (Phase 2)
-- [Entity Component](./docs/entity.md) - Stateful components (Phase 2)
-- [Workflow Component](./docs/workflow.md) - Multi-step orchestration (Phase 2)
+- [Tool Component](./docs/tool.md) - Agent capabilities
+- [Agent Component](./docs/agent.md) - LLM-driven agents
+- [Entity Component](./docs/entity.md) - Stateful components
+- [Workflow Component](./docs/workflow.md) - Multi-step orchestration
 
 ## Development
 
@@ -131,8 +130,8 @@ sdk-typescript/
 │   ├── worker.ts      # Worker implementation
 │   ├── types.ts       # TypeScript types
 │   └── __tests__/     # Test files
-├── native/            # NAPI-RS bindings (Phase 2)
-├── wasm/              # WASM bindings (Phase 2)
+├── native/            # NAPI-RS bindings
+├── wasm/              # WASM bindings
 ├── docs/              # Documentation
 └── dist/              # Compiled output
 ```
@@ -146,27 +145,11 @@ See the [`examples/`](./examples/) directory for complete working examples:
 - `checkpointing.ts` - Multi-step checkpointing
 - `worker.ts` - Worker setup
 
-## Phase 1 vs Phase 2
+## Execution modes
 
-### Phase 1 (Current) - Local Execution
-
-- ✅ Function builder API
-- ✅ Context with state and checkpointing
-- ✅ Retry policies and backoff strategies
-- ✅ Worker infrastructure
-- ✅ TypeScript types and inference
-- ⚠️ In-memory state (not persistent)
-- ⚠️ In-memory checkpoints (not durable)
-
-### Phase 2 (Coming Soon) - Platform Integration
-
-- 📋 NAPI and WASM bindings to Rust core
-- 📋 Durable state (survives process restarts)
-- 📋 Distributed execution across workers
-- 📋 Platform orchestration APIs
-- 📋 LLM integration
-- 📋 Tool and Agent components
-- 📋 Entity and Workflow components
+The SDK supports local execution as well as platform-backed workers through
+the native and WASM bindings. Choose the binding and runtime configuration
+appropriate for the deployment environment.
 
 ## Contributing
 
