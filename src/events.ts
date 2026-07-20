@@ -506,6 +506,20 @@ export interface OutputStop extends BaseEvent {
   eventType: 'output.stop';
 }
 
+export function outputDelta(
+  correlationId: string,
+  parentCorrelationId: string | null,
+  content: string,
+  contentIndex = 0,
+): OutputDelta {
+  return {
+    ...baseFields('output', correlationId, parentCorrelationId),
+    eventType: 'output.delta',
+    content,
+    contentIndex,
+  };
+}
+
 // ─── Full discriminated union ───────────────────────────────────────
 
 export type LifecycleEvent =

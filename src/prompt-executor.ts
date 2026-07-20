@@ -307,6 +307,8 @@ function createLMClient(provider: string): LM {
       return LM.together();
     case 'xai':
       return LM.xai();
+    case 'moonshot':
+      return LM.moonshot();
     case 'huggingface':
     case 'hf':
       return LM.huggingface();

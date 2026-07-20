@@ -252,6 +252,34 @@ export interface ReceivedEvent {
   contentIndex: number;
   /** Sequence number for ordering */
   sequence: number;
+  /** Run identifier from the gateway event envelope, when available */
+  runId?: string;
+}
+
+function gatewayEventPayload(data: Record<string, any>): Record<string, any> {
+  const nested = data.data;
+  const isGatewayEnvelope =
+    data.event_type !== undefined ||
+    data.eventType !== undefined ||
+    data.run_id !== undefined ||
+    data.runId !== undefined;
+  return isGatewayEnvelope && nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? nested
+    : data;
+}
+
+function streamingChunk(data: Record<string, any>): string | undefined {
+  const value = data.content ?? data.delta ?? data.output_data ?? data.chunk;
+  if (value === undefined || value === null) return undefined;
+  return typeof value === 'string' ? value : JSON.stringify(value);
+}
+
+function streamingRunError(data: Record<string, any>, envelope: Record<string, any>): RunError {
+  const rawError = data.error ?? data.error_message ?? 'Component execution failed';
+  const message = typeof rawError === 'object' && rawError !== null
+    ? rawError.message ?? JSON.stringify(rawError)
+    : String(rawError);
+  return new RunError(message, envelope.run_id ?? envelope.runId, 'failed');
 }
 
 // ---------------------------------------------------------------------------
@@ -622,8 +650,14 @@ export class Client {
    */
   async *stream(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId'> = {}): AsyncGenerator<string, void, unknown> {
     for await (const event of this.events(component, inputData, options)) {
-      if (event.data.chunk !== undefined) {
-        yield event.data.chunk;
+      if (event.eventType === 'run.failed') {
+        throw streamingRunError(event.data, { run_id: event.runId });
+      }
+      if (event.eventType === 'output.delta') {
+        const chunk = streamingChunk(event.data);
+        if (chunk !== undefined) yield chunk;
+      } else if (event.data.chunk !== undefined) {
+        yield String(event.data.chunk);
       }
     }
   }
@@ -636,7 +670,7 @@ export class Client {
    * for await (const event of client.events('my-workflow', { data: '...' })) {
    *   switch (event.eventType) {
    *     case 'output.delta':
-   *       process.stdout.write(event.data.chunk);
+   *       process.stdout.write(event.data.content);
    *       break;
    *     case 'run.completed':
    *       console.log('Done:', event.data.output);
@@ -708,21 +742,23 @@ export class Client {
 
             try {
               const data = JSON.parse(dataStr);
+              const payload = gatewayEventPayload(data);
 
               // Check for stream-end signal
               if (data.done) return;
 
               // Check for error
-              if (data.error && currentEventType === 'error') {
-                throw new RunError(data.error, data.runId || data.run_id);
+              if (currentEventType === 'error') {
+                throw streamingRunError(payload, data);
               }
 
               sequence++;
               yield {
                 eventType: currentEventType,
-                data,
-                contentIndex: data.index ?? 0,
-                sequence,
+                data: payload,
+                contentIndex: payload.index ?? payload.content_index ?? payload.contentIndex ?? 0,
+                sequence: payload.sequence ?? sequence,
+                runId: data.run_id ?? data.runId ?? payload.run_id ?? payload.runId,
               };
             } catch (e) {
               if (e instanceof RunError) throw e;
@@ -904,11 +940,12 @@ export class Client {
   /**
    * Cancel a running batch execution.
    */
-  async cancelBatch(batchId: string): Promise<CancelBatchResult> {
-    const url = `${this.gatewayUrl}/v1/batches/${batchId}/cancel`;
+  async cancelBatch(batchId: string, reason?: string): Promise<CancelBatchResult> {
+    const query = reason ? `?reason=${encodeURIComponent(reason)}` : '';
+    const url = `${this.gatewayUrl}/v1/batches/${batchId}${query}`;
 
     const response = await fetch(url, {
-      method: 'POST',
+      method: 'DELETE',
       headers: this.buildHeaders(),
       signal: AbortSignal.timeout(this.timeout),
     });

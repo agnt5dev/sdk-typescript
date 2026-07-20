@@ -38,6 +38,9 @@ describe('LM model validation', () => {
   });
 
   it('accepts OpenAI-compatible provider prefixes', () => {
+    expect(validateModelForProvider('moonshot/kimi-k3', 'moonshot')).toBe(
+      'moonshot/kimi-k3',
+    );
     expect(validateModelForProvider('baseten/acme/llama-3-70b', 'baseten')).toBe(
       'baseten/acme/llama-3-70b',
     );

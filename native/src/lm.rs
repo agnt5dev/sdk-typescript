@@ -39,6 +39,8 @@ use agnt5_sdk_core::lm::{
     MistralConfig,
     MistralProvider,
     Modality,
+    MoonshotConfig,
+    MoonshotProvider,
     OllamaConfig,
     OllamaProvider,
     OpenAiChatConfig,
@@ -80,6 +82,7 @@ enum ProviderKind {
     Google(GoogleProvider),
     Lepton(LeptonProvider),
     Mistral(MistralProvider),
+    Moonshot(MoonshotProvider),
     Ollama(OllamaProvider),
     Together(TogetherProvider),
     Xai(XaiProvider),
@@ -102,6 +105,7 @@ impl ProviderKind {
             ProviderKind::Google(provider) => provider.generate(request).await,
             ProviderKind::Lepton(provider) => provider.generate(request).await,
             ProviderKind::Mistral(provider) => provider.generate(request).await,
+            ProviderKind::Moonshot(provider) => provider.generate(request).await,
             ProviderKind::Ollama(provider) => provider.generate(request).await,
             ProviderKind::Together(provider) => provider.generate(request).await,
             ProviderKind::Xai(provider) => provider.generate(request).await,
@@ -124,6 +128,7 @@ impl ProviderKind {
             ProviderKind::Google(provider) => provider.stream(request).await,
             ProviderKind::Lepton(provider) => provider.stream(request).await,
             ProviderKind::Mistral(provider) => provider.stream(request).await,
+            ProviderKind::Moonshot(provider) => provider.stream(request).await,
             ProviderKind::Ollama(provider) => provider.stream(request).await,
             ProviderKind::Together(provider) => provider.stream(request).await,
             ProviderKind::Xai(provider) => provider.stream(request).await,
@@ -1034,6 +1039,30 @@ pub struct JsXaiConfig {
     pub base_url: Option<String>,
 }
 
+#[napi(object)]
+pub struct JsMoonshotConfig {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+}
+
+impl From<JsMoonshotConfig> for MoonshotConfig {
+    fn from(config: JsMoonshotConfig) -> Self {
+        let api_key = config
+            .api_key
+            .or_else(|| env::var("MOONSHOT_API_KEY").ok())
+            .unwrap_or_else(|| "".to_string());
+
+        let mut cfg = MoonshotConfig::new(api_key);
+        if let Some(url) = config
+            .base_url
+            .or_else(|| env::var("MOONSHOT_BASE_URL").ok())
+        {
+            cfg = cfg.with_base_url(url);
+        }
+        cfg
+    }
+}
+
 impl From<JsXaiConfig> for XaiConfig {
     fn from(config: JsXaiConfig) -> Self {
         let api_key = config
@@ -1340,6 +1369,25 @@ impl LanguageModel {
             .map_err(|e| Error::from_reason(format!("Failed to create xAI provider: {}", e)))?;
         Ok(Self {
             provider: ProviderKind::Xai(provider),
+        })
+    }
+
+    /// Create Moonshot AI (Kimi) provider
+    #[napi(factory)]
+    pub fn moonshot(config: Option<JsMoonshotConfig>) -> Result<Self> {
+        let cfg: MoonshotConfig = config.map(|c| c.into()).unwrap_or_else(|| {
+            let api_key = env::var("MOONSHOT_API_KEY").unwrap_or_else(|_| "".to_string());
+            let mut cfg = MoonshotConfig::new(api_key);
+            if let Ok(base_url) = env::var("MOONSHOT_BASE_URL") {
+                cfg = cfg.with_base_url(base_url);
+            }
+            cfg
+        });
+        let provider = MoonshotProvider::new(cfg).map_err(|e| {
+            Error::from_reason(format!("Failed to create Moonshot provider: {}", e))
+        })?;
+        Ok(Self {
+            provider: ProviderKind::Moonshot(provider),
         })
     }
 

@@ -445,4 +445,95 @@ describe('Client', () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it('cancelBatch uses the shared DELETE route and forwards the reason', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      batch_id: 'batch-1',
+      status: 'cancelled',
+      cancelled_items: 2,
+      completed_items: 1,
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test' });
+
+      const result = await client.cancelBatch('batch-1', 'user requested');
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://gateway.test/v1/batches/batch-1?reason=user%20requested',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
+      expect(result).toEqual({
+        batchId: 'batch-1',
+        status: 'cancelled',
+        cancelledItems: 2,
+        completedItems: 1,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('stream unwraps gateway SSE envelopes and yields output deltas', async () => {
+    const sse = [
+      'event: output.delta',
+      'data: {"event_type":"output.delta","run_id":"run-1","data":{"content":"hel","contentIndex":0}}',
+      '',
+      'event: output.delta',
+      'data: {"event_type":"output.delta","run_id":"run-1","data":{"content":"lo","contentIndex":0}}',
+      '',
+      'event: run.completed',
+      'data: {"event_type":"run.completed","run_id":"run-1","data":{"output_data":"hello"}}',
+      '',
+    ].join('\n');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(sse, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })));
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test' });
+      const chunks: string[] = [];
+      for await (const chunk of client.stream('generate')) chunks.push(chunk);
+
+      const events = [];
+      for await (const event of client.events('generate')) events.push(event);
+
+      expect(chunks).toEqual(['hel', 'lo']);
+      expect(events.filter(event => event.eventType === 'output.delta').map(event => event.data.content))
+        .toEqual(['hel', 'lo']);
+      expect(events.filter(event => event.eventType === 'output.delta').map(event => event.sequence))
+        .toEqual([1, 2]);
+      expect(events.filter(event => event.eventType === 'output.delta').map(event => event.runId))
+        .toEqual(['run-1', 'run-1']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('stream raises an error for an enveloped run.failed event', async () => {
+    const sse = [
+      'event: run.failed',
+      'data: {"event_type":"run.failed","run_id":"run-2","data":{"error_message":"boom","error_code":"FUNCTION_ERROR"}}',
+      '',
+    ].join('\n');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(sse, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })));
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test' });
+      const consume = async () => {
+        for await (const _chunk of client.stream('generate')) {
+          // Consume the stream to surface terminal failures.
+        }
+      };
+
+      await expect(consume()).rejects.toThrow('boom');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
