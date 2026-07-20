@@ -741,6 +741,8 @@ async function makeLmForProvider(
       return LM.together();
     case 'ollama':
       return LM.ollama();
+    case 'moonshot':
+      return LM.moonshot();
     default:
       throw new Error(`provider '${providerName}' is not in the supported set`);
   }

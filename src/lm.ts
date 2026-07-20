@@ -14,6 +14,7 @@
  * - Google (Gemini)
  * - Lepton
  * - Mistral
+ * - Moonshot AI (Kimi)
  * - Ollama (local LLM)
  * - Together AI
  * - xAI (Grok)
@@ -185,6 +186,7 @@ export const SUPPORTED_MODEL_PROVIDERS = Object.freeze([
   'huggingface',
   'lepton',
   'mistral',
+  'moonshot',
   'ollama',
   'openai',
   'openai_chat',
@@ -415,6 +417,11 @@ export interface XaiConfig {
   baseUrl?: string;
 }
 
+export interface MoonshotConfig {
+  apiKey?: string;
+  baseUrl?: string;
+}
+
 export interface HuggingFaceConfig {
   apiKey?: string;
   baseUrl?: string;
@@ -592,6 +599,12 @@ export class LM {
   static xai(config?: XaiConfig): LM {
     const bindings = loadNativeBindings();
     return new LM(bindings.LanguageModel.xai(config), 'xai');
+  }
+
+  /** Create Moonshot AI (Kimi) provider */
+  static moonshot(config?: MoonshotConfig): LM {
+    const bindings = loadNativeBindings();
+    return new LM(bindings.LanguageModel.moonshot(config), 'moonshot');
   }
 
   /** Create HuggingFace provider */
@@ -805,6 +818,8 @@ function createPromptManifestLM(provider: string): LM {
       return LM.together();
     case 'xai':
       return LM.xai();
+    case 'moonshot':
+      return LM.moonshot();
     case 'huggingface':
     case 'hf':
       return LM.huggingface();
