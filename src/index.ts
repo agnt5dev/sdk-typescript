@@ -458,7 +458,7 @@ export type {
 } from './platform-adapters.js';
 
 // Sandbox exports
-export { Sandbox } from './sandbox.js';
+export { InMemorySandbox, Sandbox } from './sandbox.js';
 export { sandboxTools } from './sandbox-tools.js';
 export {
   DaytonaSandbox,
@@ -516,7 +516,7 @@ export type {
 /**
  * SDK version
  */
-export const VERSION = '0.1.0';
+export const VERSION = '0.6.0-beta.3';
 
 /**
  * Get binding type being used

@@ -19,6 +19,7 @@ import {
   functionStarted, functionCompleted, functionFailed,
   workflowStarted, workflowCompleted, workflowFailed, workflowPaused,
   toolStarted, toolCompleted, toolFailed,
+  outputDelta,
   logEvent,
 } from './events.js';
 import type { AgentEvent } from './events.js';
@@ -878,6 +879,14 @@ export class Worker {
               ctx.pushCorrelation(fnCid);
               try {
                 result = await fn.handler(ctx, inputData);
+                if (result && typeof result[Symbol.asyncIterator] === 'function') {
+                  let emitted = 0;
+                  for await (const chunk of result as AsyncIterable<unknown>) {
+                    await emitter.emit(outputDelta(fnCid, runCid, String(chunk), emitted));
+                    emitted += 1;
+                  }
+                  result = { emitted };
+                }
                 const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
 
                 // ── function.completed ──

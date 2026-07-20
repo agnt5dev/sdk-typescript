@@ -39,7 +39,9 @@ export function loadNativeBindings(): any {
 
   const __dirname = dirname(fileURLToPath(import.meta.url));
   for (const suffix of [`${platform}-${arch}`, `${platform}-${arch}-gnu`]) {
-    for (const rel of ['../', '../../']) {
+    // Published/file dependencies include native/*.node, while a source-tree
+    // build also places the binary at the package root.
+    for (const rel of ['../', '../native/', '../../']) {
       try {
         cached = require(join(__dirname, rel, `agnt5-sdk-native.${suffix}.node`));
         return cached;

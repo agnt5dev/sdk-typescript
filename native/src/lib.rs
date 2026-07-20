@@ -659,7 +659,7 @@ pub fn initialize(service_name: String, service_version: Option<String>) -> Resu
 /// Get SDK version
 #[napi]
 pub fn get_version() -> String {
-    "0.1.0".to_string()
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 /// Forward TypeScript user logs to Rust tracing system for OpenTelemetry export.

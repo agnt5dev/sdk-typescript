@@ -217,6 +217,113 @@ function mapCapabilities(c: any): SandboxCapabilities {
 
 // ── Sandbox class ──────────────────────────────────────────────
 
+/**
+ * Deterministic sandbox workspace for tests and local examples.
+ *
+ * This backend exercises the public sandbox file API without a provider,
+ * remote endpoint, or QuickJS binary. Its execute methods are deterministic
+ * echoes; use {@link Sandbox} for real isolated code execution.
+ */
+export class InMemorySandbox {
+  private readonly files = new Map<string, Buffer>();
+
+  constructor(readonly sandboxId = 'memory') {}
+
+  get backend(): string {
+    return 'memory';
+  }
+
+  async start(): Promise<this> {
+    return this;
+  }
+
+  async close(): Promise<void> {}
+
+  async executeCode(code: string, language = 'javascript'): Promise<ExecuteCodeResult> {
+    return {
+      stdout: `[${language}] ${code}`,
+      stderr: '',
+      exitCode: 0,
+      executionTimeMs: 0,
+    };
+  }
+
+  async writeFile(path: string, content: Buffer | string): Promise<WriteFileResult> {
+    const encoded = typeof content === 'string' ? Buffer.from(content) : Buffer.from(content);
+    this.files.set(path, encoded);
+    return { success: true, path, size: encoded.length };
+  }
+
+  async readFile(path: string): Promise<ReadFileResult> {
+    const content = this.files.get(path);
+    if (!content) {
+      throw new Error(`sandbox file not found: ${path}`);
+    }
+    return {
+      path,
+      content: Buffer.from(content),
+      size: content.length,
+      isDir: false,
+    };
+  }
+
+  async deleteFile(path: string, recursive = false): Promise<boolean> {
+    if (this.files.delete(path)) {
+      return true;
+    }
+    if (!recursive) {
+      return false;
+    }
+    const prefix = `${path.replace(/\/$/, '')}/`;
+    const matches = [...this.files.keys()].filter((filePath) => filePath.startsWith(prefix));
+    for (const filePath of matches) {
+      this.files.delete(filePath);
+    }
+    return matches.length > 0;
+  }
+
+  async listFiles(path = '.', recursive = false): Promise<ListFilesResult> {
+    const prefix = path === '' || path === '.' ? '' : `${path.replace(/\/$/, '')}/`;
+    const files = [...this.files.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .filter(([filePath]) => !prefix || filePath.startsWith(prefix))
+      .filter(([filePath]) => {
+        const relative = prefix ? filePath.slice(prefix.length) : filePath.replace(/^\//, '');
+        return recursive || !relative.includes('/');
+      })
+      .map(([filePath, content]): FileInfo => ({
+        name: filePath.replace(/\/$/, '').split('/').at(-1) ?? filePath,
+        path: filePath,
+        size: content.length,
+        isDir: false,
+        mode: 0o644,
+        modTime: 0,
+      }));
+    return { path, total: files.length, files };
+  }
+
+  async health(): Promise<HealthResult> {
+    return {
+      status: 'running',
+      sandboxId: this.sandboxId,
+      uptimeMs: 0,
+      backendKind: this.backend,
+    };
+  }
+
+  capabilities(): SandboxCapabilities {
+    return {
+      languages: [],
+      supportsCommands: false,
+      supportsGit: false,
+      supportsPreviewUrl: false,
+      supportsStreaming: false,
+      supportsSnapshots: false,
+      hasNetworkAccess: false,
+    };
+  }
+}
+
 export class Sandbox {
   private inner: any | null = null;
   private providerName?: string;
