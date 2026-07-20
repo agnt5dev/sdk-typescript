@@ -1,168 +1,107 @@
 # AGNT5 TypeScript SDK
 
 [![CI](https://github.com/agnt5dev/sdk-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/agnt5dev/sdk-typescript/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Durable AI workflows and agents for TypeScript.
+Build reliable AI agents and durable workflows with TypeScript. The SDK
+provides typed components, workflow checkpoints, retries, streaming, tools,
+human-in-the-loop coordination, evaluation, and runtime observability.
 
-## Features
+## Requirements
 
-- ✅ **Durable Functions** - Automatic retry with configurable policies
-- ✅ **Checkpointing** - Resume from last successful step on failure
-- ✅ **Multi-Runtime** - Works on Node.js, Bun, Deno, and Edge runtimes
-- ✅ **Type-Safe** - Full TypeScript support with type inference
-- ✅ **Platform Integration** - Native worker and runtime bindings
+- Node.js 18 or newer
+- An AGNT5 runtime for deployed execution
 
 ## Installation
 
 ```bash
 npm install @agnt5/sdk
-# or
-yarn add @agnt5/sdk
-# or
-pnpm add @agnt5/sdk
 ```
 
-## Quick Start
+## Quick start
 
-### Define a Function
+Define a typed function and start a worker:
 
 ```typescript
-import { fn } from '@agnt5/sdk';
+import { fn, Worker } from '@agnt5/sdk';
 
-export const greet = fn('greet').run(async (ctx, name: string) => {
+const greet = fn('greet').run(async (ctx, name: string) => {
   ctx.logger.info(`Greeting ${name}`);
-  return `Hello, ${name}!`;
+  return { message: `Hello, ${name}!` };
 });
-```
 
-### With Retry and Backoff
-
-```typescript
-import { fn } from '@agnt5/sdk';
-
-export const processData = fn('process-data')
-  .retry({ maxAttempts: 3, initialIntervalMs: 1000 })
-  .backoff({ type: 'exponential', multiplier: 2.0 })
-  .run(async (ctx, data: DataInput) => {
-    // Your processing logic here
-    return { processed: true };
-  });
-```
-
-### With Checkpointing
-
-```typescript
-import { fn } from '@agnt5/sdk';
-
-export const dataPipeline = fn('data-pipeline').run(async (ctx, datasetId: string) => {
-  // Step 1: Load data (checkpointed)
-  const data = await ctx.step('load', () => loadData(datasetId));
-
-  // Step 2: Transform (checkpointed)
-  const transformed = await ctx.step('transform', () => transform(data));
-
-  // Step 3: Validate (checkpointed)
-  const validated = await ctx.step('validate', () => validate(transformed));
-
-  return { success: true, records: validated.length };
-});
-```
-
-### Create a Worker
-
-```typescript
-import { Worker } from '@agnt5/sdk';
-import './functions'; // Import your function definitions
-
-const worker = new Worker('my-service');
+const worker = new Worker('hello-typescript');
 await worker.run();
 ```
 
-## Runtime Support
+Imported functions, workflows, agents, tools, and scorers register with the
+worker. See [`examples/simple-worker.ts`](examples/simple-worker.ts) for a
+complete entrypoint.
 
-The SDK automatically detects and adapts to your runtime:
+## Durable workflows
 
-| Runtime | Binding | Performance | Status |
-|---------|---------|-------------|---------|
-| Node.js | NAPI (native) | ⚡ Fastest | ✅ Supported |
-| Bun | NAPI (native) | ⚡ Fastest | ✅ Supported |
-| Deno | NAPI (compat) | ⚡ Fastest | ✅ Supported |
-| Cloudflare Workers | WASM | 🔥 Fast | Check runtime requirements |
-| Vercel Edge | WASM | 🔥 Fast | Check runtime requirements |
-| Next.js Edge | WASM | 🔥 Fast | Check runtime requirements |
+Use named steps for operations that should be checkpointed and replayed safely:
 
-No configuration needed - the right binding is automatically selected!
+```typescript
+import { workflow } from '@agnt5/sdk';
 
-## Documentation
+export const prepareReport = workflow(
+  'prepare-report',
+  async (ctx, reportId: string) => {
+    const source = await ctx.step('load-source', () => loadSource(reportId));
+    const report = await ctx.step('build-report', () => buildReport(source));
+    return { reportId, report };
+  },
+);
+```
 
-- [Overview](./docs/overview.md) - SDK architecture and concepts
-- [Function Component](./docs/function.md) - Durable functions API
-- [Context API](./docs/context.md) - Execution context capabilities
-- [Runtime Support](./docs/runtime-support.md) - Multi-runtime architecture
-- [Tool Component](./docs/tool.md) - Agent capabilities
-- [Agent Component](./docs/agent.md) - LLM-driven agents
-- [Entity Component](./docs/entity.md) - Stateful components
-- [Workflow Component](./docs/workflow.md) - Multi-step orchestration
+Keep step names and ordering stable across retries so completed work can be
+reused.
+
+## Package entrypoints
+
+| Import | Purpose |
+| --- | --- |
+| `@agnt5/sdk` | Components, clients, workers, agents, tools, and workflows |
+| `@agnt5/sdk/serverless` | Shared serverless adapters |
+| `@agnt5/sdk/serverless/node` | Node.js serverless adapter |
+| `@agnt5/sdk/serverless/cloudflare` | Cloudflare serverless adapter |
+| `@agnt5/sdk/workerless/node` | Node.js workerless HTTP adapter |
+| `@agnt5/sdk/workerless/cloudflare` | Cloudflare workerless HTTP adapter |
+
+The default worker uses the published native binding for its supported Node.js
+platform. Serverless and workerless entrypoints have separate runtime
+requirements; review the relevant example before deploying to an edge runtime.
+
+## Examples and documentation
+
+- [`examples/`](examples/) includes functions, workflows, agents, streaming,
+  HITL, MCP, chat, and workerless HTTP examples.
+- [`docs/`](docs/) contains the TypeScript SDK guides.
+- [AGNT5 documentation](https://agnt5.com/docs) covers platform concepts and
+  deployment.
+
+The shared Rust foundation lives in
+[`agnt5dev/sdk-core`](https://github.com/agnt5dev/sdk-core). Vendor sandbox
+adapters live in
+[`agnt5dev/sdk-integrations`](https://github.com/agnt5dev/sdk-integrations).
 
 ## Development
 
-### Setup
-
 ```bash
-# Install dependencies
-npm install
-
-# Build TypeScript
+npm ci
 npm run build:ts
-
-# Run tests
 npm test
-
-# Watch mode
-npm run dev
 ```
 
-### Project Structure
-
-```
-sdk-typescript/
-├── src/               # TypeScript source code
-│   ├── function.ts    # Function builder
-│   ├── context.ts     # Execution context
-│   ├── worker.ts      # Worker implementation
-│   ├── types.ts       # TypeScript types
-│   └── __tests__/     # Test files
-├── native/            # NAPI-RS bindings
-├── wasm/              # WASM bindings
-├── docs/              # Documentation
-└── dist/              # Compiled output
-```
-
-## Examples
-
-See the [`examples/`](./examples/) directory for complete working examples:
-
-- `basic-function.ts` - Simple function definition
-- `retry-backoff.ts` - Retry and backoff configuration
-- `checkpointing.ts` - Multi-step checkpointing
-- `worker.ts` - Worker setup
-
-## Execution modes
-
-The SDK supports local execution as well as platform-backed workers through
-the native and WASM bindings. Choose the binding and runtime configuration
-appropriate for the deployment environment.
+Native binding development also requires a stable Rust toolchain and a sibling
+checkout of `sdk-core`.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues according to
+[SECURITY.md](SECURITY.md).
 
 ## License
 
-Apache-2.0 - See [LICENSE](LICENSE) for details.
-
-## Resources
-
-- [AGNT5 Documentation](https://agnt5.com/docs)
-- [GitHub Repository](https://github.com/agnt5dev/sdk-typescript)
-- [Shared SDK Core](https://github.com/agnt5dev/sdk-core)
+Licensed under the [Apache License 2.0](LICENSE).
