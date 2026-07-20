@@ -994,10 +994,8 @@ export class Client {
     } = {},
   ): Promise<EvalResponse<T>> {
     const componentType = options.componentType || 'function';
-    // Gateway exposes a single global eval route at POST /v1/eval; the
-    // component identity goes in the body, not the URL. See
-    // runtime/crates/gateway/src/server.rs and handlers/eval.rs
-    // (EvalRequest fields). Mirrors sdk-python/src/agnt5/client.py:709.
+    // The gateway exposes a single global eval route at POST /v1/eval;
+    // component identity is carried in the request body.
     const url = `${this.gatewayUrl}/v1/eval`;
 
     // Default to exact_match if expected is provided but no scorers

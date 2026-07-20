@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: sdk-typescript
+      - uses: actions/checkout@v4
+        with:
+          repository: agnt5dev/sdk-core
+          path: sdk-core
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: sdk-typescript/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Use sibling sdk-core checkout
+        run: |
+          mkdir -p .cargo
+          printf '[patch.crates-io]\nagnt5-sdk-core = { path = "sdk-core" }\n' > .cargo/config.toml
+      - working-directory: sdk-typescript
+        run: npm ci
+      - working-directory: sdk-typescript
+        run: npm run build:ts
+      - working-directory: sdk-typescript
+        run: npm test -- --run
+      - working-directory: sdk-typescript
+        run: cargo check --manifest-path native/Cargo.toml
+      - working-directory: sdk-typescript
+        run: npm pack --dry-run --ignore-scripts

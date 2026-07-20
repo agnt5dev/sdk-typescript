@@ -16,5 +16,5 @@
     "types": ["node"]
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "native", "wasm", "**/*.test.ts", "examples", "src/entity.ts"]
+  "exclude": ["node_modules", "dist", "native", "wasm", "src/__tests__", "**/*.test.ts", "examples", "src/entity.ts"]
 }

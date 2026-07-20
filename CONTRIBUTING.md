@@ -12,6 +12,7 @@ Apache License 2.0 included in this repository.
 Run the narrow TypeScript checks before opening a pull request:
 
 ```bash
-pnpm build
-pnpm test
+npm ci
+npm run build:ts
+npm test -- --run
 ```

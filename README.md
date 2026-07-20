@@ -1,5 +1,7 @@
 # AGNT5 TypeScript SDK
 
+[![CI](https://github.com/agnt5dev/sdk-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/agnt5dev/sdk-typescript/actions/workflows/ci.yml)
+
 Durable AI workflows and agents for TypeScript.
 
 ## Features

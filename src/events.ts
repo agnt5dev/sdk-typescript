@@ -674,14 +674,11 @@ export function workflowFailed(
 /**
  * Workflow paused event — emitted when a workflow pauses for user input.
  *
- * The runtime projection treats `workflow.paused` as a terminal event for
- * the gateway's `/v1/workflows/:name/run` endpoint (see
- * runtime/crates/gateway/src/handlers/component.rs:160) and transitions the
- * run's status to `paused` (see
- * runtime/crates/processor/src/projections/runs.rs:130 apply_paused).
+ * The runtime treats `workflow.paused` as terminal for the synchronous
+ * workflow endpoint and transitions the run's status to `paused`.
  *
  * Metadata carries fields the UI / resume endpoint need (question, options,
- * pause_index, step_name, etc.) mirroring sdk-python's wait_for_input.
+ * pause_index, step_name, etc.).
  */
 export function workflowPaused(
   correlationId: string,

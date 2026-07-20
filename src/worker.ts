@@ -218,10 +218,8 @@ class SimpleContext implements Context {
    * Seed HITL replay state from incoming message metadata.
    * Called by Worker.processMessage before invoking the workflow handler.
    *
-   * Reads `user_response` and `pause_index` from metadata (set by the gateway's
-   * resume endpoint at runtime/crates/gateway/src/handlers/signals.rs) and
-   * caches the response so the next waitForUser call at that index returns it
-   * instead of throwing.
+   * Reads `user_response` and `pause_index` from resume metadata and caches
+   * the response so the next waitForUser call at that index returns it.
    */
   loadReplayState(metadata: Record<string, string> | undefined): void {
     if (!metadata) return;
