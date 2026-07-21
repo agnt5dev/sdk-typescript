@@ -1,0 +1,362 @@
+name: SDK TypeScript Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip-publish:
+        description: "Skip npm publish"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-native-linux:
+    name: Linux Native (${{ matrix.target }})
+    runs-on: [self-hosted, Linux, X64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            node-arch: x64
+          - target: aarch64-unknown-linux-gnu
+            node-arch: arm64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          clean: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Setup Rust toolchain
+        run: |
+          # Parallel matrix jobs can land on the same self-hosted runner. Without
+          # serialization, two jobs racing the shared rustup binary cause
+          # ETXTBSY ("Text file busy"). Drop `rustup update stable` entirely —
+          # rust-toolchain.toml pins the version at cargo invocation time —
+          # and serialize first-time install + `target add` with a portable
+          # mkdir-based lock (macOS lacks `flock`).
+          LOCK=/tmp/rustup-setup.lock.d
+          while ! mkdir "$LOCK" 2>/dev/null; do sleep 0.5; done
+          trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+
+          if ! command -v rustup &> /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+            source "$HOME/.cargo/env"
+          fi
+          rustup target add ${{ matrix.target }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install sccache
+        run: |
+          if ! command -v sccache &> /dev/null; then
+            SCCACHE_VERSION="0.8.2"
+            curl -L "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" -o /tmp/sccache.tar.gz
+            tar xzf /tmp/sccache.tar.gz -C /tmp
+            mkdir -p "$HOME/.local/bin"
+            mv "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" "$HOME/.local/bin/"
+            rm -rf /tmp/sccache*
+            echo "$HOME/.local/bin" >> $GITHUB_PATH
+          fi
+
+      - name: Configure build caches
+        run: |
+          CACHE_BASE="${HOME}/.cache/agnt5-build"
+          mkdir -p "${CACHE_BASE}/cargo" "${CACHE_BASE}/sccache"
+          echo "CARGO_HOME=${CACHE_BASE}/cargo" >> $GITHUB_ENV
+          echo "SCCACHE_DIR=${CACHE_BASE}/sccache" >> $GITHUB_ENV
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "CARGO_BUILD_JOBS=$(nproc 2>/dev/null || echo 4)" >> $GITHUB_ENV
+
+      - name: Configure ARM64 cross-compilation
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          # Use per-target env vars so cargo picks up the cross linker regardless
+          # of process CWD (cargo's config.toml discovery only walks up from CWD,
+          # and napi invokes cargo from ./, not sdk-typescript/native/).
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> "$GITHUB_ENV"
+          echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        working-directory: .
+        run: npm ci
+
+      - name: Build NAPI native module
+        working-directory: .
+        run: |
+          npx napi build \
+            --platform \
+            --release \
+            --manifest-path native/Cargo.toml \
+            --output-dir . \
+            --target ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bindings-linux-${{ matrix.node-arch }}
+          path: ./*.node
+          if-no-files-found: error
+          retention-days: 7
+
+  build-native-macos:
+    name: macOS Native (${{ matrix.target }})
+    runs-on: [self-hosted, macOS, ARM64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            node-arch: arm64
+          - target: x86_64-apple-darwin
+            node-arch: x64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          clean: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Setup Rust toolchain
+        run: |
+          # Parallel matrix jobs can land on the same self-hosted runner. Without
+          # serialization, two jobs racing the shared rustup binary cause
+          # ETXTBSY ("Text file busy"). Drop `rustup update stable` entirely —
+          # rust-toolchain.toml pins the version at cargo invocation time —
+          # and serialize first-time install + `target add` with a portable
+          # mkdir-based lock (macOS lacks `flock`).
+          LOCK=/tmp/rustup-setup.lock.d
+          while ! mkdir "$LOCK" 2>/dev/null; do sleep 0.5; done
+          trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+
+          if ! command -v rustup &> /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+            source "$HOME/.cargo/env"
+          fi
+          rustup target add ${{ matrix.target }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install sccache
+        run: |
+          if ! command -v sccache &> /dev/null; then
+            SCCACHE_VERSION="0.8.2"
+            curl -L "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-aarch64-apple-darwin.tar.gz" -o /tmp/sccache.tar.gz
+            tar xzf /tmp/sccache.tar.gz -C /tmp
+            mkdir -p "$HOME/.local/bin"
+            mv "/tmp/sccache-v${SCCACHE_VERSION}-aarch64-apple-darwin/sccache" "$HOME/.local/bin/"
+            rm -rf /tmp/sccache*
+            echo "$HOME/.local/bin" >> $GITHUB_PATH
+          fi
+
+      - name: Configure build caches
+        run: |
+          CACHE_BASE="${HOME}/.cache/agnt5-build"
+          mkdir -p "${CACHE_BASE}/cargo" "${CACHE_BASE}/sccache"
+          echo "CARGO_HOME=${CACHE_BASE}/cargo" >> $GITHUB_ENV
+          echo "SCCACHE_DIR=${CACHE_BASE}/sccache" >> $GITHUB_ENV
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "CARGO_BUILD_JOBS=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)" >> $GITHUB_ENV
+
+      - name: Install dependencies
+        working-directory: .
+        run: npm ci
+
+      - name: Build NAPI native module
+        working-directory: .
+        run: |
+          npx napi build \
+            --platform \
+            --release \
+            --manifest-path native/Cargo.toml \
+            --output-dir . \
+            --target ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bindings-macos-${{ matrix.node-arch }}
+          path: ./*.node
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to npm
+    needs: [build-native-linux, build-native-macos]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    # Always run so that `skip-publish=true` still exercises artifact
+    # collection, napi artifacts, and tsc end-to-end as a dry run.
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Require main branch
+        if: inputs.skip-publish != true
+        run: test "${GITHUB_REF_NAME}" = main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        working-directory: .
+        run: npm ci
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bindings-*
+          merge-multiple: true
+          path: ./
+
+      - name: List native binaries
+        working-directory: .
+        run: |
+          echo "=== Native binaries ==="
+          ls -lh *.node
+          echo ""
+          echo "Expected 4 binaries (darwin-arm64, darwin-x64, linux-arm64, linux-x64)"
+
+      - name: Move artifacts to platform packages
+        working-directory: .
+        # napi v3 defaults `artifacts` to read from ./artifacts/, but we
+        # download the binaries straight into ./ above.
+        # `-d .` points it at the current directory (matches --output-dir .
+        # used in the build step).
+        run: npx napi artifacts -d .
+
+      - name: List platform packages
+        working-directory: .
+        run: |
+          echo "=== Platform packages ==="
+          for dir in npm/*/; do
+            echo "$dir:"
+            ls -lh "$dir"
+          done
+
+      - name: Build TypeScript
+        working-directory: .
+        run: npx tsc
+
+      - name: Verify exports paths exist
+        working-directory: .
+        # Guard against the class of bug where package.json#exports
+        # references a file `tsc` never produces (e.g., a missing native
+        # loader). Without this check, `npm publish` happily ships a
+        # tarball whose entry points 404, and every downstream
+        # `import` blows up with ERR_MODULE_NOT_FOUND.
+        run: |
+          node -e '
+            const pkg = require("./package.json");
+            const fs = require("fs");
+            const path = require("path");
+            const missing = [];
+            const visit = (val) => {
+              if (typeof val === "string") {
+                if (val.startsWith("./") && !fs.existsSync(path.resolve(val))) {
+                  missing.push(val);
+                }
+              } else if (val && typeof val === "object") {
+                for (const v of Object.values(val)) visit(v);
+              }
+            };
+            visit(pkg.exports);
+            visit(pkg.main);
+            visit(pkg.types);
+            if (missing.length) {
+              console.error("Missing files referenced by package.json:");
+              for (const m of missing) console.error("  " + m);
+              process.exit(1);
+            }
+            console.log("All exports paths resolve.");
+          '
+
+      - name: Get SDK version
+        id: version
+        working-directory: .
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Publish platform packages
+        working-directory: .
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN_FLAG: ${{ inputs.skip-publish && '--dry-run' || '' }}
+        run: |
+          for dir in npm/*/; do
+            pkg_name=$(node -p "require('./${dir}package.json').name")
+            echo "Publishing ${pkg_name} ${DRY_RUN_FLAG}..."
+            cd "$dir"
+            npm publish --access public $DRY_RUN_FLAG || echo "Skipped ${pkg_name} (may already exist)"
+            cd ../..
+          done
+
+      - name: Publish main package
+        working-directory: .
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN_FLAG: ${{ inputs.skip-publish && '--dry-run' || '' }}
+        run: npm publish --access public $DRY_RUN_FLAG
+
+      - name: Create and push release tag
+        if: inputs.skip-publish != true
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${VERSION} already exists" >&2
+            exit 1
+          fi
+          git config user.name "agnt5-release-bot"
+          git config user.email "release-bot@agnt5.com"
+          git tag -a "v${VERSION}" -m "v${VERSION}"
+          git push origin "v${VERSION}"
+
+      - name: Output release summary
+        working-directory: .
+        run: |
+          echo "## Release Complete" >> $GITHUB_STEP_SUMMARY
+          echo "**Package:** \`@agnt5/sdk\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry run:** \`${{ inputs.skip-publish && 'yes' || 'no' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Platform packages" >> $GITHUB_STEP_SUMMARY
+          for dir in npm/*/; do
+            pkg_name=$(node -p "require('./${dir}package.json').name")
+            echo "- \`${pkg_name}\`" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: Post to Slack channel
+        if: always() && env.SLACK_BOT_TOKEN != ''
+        uses: slackapi/slack-github-action@v4
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            text: "${{ job.status == 'success' && '✓' || '✗' }} @agnt5/sdk:${{ steps.version.outputs.version }}${{ job.status != 'success' && format(' - {0}', job.status) || '' }}"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
