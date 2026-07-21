@@ -217,7 +217,8 @@ jobs:
         working-directory: .
         run: |
           echo "=== Platform packages ==="
-          for dir in npm/*/; do
+          for manifest in npm/*/package.json; do
+            dir=${manifest%/package.json}
             echo "$dir:"
             ls -lh "$dir"
           done
@@ -272,8 +273,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DRY_RUN_FLAG: ${{ inputs.skip-publish && '--dry-run' || '' }}
         run: |
-          for dir in npm/*/; do
-            pkg_name=$(node -p "require('./${dir}package.json').name")
+          for manifest in npm/*/package.json; do
+            dir=${manifest%/package.json}
+            pkg_name=$(node -p "require('./${manifest}').name")
             echo "Publishing ${pkg_name} ${DRY_RUN_FLAG}..."
             cd "$dir"
             npm publish --access public $DRY_RUN_FLAG || echo "Skipped ${pkg_name} (may already exist)"
@@ -311,8 +313,8 @@ jobs:
           echo "**Dry run:** \`${{ inputs.skip-publish && 'yes' || 'no' }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Platform packages" >> $GITHUB_STEP_SUMMARY
-          for dir in npm/*/; do
-            pkg_name=$(node -p "require('./${dir}package.json').name")
+          for manifest in npm/*/package.json; do
+            pkg_name=$(node -p "require('./${manifest}').name")
             echo "- \`${pkg_name}\`" >> $GITHUB_STEP_SUMMARY
           done
 
