@@ -97,16 +97,8 @@ jobs:
           retention-days: 7
 
   build-native-macos:
-    name: macOS Native (${{ matrix.target }})
+    name: macOS Native (aarch64-apple-darwin)
     runs-on: macos-14
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            node-arch: arm64
-          - target: x86_64-apple-darwin
-            node-arch: x64
     steps:
       - uses: actions/checkout@v7
         with:
@@ -123,7 +115,7 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
             source "$HOME/.cargo/env"
           fi
-          rustup target add ${{ matrix.target }}
+          rustup target add aarch64-apple-darwin
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Install sccache
@@ -159,12 +151,12 @@ jobs:
             --release \
             --manifest-path native/Cargo.toml \
             --output-dir . \
-            --target ${{ matrix.target }}
+            --target aarch64-apple-darwin
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: bindings-macos-${{ matrix.node-arch }}
+          name: bindings-macos-arm64
           path: ./*.node
           if-no-files-found: error
           retention-days: 7
@@ -209,7 +201,7 @@ jobs:
           echo "=== Native binaries ==="
           ls -lh *.node
           echo ""
-          echo "Expected 4 binaries (darwin-arm64, darwin-x64, linux-arm64, linux-x64)"
+          echo "Expected 3 binaries (darwin-arm64, linux-arm64, linux-x64)"
 
       - name: Move artifacts to platform packages
         working-directory: .
