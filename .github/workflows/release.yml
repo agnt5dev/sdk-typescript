@@ -1,6 +1,7 @@
 name: SDK TypeScript Release
 
 on:
+  pull_request:
   workflow_dispatch:
     inputs:
       skip-publish:
@@ -165,6 +166,7 @@ jobs:
     name: Publish to npm
     needs: [build-native-linux, build-native-macos]
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
     outputs:
       version: ${{ steps.version.outputs.version }}
     # Always run so that `skip-publish=true` still exercises artifact
