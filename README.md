@@ -1,6 +1,6 @@
 # AGNT5 TypeScript SDK
 
-[![CI](https://github.com/agnt5dev/sdk-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/agnt5dev/sdk-typescript/actions/workflows/ci.yml)
+[![CI](https://github.com/agnt5dev/agnt5/actions/workflows/runtime-ci.yml/badge.svg)](https://github.com/agnt5dev/agnt5/actions/workflows/runtime-ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Build reliable AI agents and durable workflows with TypeScript. The SDK
