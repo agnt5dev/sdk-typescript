@@ -21,15 +21,19 @@ env:
 jobs:
   build-native-linux:
     name: Linux Native (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             node-arch: x64
+            runner: ubuntu-latest
+            sccache-target: x86_64-unknown-linux-musl
           - target: aarch64-unknown-linux-gnu
             node-arch: arm64
+            runner: ubuntu-24.04-arm
+            sccache-target: aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v7
         with:
@@ -42,16 +46,6 @@ jobs:
 
       - name: Setup Rust toolchain
         run: |
-          # Parallel matrix jobs can land on the same self-hosted runner. Without
-          # serialization, two jobs racing the shared rustup binary cause
-          # ETXTBSY ("Text file busy"). Drop `rustup update stable` entirely —
-          # rust-toolchain.toml pins the version at cargo invocation time —
-          # and serialize first-time install + `target add` with a portable
-          # mkdir-based lock (macOS lacks `flock`).
-          LOCK=/tmp/rustup-setup.lock.d
-          while ! mkdir "$LOCK" 2>/dev/null; do sleep 0.5; done
-          trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
-
           if ! command -v rustup &> /dev/null; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
             source "$HOME/.cargo/env"
@@ -63,19 +57,13 @@ jobs:
         run: |
           if ! command -v sccache &> /dev/null; then
             SCCACHE_VERSION="0.8.2"
-            curl -L "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" -o /tmp/sccache.tar.gz
+            curl -L "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-${{ matrix.sccache-target }}.tar.gz" -o /tmp/sccache.tar.gz
             tar xzf /tmp/sccache.tar.gz -C /tmp
             mkdir -p "$HOME/.local/bin"
-            mv "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" "$HOME/.local/bin/"
+            mv "/tmp/sccache-v${SCCACHE_VERSION}-${{ matrix.sccache-target }}/sccache" "$HOME/.local/bin/"
             rm -rf /tmp/sccache*
             echo "$HOME/.local/bin" >> $GITHUB_PATH
           fi
-
-      - name: Install ARM64 cross-compilation tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: Configure build caches
         run: |
@@ -85,17 +73,6 @@ jobs:
           echo "SCCACHE_DIR=${CACHE_BASE}/sccache" >> $GITHUB_ENV
           echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
           echo "CARGO_BUILD_JOBS=$(nproc 2>/dev/null || echo 4)" >> $GITHUB_ENV
-
-      - name: Configure ARM64 cross-compilation
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          # Use per-target env vars so cargo picks up the cross linker regardless
-          # of process CWD (cargo's config.toml discovery only walks up from CWD,
-          # and napi invokes cargo from ./, not sdk-typescript/native/).
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-          echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> "$GITHUB_ENV"
-          echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         working-directory: .
@@ -142,16 +119,6 @@ jobs:
 
       - name: Setup Rust toolchain
         run: |
-          # Parallel matrix jobs can land on the same self-hosted runner. Without
-          # serialization, two jobs racing the shared rustup binary cause
-          # ETXTBSY ("Text file busy"). Drop `rustup update stable` entirely —
-          # rust-toolchain.toml pins the version at cargo invocation time —
-          # and serialize first-time install + `target add` with a portable
-          # mkdir-based lock (macOS lacks `flock`).
-          LOCK=/tmp/rustup-setup.lock.d
-          while ! mkdir "$LOCK" 2>/dev/null; do sleep 0.5; done
-          trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
-
           if ! command -v rustup &> /dev/null; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
             source "$HOME/.cargo/env"
