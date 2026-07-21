@@ -77,7 +77,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: .
-        run: npm ci
+        run: npm install --package-lock=false --ignore-scripts --omit=optional --no-audit --no-fund
 
       - name: Build NAPI native module
         working-directory: .
@@ -142,7 +142,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: .
-        run: npm ci
+        run: npm install --package-lock=false --ignore-scripts --omit=optional --no-audit --no-fund
 
       - name: Build NAPI native module
         working-directory: .
@@ -188,7 +188,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: .
-        run: npm ci
+        run: npm install --package-lock=false --ignore-scripts --omit=optional --no-audit --no-fund
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
