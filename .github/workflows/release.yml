@@ -21,7 +21,7 @@ env:
 jobs:
   build-native-linux:
     name: Linux Native (${{ matrix.target }})
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -71,6 +71,12 @@ jobs:
             echo "$HOME/.local/bin" >> $GITHUB_PATH
           fi
 
+      - name: Install ARM64 cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
       - name: Configure build caches
         run: |
           CACHE_BASE="${HOME}/.cache/agnt5-build"
@@ -115,7 +121,7 @@ jobs:
 
   build-native-macos:
     name: macOS Native (${{ matrix.target }})
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: macos-14
     strategy:
       fail-fast: false
       matrix:
