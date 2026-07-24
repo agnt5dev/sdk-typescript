@@ -299,6 +299,7 @@ export function isSseOnlyEvent(eventType: string): boolean {
   return (
     eventType.startsWith('output.') ||
     eventType.startsWith('lm.stream.') ||
+    eventType.startsWith('lm.content_block.') ||
     eventType.startsWith('lm.message.') ||
     eventType.startsWith('lm.thinking.') ||
     eventType.startsWith('lm.tool_call.') ||
