@@ -177,6 +177,7 @@ export type {
   GenerationConfig,
   GenerateRequest,
   GenerateResponse,
+  LanguageModelStreamChunk,
   MaybePromise,
   CallbackOverride,
   LanguageModel,
@@ -196,6 +197,8 @@ export type {
   ToolCallStarted,
   ToolCallCompleted,
   ToolCallFailed,
+  LMStreamEvent,
+  LMStreamEventType,
   SkillLoaded,
   // Lifecycle events
   RunStarted,
@@ -231,6 +234,7 @@ export {
   toolCallStarted,
   toolCallCompleted,
   toolCallFailed,
+  lmStreamEvent,
   skillLoaded,
   // Lifecycle factories
   generateCid,
