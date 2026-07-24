@@ -154,7 +154,7 @@ jobs:
   build-native-macos:
     name: macOS Native (aarch64-apple-darwin)
     needs: validate-release
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
         with:
