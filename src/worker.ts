@@ -421,7 +421,8 @@ class SimpleContext implements Context {
       return this._userResponses.get(pauseIndex)!;
     }
 
-    // First-time path: emit workflow.paused, then throw to unwind the handler.
+    // First-time path: emit workflow.paused for push execution, then throw to
+    // unwind the handler. Pull execution returns the pause through CompleteJob.
     //
     // The runtime's gateway tail treats `workflow.paused` as a terminal event
     // for /v1/workflows/:name/run and transitions the run to the `paused`
@@ -429,7 +430,12 @@ class SimpleContext implements Context {
     // until the sync deadline. Mirrors sdk-python's wait_for_input which
     // emits Paused via ctx.emit() before raising WaitingForUserInputException.
     const stepName = `wait_for_user_${pauseIndex}`;
-    if (this._emitter && this._workflowCid && this._runCid) {
+    if (
+      this.metadata.dispatch_mode !== 'pull' &&
+      this._emitter &&
+      this._workflowCid &&
+      this._runCid
+    ) {
       const metadata: Record<string, string> = {
         pause_reason: 'user_input_required',
         pause_index: String(pauseIndex),
@@ -756,6 +762,7 @@ export class Worker {
   }): Promise<string> {
     const runId = message.metadata?.run_id || message.invocationId;
     const runtime = runtimeContextFromMetadata(message.metadata);
+    const isPullDispatch = message.metadata?.dispatch_mode === 'pull';
 
     // Per-invocation AbortController for cooperative cancellation. The cancel
     // handler aborts it when a CancelExecution arrives for this run; handlers
@@ -1124,15 +1131,19 @@ export class Worker {
             `run.completed | ${message.componentType} ${message.componentName} | run_id=${runId}`,
           );
 
-          // ── run.completed ──
-          await emitter.emit(runCompleted(runCid, parentCid, {
-            outputData: result,
-            componentName: message.componentName,
-          }));
+          // Pull terminals are fenced through CompleteJob by sdk-core. Push
+          // execution retains the journal-authored terminal for compatibility.
+          if (!isPullDispatch) {
+            await emitter.emit(runCompleted(runCid, parentCid, {
+              outputData: result,
+              componentName: message.componentName,
+            }));
+          }
 
           return JSON.stringify({
             invocationId: message.invocationId,
             outputJson: JSON.stringify(result),
+            eventType: 'run.completed',
           });
         } catch (error) {
           // HITL: workflow.paused has already been journaled by waitForUser
@@ -1150,6 +1161,19 @@ export class Worker {
                 question: error.question,
                 pauseIndex: error.pauseIndex,
               }),
+              eventType: 'workflow.paused',
+              metadata: {
+                pause_reason: 'user_input_required',
+                pause_index: String(error.pauseIndex),
+                question: error.question,
+                ...(error.stepName ? { step_name: error.stepName } : {}),
+                ...(error.inputType ? { input_type: error.inputType } : {}),
+                ...(error.options.length > 0 ? { options: JSON.stringify(error.options) } : {}),
+                ...(error.stepEvents ? { step_events: JSON.stringify(error.stepEvents) } : {}),
+                ...(Object.keys(error.checkpointState).length > 0
+                  ? { checkpoint_state: JSON.stringify(error.checkpointState) }
+                  : {}),
+              },
             });
           }
 
@@ -1165,23 +1189,26 @@ export class Worker {
             });
           }
 
-          // ── run.failed ──
-          try {
-            await emitter.emit(runFailed(runCid, parentCid, {
-              errorCode: 'EXECUTION_ERROR',
-              errorMessage: (error as Error).message,
-              attempt,
-              maxAttempts,
-              componentName: message.componentName,
-            }));
-          } catch (emitError) {
-            console.error('Failed to emit run.failed event:', emitError);
+          if (!isPullDispatch) {
+            try {
+              await emitter.emit(runFailed(runCid, parentCid, {
+                errorCode: 'EXECUTION_ERROR',
+                errorMessage: (error as Error).message,
+                attempt,
+                maxAttempts,
+                componentName: message.componentName,
+              }));
+            } catch (emitError) {
+              console.error('Failed to emit run.failed event:', emitError);
+            }
           }
 
           console.error(`❌ Execution failed:`, error);
           return JSON.stringify({
             invocationId: message.invocationId,
             error: (error as Error).message,
+            errorCode: 'EXECUTION_ERROR',
+            eventType: 'run.failed',
           });
         } finally {
           recordWorkerMemory({

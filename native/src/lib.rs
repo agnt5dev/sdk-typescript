@@ -17,8 +17,87 @@ use tokio::sync::Mutex as TokioMutex;
 // For logging in Span implementation
 extern crate log;
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JsInvocationResponse {
+    invocation_id: String,
+    output_json: Option<String>,
+    error: Option<String>,
+    error_code: Option<String>,
+    event_type: Option<String>,
+    metadata: Option<HashMap<String, String>>,
+}
+
+fn pull_completion_response(
+    worker_id: &str,
+    request: &DispatchComponentRequest,
+    response_json: &str,
+) -> agnt5_sdk_core::error::Result<ServiceMessage> {
+    let response: JsInvocationResponse = serde_json::from_str(response_json).map_err(|error| {
+        agnt5_sdk_core::error::SdkError::Internal(format!(
+            "Invalid TypeScript handler response for invocation {}: {}",
+            request.invocation_id, error
+        ))
+    })?;
+
+    if response.invocation_id != request.invocation_id {
+        return Err(agnt5_sdk_core::error::SdkError::Internal(format!(
+            "TypeScript handler response invocation {} does not match request {}",
+            response.invocation_id, request.invocation_id
+        )));
+    }
+
+    let success = response
+        .error
+        .as_deref()
+        .map(|error| error.is_empty())
+        .unwrap_or(true);
+    let event_type = response.event_type.unwrap_or_else(|| {
+        if success {
+            "run.completed"
+        } else {
+            "run.failed"
+        }
+        .to_string()
+    });
+    let mut metadata = response.metadata.unwrap_or_default();
+    if let Some(error_code) = response.error_code {
+        metadata.insert("error_code".to_string(), error_code);
+    }
+    let result = success.then(|| {
+        dispatch_component_response::Result::OutputData(
+            response
+                .output_json
+                .unwrap_or_else(|| "null".to_string())
+                .into_bytes(),
+        )
+    });
+
+    Ok(ServiceMessage {
+        worker_id: worker_id.to_string(),
+        metadata: HashMap::new(),
+        message_type: Some(
+            agnt5_sdk_core::pb::service_message::MessageType::FunctionResponse(
+                DispatchComponentResponse {
+                    invocation_id: request.invocation_id.clone(),
+                    success,
+                    result,
+                    error_message: response.error.unwrap_or_default(),
+                    metadata,
+                    event_type,
+                    content_index: 0,
+                    sequence: 0,
+                    attempt: request.attempt,
+                    source_timestamp_ns: 0,
+                    lease_id: request.lease_id.clone(),
+                },
+            ),
+        ),
+    })
+}
+
 fn sdk_core_builtin_scorer_response(
-    worker_id: String,
+    worker_id: &str,
     request: &DispatchComponentRequest,
 ) -> Option<ServiceMessage> {
     if request.component_type != PbComponentType::Scorer as i32 {
@@ -45,7 +124,7 @@ fn sdk_core_builtin_scorer_response(
     };
 
     Some(ServiceMessage {
-        worker_id,
+        worker_id: worker_id.to_string(),
         metadata: HashMap::new(),
         message_type: Some(
             agnt5_sdk_core::pb::service_message::MessageType::FunctionResponse(response),
@@ -533,7 +612,7 @@ impl Worker {
                     };
 
                     if let Some(response) =
-                        sdk_core_builtin_scorer_response(worker_id, &dispatch_request)
+                        sdk_core_builtin_scorer_response(&worker_id, &dispatch_request)
                     {
                         return Ok(Some(response));
                     }
@@ -588,10 +667,7 @@ impl Worker {
                     handler_clone.call(runtime_msg_data, ThreadsafeFunctionCallMode::NonBlocking);
 
                     // Wait for JS handler to call resolveResponse() (with 5 min timeout).
-                    // We await completion but don't send the response on the bidi stream —
-                    // all data flows through WriteCheckpoint to the Engine. The journal
-                    // consumer handles load decrement when it sees run.completed/failed.
-                    let _response_json =
+                    let response_json =
                         tokio::time::timeout(std::time::Duration::from_secs(300), rx)
                             .await
                             .map_err(|_| {
@@ -607,7 +683,20 @@ impl Worker {
                                 ))
                             })?;
 
-                    Ok(None)
+                    // Push workers retain the legacy journal-terminal path. Pull
+                    // assignments must return their terminal response so sdk-core
+                    // can fence it through CompleteJob.
+                    if dispatch_request
+                        .metadata
+                        .get("dispatch_mode")
+                        .map(String::as_str)
+                        != Some("pull")
+                    {
+                        return Ok(None);
+                    }
+
+                    pull_completion_response(&worker_id, &dispatch_request, &response_json)
+                        .map(Some)
                 }
             };
 
@@ -1100,5 +1189,72 @@ impl Span {
             .lock()
             .map_err(|e| Error::from_reason(format!("Span mutex poisoned: {}", e)))?;
         Ok(guard.is_none())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pull_request() -> DispatchComponentRequest {
+        DispatchComponentRequest {
+            invocation_id: "run-1".to_string(),
+            component_name: "test_component".to_string(),
+            attempt: 2,
+            lease_id: "lease-1".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn builds_successful_pull_completion_from_javascript_response() {
+        let message = pull_completion_response(
+            "worker-1",
+            &pull_request(),
+            r#"{"invocationId":"run-1","outputJson":"{\"ok\":true}","eventType":"run.completed"}"#,
+        )
+        .expect("pull completion");
+
+        let response = match message.message_type {
+            Some(agnt5_sdk_core::pb::service_message::MessageType::FunctionResponse(response)) => {
+                response
+            }
+            _ => panic!("expected function response"),
+        };
+        assert!(response.success);
+        assert_eq!(response.event_type, "run.completed");
+        assert_eq!(response.attempt, 2);
+        assert_eq!(response.lease_id, "lease-1");
+        assert_eq!(
+            response.result,
+            Some(dispatch_component_response::Result::OutputData(
+                br#"{"ok":true}"#.to_vec()
+            ))
+        );
+    }
+
+    #[test]
+    fn builds_failed_pull_completion_from_javascript_response() {
+        let message = pull_completion_response(
+            "worker-1",
+            &pull_request(),
+            r#"{"invocationId":"run-1","error":"boom","errorCode":"EXECUTION_ERROR","eventType":"run.failed"}"#,
+        )
+        .expect("pull completion");
+
+        let response = match message.message_type {
+            Some(agnt5_sdk_core::pb::service_message::MessageType::FunctionResponse(response)) => {
+                response
+            }
+            _ => panic!("expected function response"),
+        };
+        assert!(!response.success);
+        assert_eq!(response.event_type, "run.failed");
+        assert_eq!(response.error_message, "boom");
+        assert_eq!(
+            response.metadata.get("error_code").map(String::as_str),
+            Some("EXECUTION_ERROR")
+        );
+        assert!(response.result.is_none());
     }
 }
