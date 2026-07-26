@@ -60,6 +60,9 @@ class ScriptedStreamingModel implements LanguageModel {
       return;
     }
 
+    yield { type: 'thinking_start', index: 0 };
+    yield { type: 'thinking_delta', content: 'Checking the lookup result', index: 0 };
+    yield { type: 'thinking_stop', index: 0 };
     yield { type: 'message_start', index: 0 };
     yield { type: 'message_delta', content: 'Alice', index: 0 };
     yield { type: 'message_delta', content: ' is', index: 0 };
@@ -116,6 +119,9 @@ describe('streaming model agents', () => {
       'lm.tool_call.stop',
       'tool_call.started',
       'tool_call.completed',
+      'lm.thinking.start',
+      'lm.thinking.delta',
+      'lm.thinking.stop',
       'lm.message.start',
       'lm.message.delta',
       'lm.message.delta',

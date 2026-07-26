@@ -39,6 +39,7 @@ export class EventEmitter {
   private runId: string;
   private baseMetadata: Record<string, string>;
   private sequence = 0;
+  private lastTimestampNs = 0n;
   private nativeWorker: any = null;
 
   constructor(runId: string, baseMetadata: Record<string, string> = {}) {
@@ -66,6 +67,13 @@ export class EventEmitter {
     }
 
     this.sequence++;
+    if (event.timestampNs <= this.lastTimestampNs) {
+      // Native transport accepts a JavaScript Number, whose precision at
+      // epoch-nanosecond scale is coarser than 1ns. Advance by 1µs so
+      // concurrent events remain strictly ordered after Number conversion.
+      event.timestampNs = this.lastTimestampNs + 1_000n;
+    }
+    this.lastTimestampNs = event.timestampNs;
 
     // Serialize full event with snake_case keys (matches Python SDK's event.to_dict())
     const eventData = serializeEvent(event);

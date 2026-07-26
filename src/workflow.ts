@@ -74,6 +74,8 @@ export function workflow<TInput = any, TOutput = any>(
   const config: WorkflowConfig = {
     name: workflowName,
     handler,
+    inputSchema: options.inputSchema,
+    outputSchema: options.outputSchema,
     cron: options.cron,
     triggers: options.triggers,
     flowControl: options.flowControl,

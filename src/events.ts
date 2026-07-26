@@ -111,6 +111,9 @@ export type LMStreamEventType =
   | 'lm.message.start'
   | 'lm.message.delta'
   | 'lm.message.stop'
+  | 'lm.thinking.start'
+  | 'lm.thinking.delta'
+  | 'lm.thinking.stop'
   | 'lm.tool_call.start'
   | 'lm.tool_call.delta'
   | 'lm.tool_call.stop';

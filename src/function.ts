@@ -1,6 +1,7 @@
 import type {
   Context,
   FunctionHandler,
+  JSONSchema,
   RetryPolicy,
   BackoffPolicy,
 } from './types';
@@ -48,6 +49,22 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
    */
   timeout(ms: number): this {
     this.config.timeout_ms = ms;
+    return this;
+  }
+
+  /**
+   * Declare the function input schema used by Studio, manifests, and runtime
+   * registration. TypeScript types are erased at runtime, so structured
+   * inputs must provide a JSON Schema explicitly.
+   */
+  inputSchema(schema: JSONSchema): this {
+    this.config.inputSchema = schema;
+    return this;
+  }
+
+  /** Declare the function output schema used by registration and manifests. */
+  outputSchema(schema: JSONSchema): this {
+    this.config.outputSchema = schema;
     return this;
   }
 
@@ -146,20 +163,27 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
         functionStarted(fnCid, stepCid, {
           inputData: inputForEvent,
           attempt: 0,
+          componentName: handlerName,
         }),
       );
 
-      // Push function cid so any nested Agent.run/lm event inherits fnCid
-      // as its parent (matches sdk-python: function → agent.started).
-      anyCtx.pushCorrelation(fnCid);
+      const hasTaskLocalCorrelation =
+        typeof anyCtx.runWithCorrelation === 'function';
+      if (!hasTaskLocalCorrelation) {
+        anyCtx.pushCorrelation(fnCid);
+      }
       try {
-        const result = await handler(ctx, ...args);
+        const invokeHandler = () => handler(ctx, ...args);
+        const result = hasTaskLocalCorrelation
+          ? await anyCtx.runWithCorrelation(fnCid, invokeHandler)
+          : await invokeHandler();
         const durationMs = Date.now() - startMs;
 
         await ctx.emit(
           functionCompleted(fnCid, stepCid, {
             outputData: result,
             durationMs,
+            componentName: handlerName,
           }),
         );
         await ctx.emit(
@@ -180,6 +204,7 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
             errorCode: 'FUNCTION_ERROR',
             errorMessage,
             durationMs,
+            componentName: handlerName,
           }),
         );
         await ctx.emit(
@@ -192,7 +217,9 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
         );
         throw err;
       } finally {
-        anyCtx.popCorrelation();
+        if (!hasTaskLocalCorrelation) {
+          anyCtx.popCorrelation();
+        }
       }
     };
 

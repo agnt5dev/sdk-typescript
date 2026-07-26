@@ -3,7 +3,7 @@ use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFun
 use napi_derive::napi;
 
 use agnt5_sdk_core::pb::{
-    dispatch_component_response, ComponentInfo, ComponentType as PbComponentType,
+    dispatch_component_response, ComponentInfo, ComponentSchema, ComponentType as PbComponentType,
     DispatchComponentRequest, DispatchComponentResponse, RuntimeMessage, ServiceMessage,
     TriggerSpec,
 };
@@ -191,8 +191,66 @@ pub struct ComponentInfoData {
     pub component_type: String,
     pub config: Option<HashMap<String, String>>,
     pub metadata: Option<HashMap<String, String>>,
+    pub input_schema: Option<String>,
+    pub output_schema: Option<String>,
     pub definition: Option<String>,
     pub triggers: Option<Vec<TriggerSpecData>>,
+}
+
+fn parse_json_schema(json: &str) -> Option<ComponentSchema> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    json_value_to_component_schema(&value)
+}
+
+fn json_value_to_component_schema(value: &serde_json::Value) -> Option<ComponentSchema> {
+    let object = value.as_object()?;
+    let mut schema = ComponentSchema {
+        r#type: object
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        description: object
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        format: object
+            .get("format")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        ..Default::default()
+    };
+
+    if let Some(properties) = object
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    {
+        for (name, property) in properties {
+            if let Some(property_schema) = json_value_to_component_schema(property) {
+                schema.properties.insert(name.clone(), property_schema);
+            }
+        }
+    }
+    if let Some(required) = object.get("required").and_then(serde_json::Value::as_array) {
+        schema.required = required
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect();
+    }
+    schema.items = object
+        .get("items")
+        .and_then(json_value_to_component_schema)
+        .map(Box::new);
+    if let Some(values) = object.get("enum").and_then(serde_json::Value::as_array) {
+        schema.enum_values = values
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect();
+    }
+
+    Some(schema)
 }
 
 /// Trigger declaration attached to a component registration
@@ -233,6 +291,8 @@ impl From<ComponentInfoData> for ComponentInfo {
             .into_iter()
             .map(Into::into)
             .collect();
+        let input_schema = data.input_schema.as_deref().and_then(parse_json_schema);
+        let output_schema = data.output_schema.as_deref().and_then(parse_json_schema);
 
         let max_attempts = config
             .get("max_attempts")
@@ -266,8 +326,8 @@ impl From<ComponentInfoData> for ComponentInfo {
         ComponentInfo {
             name: data.name,
             component_type,
-            input_schema: None,
-            output_schema: None,
+            input_schema,
+            output_schema,
             config,
             metadata,
             definition: data.definition,
@@ -1256,5 +1316,86 @@ mod tests {
             Some("EXECUTION_ERROR")
         );
         assert!(response.result.is_none());
+    }
+
+    #[test]
+    fn preserves_paused_pull_completion_metadata() {
+        let message = pull_completion_response(
+            "worker-1",
+            &pull_request(),
+            r#"{"invocationId":"run-1","outputJson":"{\"_paused\":true}","eventType":"workflow.paused","metadata":{"pause_index":"2","step_events":"{\"0\":\"Ada\",\"1\":\"blue\"}","completed_steps":"{\"draft\":{\"ok\":true}}"}}"#,
+        )
+        .expect("paused pull completion");
+
+        let response = match message.message_type {
+            Some(agnt5_sdk_core::pb::service_message::MessageType::FunctionResponse(response)) => {
+                response
+            }
+            _ => panic!("expected function response"),
+        };
+        assert!(response.success);
+        assert_eq!(response.event_type, "workflow.paused");
+        assert_eq!(
+            response.metadata.get("pause_index").map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(
+            response.metadata.get("step_events").map(String::as_str),
+            Some(r#"{"0":"Ada","1":"blue"}"#)
+        );
+        assert_eq!(
+            response.metadata.get("completed_steps").map(String::as_str),
+            Some(r#"{"draft":{"ok":true}}"#)
+        );
+    }
+
+    #[test]
+    fn marks_runtime_authored_pull_cancellation_explicitly() {
+        let message = pull_completion_response(
+            "worker-1",
+            &pull_request(),
+            r#"{"invocationId":"run-1","outputJson":"{\"_cancelled\":true}","eventType":"run.cancelled"}"#,
+        )
+        .expect("cancelled pull response");
+
+        let response = match message.message_type {
+            Some(agnt5_sdk_core::pb::service_message::MessageType::FunctionResponse(response)) => {
+                response
+            }
+            _ => panic!("expected function response"),
+        };
+        assert!(response.success);
+        assert_eq!(response.event_type, "run.cancelled");
+    }
+
+    #[test]
+    fn parses_nested_component_schema_for_registration() {
+        let schema = parse_json_schema(
+            r#"{
+                "type":"object",
+                "properties":{
+                    "location":{
+                        "type":"string",
+                        "description":"City and country to look up",
+                        "format":"city"
+                    }
+                },
+                "required":["location"]
+            }"#,
+        )
+        .expect("schema should parse");
+
+        assert_eq!(schema.r#type, "object");
+        assert_eq!(schema.required, vec!["location"]);
+        let location = schema
+            .properties
+            .get("location")
+            .expect("location property");
+        assert_eq!(location.r#type, "string");
+        assert_eq!(
+            location.description.as_deref(),
+            Some("City and country to look up")
+        );
+        assert_eq!(location.format.as_deref(), Some("city"));
     }
 }

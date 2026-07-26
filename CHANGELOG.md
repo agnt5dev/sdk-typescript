@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-07-26
+
+### Added
+
+- Add parallel function execution and deterministic event-emitter coverage.
+
+### Fixed
+
+- Preserve agent model stream ordering, pull completion fencing, and workerless
+  lifecycle behavior across concurrent runs.
+
 ## [0.6.2] - 2026-07-24
 
 ### Fixed
@@ -27,6 +38,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Native package publishing now ignores unsupported empty platform directories.
 - Release builds no longer require their not-yet-published optional platform packages.
 
-[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/agnt5dev/sdk-typescript/releases/tag/v0.6.1

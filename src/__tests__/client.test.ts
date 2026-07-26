@@ -170,6 +170,62 @@ describe('Client', () => {
   it('should create with defaults', () => {
     const client = new Client();
     expect(client).toBeDefined();
+    expect((client as any).timeout).toBe(45_000);
+    expect((client as any).maxRetries).toBe(0);
+  });
+
+  it('should not retry synchronous runs by default', async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ error: 'election in progress' }),
+      {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test' });
+
+      await expect(client.run('greet')).rejects.toThrow();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('should retain explicit retry opt-in for idempotent synchronous runs', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ error: 'election in progress' }),
+        {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        },
+      ))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ run_id: 'run-1', status: 'completed', output: { ok: true } }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new Client({
+        gatewayUrl: 'http://gateway.test',
+        maxRetries: 1,
+        retryDelayMs: 1,
+      });
+
+      await expect(client.run('greet')).resolves.toMatchObject({
+        runId: 'run-1',
+        isSuccess: true,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('should accept custom gateway URL', () => {

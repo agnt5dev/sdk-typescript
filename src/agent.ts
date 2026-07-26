@@ -126,6 +126,9 @@ export type LanguageModelStreamChunk =
   | { type: 'message_start'; index?: number }
   | { type: 'message_delta'; content: string; index?: number }
   | { type: 'message_stop'; index?: number }
+  | { type: 'thinking_start'; index?: number }
+  | { type: 'thinking_delta'; content: string; index?: number }
+  | { type: 'thinking_stop'; index?: number }
   | { type: 'tool_call_start'; id: string; name: string; index?: number }
   | { type: 'tool_call_delta'; inputDelta: string; index?: number }
   | {
@@ -874,6 +877,39 @@ export class Agent {
               kind: 'event',
               event: lmStreamEvent(
                 'lm.message.stop',
+                lmCid,
+                parentCorrelationId,
+                { index },
+              ),
+            };
+            break;
+          case 'thinking_start':
+            yield {
+              kind: 'event',
+              event: lmStreamEvent(
+                'lm.thinking.start',
+                lmCid,
+                parentCorrelationId,
+                { index },
+              ),
+            };
+            break;
+          case 'thinking_delta':
+            yield {
+              kind: 'event',
+              event: lmStreamEvent(
+                'lm.thinking.delta',
+                lmCid,
+                parentCorrelationId,
+                { index, content: chunk.content },
+              ),
+            };
+            break;
+          case 'thinking_stop':
+            yield {
+              kind: 'event',
+              event: lmStreamEvent(
+                'lm.thinking.stop',
                 lmCid,
                 parentCorrelationId,
                 { index },

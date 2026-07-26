@@ -16,10 +16,17 @@ describe('workerless serve()', () => {
   });
 
   it('serves a workerless manifest from registered workflows', async () => {
+    const inputSchema = {
+      type: 'object' as const,
+      properties: {
+        name: { type: 'string' as const, description: 'Person to greet' },
+      },
+      required: ['name'],
+    };
     const hello = workflow(
       'hello',
       async (_ctx, input: { name: string }) => ({ message: `hello ${input.name}` }),
-      { triggers: [event('hello.requested')] },
+      { inputSchema, triggers: [event('hello.requested')] },
     );
 
     const handler = serve({ serviceName: 'local-workerless', workflows: [hello] });
@@ -35,6 +42,7 @@ describe('workerless serve()', () => {
           name: 'hello',
           type: 'workflow',
           component_type: 'workflow',
+          input_schema: inputSchema,
           triggers: [
             {
               trigger_type: 'event',

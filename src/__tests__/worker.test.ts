@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Worker, getRuntime } from '../worker';
-import { FunctionRegistry } from '../function';
-import { WorkflowRegistry } from '../workflow';
-import { ToolRegistry } from '../tool';
+import { fn, FunctionRegistry } from '../function';
+import { workflow, WorkflowRegistry } from '../workflow';
+import { tool, ToolRegistry } from '../tool';
 import { ScorerRegistry } from '../scorer';
 
 vi.mock('../native-loader', () => {
@@ -28,7 +28,9 @@ vi.mock('../native-loader', () => {
       this.deploymentId = options.deploymentId || 'deployment-123';
     }
 
-    async setComponents(_components: unknown[]): Promise<void> {}
+    async setComponents(components: unknown[]): Promise<void> {
+      (globalThis as any).__agnt5RegisteredComponents = components;
+    }
 
     setMessageHandler(_handler: unknown): void {}
 
@@ -71,6 +73,7 @@ beforeEach(() => {
     originalWorkerEnv[key] = process.env[key];
   }
   (globalThis as any).__agnt5NativeWorkerOptions = [];
+  (globalThis as any).__agnt5RegisteredComponents = [];
   FunctionRegistry.clear();
   WorkflowRegistry.clear();
   ToolRegistry.clear();
@@ -92,6 +95,7 @@ afterEach(() => {
     }
   }
   delete (globalThis as any).__agnt5NativeWorkerOptions;
+  delete (globalThis as any).__agnt5RegisteredComponents;
   vi.restoreAllMocks();
 });
 
@@ -152,6 +156,36 @@ describe('Worker', () => {
       deploymentId: 'deployment-def',
       maxConcurrency: 24,
     });
+  });
+
+  it('passes function, workflow, and tool schemas to native registration', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const locationSchema = {
+      type: 'object' as const,
+      properties: {
+        location: {
+          type: 'string' as const,
+          description: 'City and country to look up',
+        },
+      },
+      required: ['location'],
+    };
+
+    fn('weather').inputSchema(locationSchema).run(async () => ({ ok: true }));
+    workflow('travel', async () => ({ ok: true }), { inputSchema: locationSchema });
+    tool(
+      'lookup',
+      { description: 'Look up a location', inputSchema: locationSchema },
+      async () => ({ ok: true }),
+    );
+
+    await new Worker('test-service').run();
+
+    const components = (globalThis as any).__agnt5RegisteredComponents as any[];
+    for (const name of ['weather', 'travel', 'lookup']) {
+      const component = components.find((candidate) => candidate.name === name);
+      expect(JSON.parse(component.inputSchema)).toEqual(locationSchema);
+    }
   });
 
   it('maps pull worker options to sdk-core long polling environment', async () => {
