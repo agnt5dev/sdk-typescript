@@ -175,6 +175,8 @@ type ComponentEntry = {
   name: string;
   type: WorkerlessComponentType;
   invoke: (ctx: WorkerlessContext, input: unknown) => Promise<unknown> | unknown;
+  inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   triggers?: WorkerlessTriggerSpec[];
   flowControl?: WorkerlessFlowControlPolicy;
@@ -268,6 +270,8 @@ function collectWorkerlessComponents(): ComponentEntry[] {
       name,
       type: 'function',
       invoke: (ctx, input) => fnConfig.handler(ctx, input),
+      inputSchema: fnConfig.options.inputSchema,
+      outputSchema: fnConfig.options.outputSchema,
       metadata: {},
       flowControl: functionFlowControl(fnConfig.options),
       priority: fnConfig.options.priority,
@@ -280,6 +284,8 @@ function collectWorkerlessComponents(): ComponentEntry[] {
       name,
       type: 'workflow',
       invoke: (ctx, input) => cfg.handler(ctx, input),
+      inputSchema: cfg.inputSchema,
+      outputSchema: cfg.outputSchema,
       metadata: workflowMetadata(cfg),
       triggers: normalizeTriggers(cfg.triggers),
       flowControl: cfg.flowControl ?? cfg.flow_control,
@@ -293,6 +299,8 @@ function collectWorkerlessComponents(): ComponentEntry[] {
       name,
       type: 'tool',
       invoke: (ctx, input) => tool.invoke(ctx, objectInput(input)),
+      inputSchema: tool.inputSchema,
+      outputSchema: tool.outputSchema,
       metadata: {
         description: tool.description,
         requires_confirmation: tool.confirmation,
@@ -330,6 +338,12 @@ function buildWorkerlessManifest(
       };
       if (component.metadata && Object.keys(component.metadata).length > 0) {
         manifestComponent.metadata = component.metadata;
+      }
+      if (component.inputSchema) {
+        manifestComponent.input_schema = component.inputSchema;
+      }
+      if (component.outputSchema) {
+        manifestComponent.output_schema = component.outputSchema;
       }
       if (component.triggers) {
         manifestComponent.triggers = component.triggers;

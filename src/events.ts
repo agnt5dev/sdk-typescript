@@ -107,6 +107,27 @@ export interface ToolCallFailed extends BaseEvent {
   error: string;
 }
 
+export type LMStreamEventType =
+  | 'lm.message.start'
+  | 'lm.message.delta'
+  | 'lm.message.stop'
+  | 'lm.thinking.start'
+  | 'lm.thinking.delta'
+  | 'lm.thinking.stop'
+  | 'lm.tool_call.start'
+  | 'lm.tool_call.delta'
+  | 'lm.tool_call.stop';
+
+export interface LMStreamEvent extends BaseEvent {
+  eventType: LMStreamEventType;
+  index: number;
+  content?: string;
+  id?: string;
+  toolName?: string;
+  inputDelta?: string;
+  input?: Record<string, any>;
+}
+
 // ─── Skill events ────────────────────────────────────────────────────
 
 export interface SkillLoaded extends BaseEvent {
@@ -127,6 +148,7 @@ export type AgentEvent =
   | ToolCallStarted
   | ToolCallCompleted
   | ToolCallFailed
+  | LMStreamEvent
   | SkillLoaded;
 
 // ─── Factory helpers ─────────────────────────────────────────────────
@@ -271,6 +293,28 @@ export function toolCallFailed(
     toolName: opts.toolName,
     toolCallId: opts.toolCallId,
     error: opts.error,
+  };
+}
+
+export function lmStreamEvent(
+  eventType: LMStreamEventType,
+  correlationId: string,
+  parentCorrelationId: string,
+  data: {
+    index: number;
+    content?: string;
+    id?: string;
+    toolName?: string;
+    inputDelta?: string;
+    input?: Record<string, any>;
+  },
+): LMStreamEvent {
+  return {
+    ...baseFields(data.toolName ?? 'model-stream', correlationId, parentCorrelationId),
+    eventType,
+    componentType: 'lm',
+    operation: eventType.startsWith('lm.tool_call.') ? 'tool_call' : 'message',
+    ...data,
   };
 }
 

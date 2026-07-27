@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { WorkerOptions, Context } from './types.js';
 import { FunctionRegistry } from './function.js';
 import { WorkflowRegistry } from './workflow.js';
@@ -90,7 +91,14 @@ type ComponentRegistration = {
   componentType: string;
   config: Record<string, string>;
   metadata: Record<string, string>;
+  inputSchema?: string;
+  outputSchema?: string;
 };
+
+function serializedSchema(schema: unknown): string | undefined {
+  if (!schema || typeof schema !== 'object') return undefined;
+  return JSON.stringify(schema);
+}
 
 function isSystemComponentRegistration(component: ComponentRegistration): boolean {
   return (
@@ -172,6 +180,7 @@ class SimpleContext implements Context {
   // auto-fill parentCorrelationId on events whose helpers default to null
   // (e.g. agent.started/completed/failed emitted by Agent.stream()).
   private _correlationStack: string[] = [];
+  private _correlationScope = new AsyncLocalStorage<string>();
 
   // Per-workflow incrementing counter for generating step names like
   // `fetch_top_ids_0`, `summarize_3`. Matches sdk-python's WorkflowContext
@@ -305,7 +314,9 @@ class SimpleContext implements Context {
     // doesn't carry one. This matches sdk-python where the agent/lm event
     // emitters pick up the active step/function/iteration cid from context.
     if (event && (event.parentCorrelationId === null || event.parentCorrelationId === undefined)) {
-      const top = this._correlationStack[this._correlationStack.length - 1];
+      const top =
+        this._correlationScope.getStore() ??
+        this._correlationStack[this._correlationStack.length - 1];
       if (top) {
         event.parentCorrelationId = top;
       }
@@ -324,9 +335,18 @@ class SimpleContext implements Context {
     return this._correlationStack.pop();
   }
 
+  /** Run one async branch with an isolated nested-event parent. */
+  runWithCorrelation<T>(cid: string, fn: () => T | Promise<T>): T | Promise<T> {
+    return this._correlationScope.run(cid, fn);
+  }
+
   /** Top of the correlation stack — current parent for any newly emitted event. */
   getCurrentCorrelationId(): string | undefined {
-    return this._correlationStack[this._correlationStack.length - 1] ?? this._workflowCid;
+    return (
+      this._correlationScope.getStore() ??
+      this._correlationStack[this._correlationStack.length - 1] ??
+      this._workflowCid
+    );
   }
 
   /** Workflow correlation id (set by Worker.processMessage for workflow dispatches). */
@@ -421,7 +441,8 @@ class SimpleContext implements Context {
       return this._userResponses.get(pauseIndex)!;
     }
 
-    // First-time path: emit workflow.paused, then throw to unwind the handler.
+    // First-time path: emit workflow.paused for push execution, then throw to
+    // unwind the handler. Pull execution returns the pause through CompleteJob.
     //
     // The runtime's gateway tail treats `workflow.paused` as a terminal event
     // for /v1/workflows/:name/run and transitions the run to the `paused`
@@ -429,41 +450,44 @@ class SimpleContext implements Context {
     // until the sync deadline. Mirrors sdk-python's wait_for_input which
     // emits Paused via ctx.emit() before raising WaitingForUserInputException.
     const stepName = `wait_for_user_${pauseIndex}`;
-    if (this._emitter && this._workflowCid && this._runCid) {
-      const metadata: Record<string, string> = {
-        pause_reason: 'user_input_required',
-        pause_index: String(pauseIndex),
-        step_name: stepName,
-        question,
-      };
-      if (options?.inputType) metadata.input_type = options.inputType;
-      if (options?.allowCustom !== undefined) metadata.allow_custom = String(options.allowCustom);
-      if (options?.skippable !== undefined) metadata.skippable = String(options.skippable);
-      if (options?.options) metadata.options = JSON.stringify(options.options);
+    const metadata: Record<string, string> = {
+      pause_reason: 'user_input_required',
+      pause_index: String(pauseIndex),
+      step_name: stepName,
+      question,
+    };
+    if (options?.inputType) metadata.input_type = options.inputType;
+    if (options?.allowCustom !== undefined) metadata.allow_custom = String(options.allowCustom);
+    if (options?.skippable !== undefined) metadata.skippable = String(options.skippable);
+    if (options?.options) metadata.options = JSON.stringify(options.options);
 
-      // Persist history of completed pauses so subsequent resumes can replay
-      // the full chain. The gateway's resume handler copies the latest
-      // workflow.paused metadata verbatim onto the next dispatch, so every
-      // entry here will flow back into loadReplayState on the next run.
-      if (this._userResponses.size > 0) {
-        const stepEvents: Record<string, string | null> = {};
-        for (const [idx, resp] of this._userResponses.entries()) {
-          stepEvents[String(idx)] = resp;
-        }
-        metadata.step_events = JSON.stringify(stepEvents);
+    // Persist history of completed pauses so subsequent resumes can replay
+    // the full chain. CompleteJob carries this metadata onto workflow.paused,
+    // and the gateway copies it onto the next dispatch.
+    let stepEvents: Record<string, string | null> | undefined;
+    if (this._userResponses.size > 0) {
+      stepEvents = {};
+      for (const [idx, response] of this._userResponses.entries()) {
+        stepEvents[String(idx)] = response;
       }
+      metadata.step_events = JSON.stringify(stepEvents);
+    }
 
-      // Also persist ctx.step() results so durable steps replay across the
-      // resume boundary. Without this, _stepCache is instance-scoped to this
-      // dispatch and all prior step results would re-execute on every resume.
-      if (this._stepCache.size > 0) {
-        const completedSteps: Record<string, any> = {};
-        for (const [key, value] of this._stepCache.entries()) {
-          completedSteps[key] = value;
-        }
-        metadata.completed_steps = JSON.stringify(completedSteps);
-      }
+    // Persist ctx.step() results across the pause boundary.
+    const checkpointState: Record<string, any> = {};
+    for (const [key, value] of this._stepCache.entries()) {
+      checkpointState[key] = value;
+    }
+    if (Object.keys(checkpointState).length > 0) {
+      metadata.completed_steps = JSON.stringify(checkpointState);
+    }
 
+    if (
+      this.metadata.dispatch_mode !== 'pull' &&
+      this._emitter &&
+      this._workflowCid &&
+      this._runCid
+    ) {
       try {
         await this._emitter.emit(
           workflowPaused(this._workflowCid, this._runCid, {
@@ -497,6 +521,8 @@ class SimpleContext implements Context {
       allowCustom: options?.allowCustom,
       skippable: options?.skippable,
       stepName,
+      checkpointState,
+      stepEvents,
     });
   }
 
@@ -756,6 +782,7 @@ export class Worker {
   }): Promise<string> {
     const runId = message.metadata?.run_id || message.invocationId;
     const runtime = runtimeContextFromMetadata(message.metadata);
+    const isPullDispatch = message.metadata?.dispatch_mode === 'pull';
 
     // Per-invocation AbortController for cooperative cancellation. The cancel
     // handler aborts it when a CancelExecution arrives for this run; handlers
@@ -992,9 +1019,17 @@ export class Worker {
                 throw new Error(`Agent not found: ${message.componentName}`);
               }
 
-              // Session history: load prior conversation from entity storage
+              // Gateway chat dispatches include the durable prior messages.
+              // Direct invocations retain the legacy entity-store fallback.
               const sessionId = inputData.session_id || message.metadata?.session_id || runId;
-              const history = await this._loadSessionHistory(sessionId, message.componentName, message.metadata);
+              const gatewayHistory = Array.isArray(inputData.messages)
+                ? inputData.messages.map((entry: any) => ({
+                    role: entry?.role || 'user',
+                    content: entry?.content || '',
+                  }))
+                : null;
+              const history = gatewayHistory
+                ?? await this._loadSessionHistory(sessionId, message.componentName, message.metadata);
 
               // Consume the agent stream so internal events (agent.started,
               // iteration.started, tool_call.started, etc.) are forwarded to the platform.
@@ -1015,13 +1050,16 @@ export class Worker {
               }
               result = agentResult.output;
 
-              // Session history: save updated conversation to entity storage
-              const updatedMessages = [
-                ...history,
-                Message.user(userMessage),
-                Message.assistant(typeof result === 'string' ? result : JSON.stringify(result)),
-              ];
-              await this._saveSessionHistory(sessionId, message.componentName, updatedMessages, message.metadata);
+              // Gateway chat persists the completed turn centrally. Keep the
+              // legacy SDK save only for direct agent invocations.
+              if (!inputData.session_history_managed) {
+                const updatedMessages = [
+                  ...history,
+                  Message.user(userMessage),
+                  Message.assistant(typeof result === 'string' ? result : JSON.stringify(result)),
+                ];
+                await this._saveSessionHistory(sessionId, message.componentName, updatedMessages, message.metadata);
+              }
 
               // Emit session.created so GET /v1/sessions/{id} works
               await emitter.emit({
@@ -1124,15 +1162,19 @@ export class Worker {
             `run.completed | ${message.componentType} ${message.componentName} | run_id=${runId}`,
           );
 
-          // ── run.completed ──
-          await emitter.emit(runCompleted(runCid, parentCid, {
-            outputData: result,
-            componentName: message.componentName,
-          }));
+          // Pull terminals are fenced through CompleteJob by sdk-core. Push
+          // execution retains the journal-authored terminal for compatibility.
+          if (!isPullDispatch) {
+            await emitter.emit(runCompleted(runCid, parentCid, {
+              outputData: result,
+              componentName: message.componentName,
+            }));
+          }
 
           return JSON.stringify({
             invocationId: message.invocationId,
             outputJson: JSON.stringify(result),
+            eventType: 'run.completed',
           });
         } catch (error) {
           // HITL: workflow.paused has already been journaled by waitForUser
@@ -1150,6 +1192,21 @@ export class Worker {
                 question: error.question,
                 pauseIndex: error.pauseIndex,
               }),
+              eventType: 'workflow.paused',
+              metadata: {
+                pause_reason: 'user_input_required',
+                pause_index: String(error.pauseIndex),
+                question: error.question,
+                ...(error.stepName ? { step_name: error.stepName } : {}),
+                ...(error.inputType ? { input_type: error.inputType } : {}),
+                allow_custom: String(error.allowCustom),
+                skippable: String(error.skippable),
+                ...(error.options.length > 0 ? { options: JSON.stringify(error.options) } : {}),
+                ...(error.stepEvents ? { step_events: JSON.stringify(error.stepEvents) } : {}),
+                ...(Object.keys(error.checkpointState).length > 0
+                  ? { completed_steps: JSON.stringify(error.checkpointState) }
+                  : {}),
+              },
             });
           }
 
@@ -1162,26 +1219,30 @@ export class Worker {
             return JSON.stringify({
               invocationId: message.invocationId,
               outputJson: JSON.stringify({ _cancelled: true }),
+              eventType: 'run.cancelled',
             });
           }
 
-          // ── run.failed ──
-          try {
-            await emitter.emit(runFailed(runCid, parentCid, {
-              errorCode: 'EXECUTION_ERROR',
-              errorMessage: (error as Error).message,
-              attempt,
-              maxAttempts,
-              componentName: message.componentName,
-            }));
-          } catch (emitError) {
-            console.error('Failed to emit run.failed event:', emitError);
+          if (!isPullDispatch) {
+            try {
+              await emitter.emit(runFailed(runCid, parentCid, {
+                errorCode: 'EXECUTION_ERROR',
+                errorMessage: (error as Error).message,
+                attempt,
+                maxAttempts,
+                componentName: message.componentName,
+              }));
+            } catch (emitError) {
+              console.error('Failed to emit run.failed event:', emitError);
+            }
           }
 
           console.error(`❌ Execution failed:`, error);
           return JSON.stringify({
             invocationId: message.invocationId,
             error: (error as Error).message,
+            errorCode: 'EXECUTION_ERROR',
+            eventType: 'run.failed',
           });
         } finally {
           recordWorkerMemory({
@@ -1310,7 +1371,14 @@ export class Worker {
         config.timeout_ms = String(fnConfig.options.timeout_ms);
       }
 
-      components.push({ name, componentType: 'function', config, metadata: {} });
+      components.push({
+        name,
+        componentType: 'function',
+        config,
+        metadata: {},
+        inputSchema: serializedSchema(fnConfig.options.inputSchema),
+        outputSchema: serializedSchema(fnConfig.options.outputSchema),
+      });
     }
 
     if (!FunctionRegistry.get(PROMPT_EXECUTOR_COMPONENT_NAME)) {
@@ -1331,13 +1399,22 @@ export class Worker {
         componentType: 'workflow',
         config: {},
         metadata,
+        inputSchema: serializedSchema(cfg.inputSchema),
+        outputSchema: serializedSchema(cfg.outputSchema),
         triggers: cfg.triggers,
       });
     }
 
     // Tools (auto-discover from registry)
-    for (const [name] of ToolRegistry.all()) {
-      components.push({ name, componentType: 'tool', config: {}, metadata: {} });
+    for (const [name, tool] of ToolRegistry.all()) {
+      components.push({
+        name,
+        componentType: 'tool',
+        config: {},
+        metadata: {},
+        inputSchema: serializedSchema(tool.inputSchema),
+        outputSchema: serializedSchema(tool.outputSchema),
+      });
     }
 
     // Agents (explicitly registered via registerAgents)

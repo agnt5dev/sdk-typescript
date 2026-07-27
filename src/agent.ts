@@ -7,8 +7,7 @@
 import type { Context, ToolSchema } from './types.js';
 import { Tool } from './tool.js';
 import { ContextImpl } from './context.js';
-import { normalizePromptCache, validateModelForProvider } from './lm.js';
-import type { LM } from './lm.js';
+import { LM, normalizePromptCache, validateModelForProvider } from './lm.js';
 import type { Sandbox } from './sandbox.js';
 import { sandboxTools } from './sandbox-tools.js';
 import { Skill, makeLoadSkillTool, renderCatalog, resolveSkills, type SkillInput } from './skills.js';
@@ -23,7 +22,7 @@ import type {
   ToolCall as LMToolCall,
 } from './lm.js';
 import { randomUUID } from 'node:crypto';
-import type { AgentEvent } from './events.js';
+import type { AgentEvent, LMStreamEvent } from './events.js';
 import {
   agentStarted,
   agentCompleted,
@@ -36,6 +35,7 @@ import {
   lmStarted,
   lmCompleted,
   lmFailed,
+  lmStreamEvent,
   generateCid,
 } from './events.js';
 
@@ -122,6 +122,24 @@ export interface GenerateResponse {
   toolCalls?: ToolCall[];
 }
 
+export type LanguageModelStreamChunk =
+  | { type: 'message_start'; index?: number }
+  | { type: 'message_delta'; content: string; index?: number }
+  | { type: 'message_stop'; index?: number }
+  | { type: 'thinking_start'; index?: number }
+  | { type: 'thinking_delta'; content: string; index?: number }
+  | { type: 'thinking_stop'; index?: number }
+  | { type: 'tool_call_start'; id: string; name: string; index?: number }
+  | { type: 'tool_call_delta'; inputDelta: string; index?: number }
+  | {
+      type: 'tool_call_stop';
+      id: string;
+      name: string;
+      input: Record<string, any>;
+      index?: number;
+    }
+  | { type: 'completed'; response: GenerateResponse };
+
 /**
  * Language model interface (for backwards compatibility)
  * @deprecated Use LM class from lm.js instead
@@ -135,8 +153,20 @@ export interface LanguageModel {
   /**
    * Stream completion from LLM
    */
-  stream?(request: GenerateRequest): AsyncIterableIterator<string>;
+  stream?(
+    request: GenerateRequest,
+  ): AsyncIterableIterator<string | LanguageModelStreamChunk>;
+
+  /**
+   * Opt in when stream() can return completed tool calls as well as text.
+   * Models that omit this flag retain the existing generate() tool path.
+   */
+  supportsStreamingTools?: boolean;
 }
+
+type StreamedLanguageModelItem =
+  | { kind: 'event'; event: LMStreamEvent }
+  | { kind: 'response'; response: GenerateResponse };
 
 /**
  * Agent execution result
@@ -456,8 +486,10 @@ export class Agent {
     this.callbacks = options.callbacks || {};
     this.sandbox = options.sandbox;
 
-    // Detect if it's the new LM class (has static factory methods)
-    this.isNewLM = 'generate' in options.model && !('stream' in (options.model as any).constructor);
+    // Keep custom LanguageModel implementations on the legacy extension path.
+    // Checking constructor properties misclassified every class instance that
+    // happened to expose generate().
+    this.isNewLM = options.model instanceof LM;
 
     // Build tool registry
     if (this.sandbox) {
@@ -734,6 +766,254 @@ export class Agent {
     return this.normalizeGenerateResponse(await legacyModel.generate(request as GenerateRequest));
   }
 
+  private canStreamModel(toolDefs: ToolSchema[]): boolean {
+    if (this.isNewLM) return false;
+    const model = this.model as LanguageModel;
+    if (typeof model.stream !== 'function') return false;
+    if (
+      this.callbacks.beforeModel ||
+      this.callbacks.afterModel
+    ) {
+      return false;
+    }
+    return toolDefs.length === 0 || model.supportsStreamingTools === true;
+  }
+
+  private async *streamWithModel(
+    messages: Message[],
+    toolDefs: ToolSchema[],
+    context: Context,
+    parentCorrelationId: string,
+  ): AsyncGenerator<StreamedLanguageModelItem, void, undefined> {
+    const request = this.buildModelRequest(messages, toolDefs) as GenerateRequest;
+    const model = this.model as LanguageModel;
+    const slashIdx = this.modelName.indexOf('/');
+    const provider = slashIdx > 0 ? this.modelName.slice(0, slashIdx) : '';
+    const lmCid = generateCid();
+    const startMs = Date.now();
+
+    try {
+      await context.emit(
+        lmStarted(lmCid, parentCorrelationId, {
+          model: this.modelName,
+          provider,
+          messages: request.messages ?? [],
+          systemPrompt: request.systemPrompt,
+          toolsCount: toolDefs.length,
+          temperature: request.config?.temperature,
+          maxTokens: request.config?.maxTokens ?? null,
+        }),
+      );
+    } catch {
+      // Best effort: lifecycle emission must not block model generation.
+    }
+
+    let text = '';
+    let response: GenerateResponse | undefined;
+    let implicitMessageStarted = false;
+    let implicitMessageStopped = false;
+
+    try {
+      for await (const chunk of model.stream!(request)) {
+        if (typeof chunk === 'string') {
+          if (!implicitMessageStarted) {
+            implicitMessageStarted = true;
+            yield {
+              kind: 'event',
+              event: lmStreamEvent(
+                'lm.message.start',
+                lmCid,
+                parentCorrelationId,
+                { index: 0 },
+              ),
+            };
+          }
+          text += chunk;
+          yield {
+            kind: 'event',
+            event: lmStreamEvent(
+              'lm.message.delta',
+              lmCid,
+              parentCorrelationId,
+              { index: 0, content: chunk },
+            ),
+          };
+          continue;
+        }
+
+        if (chunk.type === 'completed') {
+          response = this.normalizeGenerateResponse(chunk.response);
+          continue;
+        }
+        const index = chunk.index ?? 0;
+        switch (chunk.type) {
+          case 'message_start':
+            implicitMessageStarted = true;
+            yield {
+              kind: 'event',
+              event: lmStreamEvent(
+                'lm.message.start',
+                lmCid,
+                parentCorrelationId,
+                { index },
+              ),
+            };
+            break;
+          case 'message_delta':
+            text += chunk.content;
+            yield {
+              kind: 'event',
+              event: lmStreamEvent(
+                'lm.message.delta',
+                lmCid,
+                parentCorrelationId,
+                { index, content: chunk.content },
+              ),
+            };
+            break;
+          case 'message_stop':
+            implicitMessageStopped = true;
+            yield {
+              kind: 'event',
+              event: lmStreamEvent(
+                'lm.message.stop',
+                lmCid,
+                parentCorrelationId,
+                { index },
+              ),
+            };
+            break;
+          case 'thinking_start':
+            yield {
+              kind: 'event',
+              event: lmStreamEvent(
+                'lm.thinking.start',
+                lmCid,
+                parentCorrelationId,
+                { index },
+              ),
+            };
+            break;
+          case 'thinking_delta':
+            yield {
+              kind: 'event',
+              event: lmStreamEvent(
+                'lm.thinking.delta',
+                lmCid,
+                parentCorrelationId,
+                { index, content: chunk.content },
+              ),
+            };
+            break;
+          case 'thinking_stop':
+            yield {
+              kind: 'event',
+              event: lmStreamEvent(
+                'lm.thinking.stop',
+                lmCid,
+                parentCorrelationId,
+                { index },
+              ),
+            };
+            break;
+          case 'tool_call_start':
+            yield {
+              kind: 'event',
+              event: lmStreamEvent(
+                'lm.tool_call.start',
+                lmCid,
+                parentCorrelationId,
+                {
+                  index,
+                  id: chunk.id,
+                  toolName: chunk.name,
+                },
+              ),
+            };
+            break;
+          case 'tool_call_delta':
+            yield {
+              kind: 'event',
+              event: lmStreamEvent(
+                'lm.tool_call.delta',
+                lmCid,
+                parentCorrelationId,
+                { index, inputDelta: chunk.inputDelta },
+              ),
+            };
+            break;
+          case 'tool_call_stop':
+            yield {
+              kind: 'event',
+              event: lmStreamEvent(
+                'lm.tool_call.stop',
+                lmCid,
+                parentCorrelationId,
+                {
+                  index,
+                  id: chunk.id,
+                  toolName: chunk.name,
+                  input: chunk.input,
+                },
+              ),
+            };
+            break;
+        }
+      }
+
+      if (implicitMessageStarted && !implicitMessageStopped) {
+        yield {
+          kind: 'event',
+          event: lmStreamEvent(
+            'lm.message.stop',
+            lmCid,
+            parentCorrelationId,
+            { index: 0 },
+          ),
+        };
+      }
+
+      response ??= { text };
+      if (!response.text && text) {
+        response = { ...response, text };
+      }
+
+      try {
+        const usage = response.usage;
+        await context.emit(
+          lmCompleted(lmCid, parentCorrelationId, {
+            model: this.modelName,
+            provider,
+            output: response.text,
+            toolCalls: response.toolCalls ?? null,
+            inputTokens: usage?.promptTokens ?? 0,
+            outputTokens: usage?.completionTokens ?? 0,
+            totalTokens: usage?.totalTokens ?? 0,
+            durationMs: Date.now() - startMs,
+          }),
+        );
+      } catch {
+        // Best effort: lifecycle emission must not block the agent.
+      }
+      yield { kind: 'response', response };
+    } catch (error) {
+      try {
+        await context.emit(
+          lmFailed(lmCid, parentCorrelationId, {
+            model: this.modelName,
+            provider,
+            errorCode: 'LM_STREAM_ERROR',
+            errorMessage: (error as Error).message ?? String(error),
+            durationMs: Date.now() - startMs,
+          }),
+        );
+      } catch {
+        // Best effort: preserve the model error.
+      }
+      throw error;
+    }
+  }
+
   /**
    * Generate using the model (handles both old and new LM types).
    *
@@ -996,11 +1276,30 @@ export class Agent {
 
         // Build tool definitions and call LLM
         const toolDefs = Array.from(this.tools.values()).map(t => t.getSchema());
-        const response = await this.generateWithModel(messages, toolDefs, {
-          context: ctx,
-          iteration: iteration + 1,
-          parentCorrelationId: iterCorrelationId,
-        });
+        let response: GenerateResponse | undefined;
+        if (this.canStreamModel(toolDefs)) {
+          for await (const item of this.streamWithModel(
+            messages,
+            toolDefs,
+            ctx,
+            iterCorrelationId,
+          )) {
+            if (item.kind === 'event') {
+              yield item.event;
+            } else {
+              response = item.response;
+            }
+          }
+        } else {
+          response = await this.generateWithModel(messages, toolDefs, {
+            context: ctx,
+            iteration: iteration + 1,
+            parentCorrelationId: iterCorrelationId,
+          });
+        }
+        if (!response) {
+          throw new Error(`Model '${this.modelName}' stream completed without a response`);
+        }
 
         messages.push(Message.assistant(response.text));
 

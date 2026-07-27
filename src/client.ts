@@ -34,9 +34,9 @@ export interface ClientOptions {
   tenantId?: string;
   /** Deployment ID for routing (falls back to AGNT5_DEPLOYMENT_ID env var) */
   deploymentId?: string;
-  /** Request timeout in milliseconds (default: 30000) */
+  /** Request timeout in milliseconds (default: 45000) */
   timeout?: number;
-  /** Max retry attempts for transient failures (default: 3) */
+  /** Max retry attempts for transient failures (default: 0). Opt in only for idempotent calls. */
   maxRetries?: number;
   /** Initial retry delay in milliseconds (default: 1000) */
   retryDelayMs?: number;
@@ -378,8 +378,8 @@ export class Client {
     this.tenantId = options.tenantId || env?.AGNT5_TENANT_ID;
     this.deploymentId = options.deploymentId || env?.AGNT5_DEPLOYMENT_ID;
     this.deploymentIdIsAmbient = !options.deploymentId && !!env?.AGNT5_DEPLOYMENT_ID;
-    this.timeout = options.timeout || 30000;
-    this.maxRetries = options.maxRetries ?? 3;
+    this.timeout = options.timeout || 45000;
+    this.maxRetries = options.maxRetries ?? 0;
     this.retryDelayMs = options.retryDelayMs || 1000;
   }
 

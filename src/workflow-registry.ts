@@ -1,9 +1,13 @@
-import type { WorkflowHandler } from './types.js';
+import type { JSONSchema, WorkflowHandler } from './types.js';
 import type { WorkerlessFlowControlPolicy } from './flow-control.js';
 
 export interface WorkflowConfig {
   name: string;
   handler: WorkflowHandler;
+  /** JSON Schema for workflow input. */
+  inputSchema?: JSONSchema;
+  /** JSON Schema for workflow output. */
+  outputSchema?: JSONSchema;
   /** Cron expression for scheduled execution (e.g., "0 0/6 * * *") */
   cron?: string;
   /** Typed trigger declarations attached to this workflow registration. */
@@ -48,6 +52,10 @@ export interface WebhookTriggerOptions extends EventTriggerOptions {
 export interface WorkflowOptions {
   /** Custom workflow name (defaults to function name) */
   name?: string;
+  /** JSON Schema for workflow input. */
+  inputSchema?: JSONSchema;
+  /** JSON Schema for workflow output. */
+  outputSchema?: JSONSchema;
   /** Cron expression for scheduled execution (e.g., "0 0/6 * * *") */
   cron?: string;
   /** Typed trigger declarations such as event('user.created') */
