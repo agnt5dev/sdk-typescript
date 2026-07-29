@@ -59,6 +59,10 @@ describe('Agent Streaming', () => {
       expect(completed.agentName).toBe('test-agent');
       expect(completed.iterations).toBe(1);
       expect(completed.handoffTo).toBeNull();
+      expect(completed.outputData).toEqual({
+        output: 'Hello!',
+        tool_calls: [],
+      });
     }
   });
 
