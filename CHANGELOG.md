@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-07-30
+
+### Fixed
+
+- Update native and WASM bindings to `agnt5-sdk-core` 0.1.6 so TypeScript
+  receives Gemini tool-call parsing and expanded Amazon Bedrock provider
+  support.
+
 ## [0.6.4] - 2026-07-29
 
 ### Fixed
@@ -47,7 +55,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Native package publishing now ignores unsupported empty platform directories.
 - Release builds no longer require their not-yet-published optional platform packages.
 
-[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.4...HEAD
+[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.5...HEAD
+[0.6.5]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.1...v0.6.2
