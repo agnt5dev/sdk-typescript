@@ -60,6 +60,10 @@ export interface AgentCompleted extends BaseEvent {
   toolCallsCount: number;
   handoffTo: string | null;
   outputLength: number;
+  outputData: {
+    output: string;
+    tool_calls: any[];
+  };
 }
 
 export interface AgentFailed extends BaseEvent {
@@ -188,7 +192,14 @@ export function agentStarted(
 export function agentCompleted(
   agentName: string,
   correlationId: string,
-  opts: { iterations: number; toolCallsCount: number; handoffTo: string | null; outputLength: number },
+  opts: {
+    iterations: number;
+    toolCallsCount: number;
+    handoffTo: string | null;
+    outputLength: number;
+    output: string;
+    toolCalls: any[];
+  },
 ): AgentCompleted {
   return {
     ...baseFields(agentName, correlationId, null),
@@ -199,6 +210,10 @@ export function agentCompleted(
     toolCallsCount: opts.toolCallsCount,
     handoffTo: opts.handoffTo,
     outputLength: opts.outputLength,
+    outputData: {
+      output: opts.output,
+      tool_calls: opts.toolCalls,
+    },
   };
 }
 

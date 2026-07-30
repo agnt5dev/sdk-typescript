@@ -19,6 +19,7 @@ import type {
   GenerateRequest as LMGenerateRequest,
   GenerateResponse as LMGenerateResponse,
   PromptCache,
+  StreamChunk as LMCallbackChunk,
   ToolCall as LMToolCall,
 } from './lm.js';
 import { randomUUID } from 'node:crypto';
@@ -767,16 +768,80 @@ export class Agent {
   }
 
   private canStreamModel(toolDefs: ToolSchema[]): boolean {
-    if (this.isNewLM) return false;
-    const model = this.model as LanguageModel;
-    if (typeof model.stream !== 'function') return false;
     if (
       this.callbacks.beforeModel ||
       this.callbacks.afterModel
     ) {
       return false;
     }
+    if (this.isNewLM) return true;
+    const model = this.model as LanguageModel;
+    if (typeof model.stream !== 'function') return false;
     return toolDefs.length === 0 || model.supportsStreamingTools === true;
+  }
+
+  private async *streamWithNewLM(
+    request: LMGenerateRequest,
+  ): AsyncIterableIterator<string | LanguageModelStreamChunk> {
+    const chunks: LMCallbackChunk[] = [];
+    let finished = false;
+    let failure: unknown;
+    let wake: (() => void) | undefined;
+
+    const notify = () => {
+      const resolve = wake;
+      wake = undefined;
+      resolve?.();
+    };
+
+    const streamPromise = (this.model as LM).stream(request, chunk => {
+      chunks.push(chunk);
+      notify();
+    }).then(
+      () => {
+        finished = true;
+        notify();
+      },
+      error => {
+        failure = error;
+        finished = true;
+        notify();
+      },
+    );
+
+    let sawDelta = false;
+    while (!finished || chunks.length > 0) {
+      if (chunks.length === 0) {
+        await new Promise<void>(resolve => {
+          wake = resolve;
+        });
+        continue;
+      }
+
+      const chunk = chunks.shift()!;
+      if (chunk.chunkType === 'delta') {
+        if (chunk.content) {
+          sawDelta = true;
+          yield chunk.content;
+        }
+        continue;
+      }
+
+      if (chunk.response) {
+        const response = this.normalizeGenerateResponse(chunk.response);
+        // Managed prompts and providers without incremental delivery may only
+        // produce the terminal callback. Preserve the streaming event contract
+        // with one synthetic full-text delta in that case.
+        if (!sawDelta && response.text) {
+          sawDelta = true;
+          yield response.text;
+        }
+        yield { type: 'completed', response };
+      }
+    }
+
+    await streamPromise;
+    if (failure) throw failure;
   }
 
   private async *streamWithModel(
@@ -785,12 +850,12 @@ export class Agent {
     context: Context,
     parentCorrelationId: string,
   ): AsyncGenerator<StreamedLanguageModelItem, void, undefined> {
-    const request = this.buildModelRequest(messages, toolDefs) as GenerateRequest;
-    const model = this.model as LanguageModel;
+    const request = this.buildModelRequest(messages, toolDefs);
     const slashIdx = this.modelName.indexOf('/');
     const provider = slashIdx > 0 ? this.modelName.slice(0, slashIdx) : '';
     const lmCid = generateCid();
     const startMs = Date.now();
+    const requestConfig = request.config;
 
     try {
       await context.emit(
@@ -801,7 +866,10 @@ export class Agent {
           systemPrompt: request.systemPrompt,
           toolsCount: toolDefs.length,
           temperature: request.config?.temperature,
-          maxTokens: request.config?.maxTokens ?? null,
+          maxTokens:
+            requestConfig && 'maxTokens' in requestConfig
+              ? requestConfig.maxTokens ?? null
+              : null,
         }),
       );
     } catch {
@@ -814,7 +882,10 @@ export class Agent {
     let implicitMessageStopped = false;
 
     try {
-      for await (const chunk of model.stream!(request)) {
+      const stream = this.isNewLM
+        ? this.streamWithNewLM(request as LMGenerateRequest)
+        : (this.model as LanguageModel).stream!(request as GenerateRequest);
+      for await (const chunk of stream) {
         if (typeof chunk === 'string') {
           if (!implicitMessageStarted) {
             implicitMessageStarted = true;
@@ -1120,6 +1191,24 @@ export class Agent {
       const usage = response.usage;
       try {
         await ctx.emit(
+          lmStreamEvent('lm.message.start', lmCid, parentCid, { index: 0 }),
+        );
+        if (response.text) {
+          await ctx.emit(
+            lmStreamEvent('lm.message.delta', lmCid, parentCid, {
+              index: 0,
+              content: response.text,
+            }),
+          );
+        }
+        await ctx.emit(
+          lmStreamEvent('lm.message.stop', lmCid, parentCid, { index: 0 }),
+        );
+      } catch {
+        // Best-effort compatibility events must not block model completion.
+      }
+      try {
+        await ctx.emit(
           lmCompleted(lmCid, parentCid, {
             model,
             provider,
@@ -1257,6 +1346,8 @@ export class Agent {
           toolCallsCount: beforeAgentResult.toolCalls.length,
           handoffTo: beforeAgentResult.handoffTo,
           outputLength: beforeAgentResult.output.length,
+          output: beforeAgentResult.output,
+          toolCalls: beforeAgentResult.toolCalls,
         });
         yield beforeAgentResult;
         return;
@@ -1409,6 +1500,8 @@ export class Agent {
                   toolCallsCount: allToolCalls.length,
                   handoffTo: handoffResult.handoffTo,
                   outputLength: handoffResult.output.length,
+                  output: handoffResult.output,
+                  toolCalls: handoffResult.toolCalls,
                 });
 
                 yield handoffResult;
@@ -1478,6 +1571,8 @@ export class Agent {
             toolCallsCount: agentResult.toolCalls.length,
             handoffTo: agentResult.handoffTo,
             outputLength: agentResult.output.length,
+            output: agentResult.output,
+            toolCalls: agentResult.toolCalls,
           });
           yield agentResult;
           return;
@@ -1502,6 +1597,8 @@ export class Agent {
         toolCallsCount: agentResult.toolCalls.length,
         handoffTo: agentResult.handoffTo,
         outputLength: agentResult.output.length,
+        output: agentResult.output,
+        toolCalls: agentResult.toolCalls,
       });
 
       yield agentResult;

@@ -1048,7 +1048,11 @@ export class Worker {
               if (!agentResult) {
                 throw new Error(`Agent '${message.componentName}' completed without producing a result`);
               }
-              result = agentResult.output;
+              const assistantOutput = agentResult.output;
+              result = {
+                output: assistantOutput,
+                tool_calls: agentResult.toolCalls ?? [],
+              };
 
               // Gateway chat persists the completed turn centrally. Keep the
               // legacy SDK save only for direct agent invocations.
@@ -1056,7 +1060,7 @@ export class Worker {
                 const updatedMessages = [
                   ...history,
                   Message.user(userMessage),
-                  Message.assistant(typeof result === 'string' ? result : JSON.stringify(result)),
+                  Message.assistant(assistantOutput),
                 ];
                 await this._saveSessionHistory(sessionId, message.componentName, updatedMessages, message.metadata);
               }
