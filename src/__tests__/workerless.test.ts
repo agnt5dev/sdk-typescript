@@ -721,6 +721,32 @@ describe('workerless serve()', () => {
     });
   });
 
+  it('rejects signed invokes without a signature version', async () => {
+    workflow('hello', async () => ({ message: 'hello' }));
+    const handler = serve({ signingSecret: 'test-signing-secret-123' });
+    const body = JSON.stringify({
+      protocol_version: 'workerless.v1',
+      run_id: 'run-1',
+      component_type: 'workflow',
+      component_name: 'hello',
+      input: {},
+    });
+    const headers = await signedHeaders('test-signing-secret-123', 'run-1:0', body);
+    headers.delete('X-AGNT5-Signature-Version');
+
+    const response = await handler.fetch(new Request('http://localhost:8787/agnt5/invoke', {
+      method: 'POST',
+      headers,
+      body,
+    }));
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({
+      status: 'failed',
+      error: { code: 'WORKERLESS_SIGNATURE_VERSION_UNSUPPORTED' },
+    });
+  });
+
   it('hydrates input_ref payloads before invoking the component', async () => {
     workflow('hello', async (_ctx, input: { name: string }) => ({ message: `hello ${input.name}` }));
 

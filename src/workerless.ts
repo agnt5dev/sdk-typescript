@@ -823,7 +823,7 @@ export async function verifyWorkerlessInvokeRequest<Env = unknown, RuntimeContex
   if (!timestamp || !attemptID || !signature) {
     return failedResponse('WORKERLESS_SIGNATURE_MISSING', 'workerless invoke signature headers are required', 401);
   }
-  if (version && version !== SIGNATURE_VERSION) {
+  if (version !== SIGNATURE_VERSION) {
     return failedResponse('WORKERLESS_SIGNATURE_VERSION_UNSUPPORTED', 'workerless invoke signature version is unsupported', 401);
   }
 
