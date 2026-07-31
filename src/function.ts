@@ -223,6 +223,12 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
       }
     };
 
+    (wrapped as any)._agnt5_config = {
+      name: handlerName,
+      handler,
+      options: this.config,
+    };
+
     return wrapped as FunctionHandler<TInput, TOutput>;
   }
 }
