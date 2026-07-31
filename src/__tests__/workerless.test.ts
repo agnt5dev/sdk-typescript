@@ -54,6 +54,78 @@ describe('workerless serve()', () => {
     });
   });
 
+  it('exposes only explicitly selected components', async () => {
+    const selectedWorkflow = workflow('selected-workflow', async () => ({ selected: true }));
+    workflow('hidden-workflow', async () => ({ selected: false }));
+    const selectedFunction = fn('selected-function').run(async () => ({ selected: true }));
+    fn('hidden-function').run(async () => ({ selected: false }));
+    const selectedTool = tool(
+      'selected-tool',
+      { description: 'Selected tool' },
+      async () => ({ selected: true }),
+    );
+    tool('hidden-tool', { description: 'Hidden tool' }, async () => ({ selected: false }));
+    const selectedAgent = new Agent({
+      name: 'selected-agent',
+      modelName: 'test-model',
+      instructions: 'Answer briefly.',
+      model: {
+        async generate(): Promise<GenerateResponse> {
+          return { text: 'selected' };
+        },
+      },
+    });
+    new Agent({
+      name: 'hidden-agent',
+      modelName: 'test-model',
+      instructions: 'Answer briefly.',
+      model: {
+        async generate(): Promise<GenerateResponse> {
+          return { text: 'hidden' };
+        },
+      },
+    });
+
+    const handler = serve({
+      workflows: [selectedWorkflow],
+      functions: [selectedFunction],
+      tools: [selectedTool],
+      agents: [selectedAgent],
+    });
+
+    expect(handler.manifest().components.map(({ name, type }) => ({ name, type }))).toEqual([
+      { name: 'selected-function', type: 'function' },
+      { name: 'selected-workflow', type: 'workflow' },
+      { name: 'selected-tool', type: 'tool' },
+      { name: 'selected-agent', type: 'agent' },
+    ]);
+    expect(await (await invoke(handler, 'function', 'selected-function', {})).json()).toMatchObject({
+      status: 'completed',
+      output: { selected: true },
+    });
+    expect((await invoke(handler, 'workflow', 'hidden-workflow', {})).status).toBe(404);
+  });
+
+  it('treats explicitly empty component lists as authoritative', () => {
+    workflow('hidden-workflow', async () => ({ selected: false }));
+    fn('hidden-function').run(async () => ({ selected: false }));
+    tool('hidden-tool', { description: 'Hidden tool' }, async () => ({ selected: false }));
+    new Agent({
+      name: 'hidden-agent',
+      modelName: 'test-model',
+      instructions: 'Answer briefly.',
+      model: {
+        async generate(): Promise<GenerateResponse> {
+          return { text: 'hidden' };
+        },
+      },
+    });
+
+    const handler = serve({ workflows: [], functions: [], tools: [], agents: [] });
+
+    expect(handler.manifest().components).toEqual([]);
+  });
+
   it('emits workerless flow-control policies in the manifest', async () => {
     workflow(
       'triage',

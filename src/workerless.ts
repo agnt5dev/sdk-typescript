@@ -187,7 +187,7 @@ type ComponentEntry = {
 export function serve<Env = unknown, RuntimeContext = unknown>(
   options: WorkerlessServeOptions<Env, RuntimeContext> = {},
 ): WorkerlessHandler<Env, RuntimeContext> {
-  const components = collectWorkerlessComponents();
+  const components = collectWorkerlessComponents(options);
   const manifest = buildWorkerlessManifest(options, components);
 
   const handler = async (request: Request, env?: Env, ctx?: RuntimeContext): Promise<Response> => {
@@ -209,10 +209,6 @@ export function serve<Env = unknown, RuntimeContext = unknown>(
   const workerlessHandler = handler as WorkerlessHandler<Env, RuntimeContext>;
   workerlessHandler.fetch = handler;
   workerlessHandler.manifest = () => manifest;
-  void options.workflows;
-  void options.functions;
-  void options.tools;
-  void options.agents;
   return workerlessHandler;
 }
 
@@ -262,24 +258,33 @@ function envValue(env: unknown, name: string): unknown {
   return undefined;
 }
 
-function collectWorkerlessComponents(): ComponentEntry[] {
+function collectWorkerlessComponents(
+  options: Pick<WorkerlessServeOptions, 'workflows' | 'functions' | 'tools' | 'agents'>,
+): ComponentEntry[] {
   const entries = new Map<string, ComponentEntry>();
 
-  for (const [name, fnConfig] of FunctionRegistry.getAll()) {
+  const functions = options.functions === undefined
+    ? FunctionRegistry.getAll().map(([name, config]) => ({ name, ...config }))
+    : options.functions.map(resolveSelectedFunction);
+  for (const { name, handler, options: functionOptions } of functions) {
     entries.set(componentKey('function', name), {
       name,
       type: 'function',
-      invoke: (ctx, input) => fnConfig.handler(ctx, input),
-      inputSchema: fnConfig.options.inputSchema,
-      outputSchema: fnConfig.options.outputSchema,
+      invoke: (ctx, input) => handler(ctx, input),
+      inputSchema: functionOptions.inputSchema,
+      outputSchema: functionOptions.outputSchema,
       metadata: {},
-      flowControl: functionFlowControl(fnConfig.options),
-      priority: fnConfig.options.priority,
-      maxConcurrency: fnConfig.options.maxConcurrency,
+      flowControl: functionFlowControl(functionOptions),
+      priority: functionOptions.priority,
+      maxConcurrency: functionOptions.maxConcurrency,
     });
   }
 
-  for (const [name, cfg] of WorkflowRegistry.all()) {
+  const workflows = options.workflows === undefined
+    ? Array.from(WorkflowRegistry.all().values())
+    : options.workflows.map(resolveSelectedWorkflow);
+  for (const cfg of workflows) {
+    const { name } = cfg;
     entries.set(componentKey('workflow', name), {
       name,
       type: 'workflow',
@@ -294,7 +299,11 @@ function collectWorkerlessComponents(): ComponentEntry[] {
     });
   }
 
-  for (const [name, tool] of ToolRegistry.all()) {
+  const tools = options.tools === undefined
+    ? Array.from(ToolRegistry.all().values())
+    : options.tools.map(resolveSelectedTool);
+  for (const tool of tools) {
+    const { name } = tool;
     entries.set(componentKey('tool', name), {
       name,
       type: 'tool',
@@ -308,7 +317,11 @@ function collectWorkerlessComponents(): ComponentEntry[] {
     });
   }
 
-  for (const [name, agent] of AgentRegistry.all()) {
+  const agents = options.agents === undefined
+    ? Array.from(AgentRegistry.all().values())
+    : options.agents;
+  for (const agent of agents) {
+    const name = selectedComponentName(agent.name, 'agent');
     entries.set(componentKey('agent', name), {
       name,
       type: 'agent',
@@ -320,6 +333,93 @@ function collectWorkerlessComponents(): ComponentEntry[] {
   }
 
   return Array.from(entries.values());
+}
+
+type SelectedFunctionConfig = {
+  name: string;
+  handler: FunctionHandler;
+  options: FunctionOptions;
+};
+
+function resolveSelectedFunction(handler: FunctionHandler): SelectedFunctionConfig {
+  const attached = (handler as FunctionHandler & {
+    _agnt5_config?: Partial<SelectedFunctionConfig>;
+  })._agnt5_config;
+  if (attached?.name && attached.handler) {
+    return {
+      name: selectedComponentName(attached.name, 'function'),
+      handler: attached.handler,
+      options: attached.options ?? {},
+    };
+  }
+
+  for (const [name, registered] of FunctionRegistry.getAll()) {
+    if (registered.handler === handler) {
+      return { name, ...registered };
+    }
+  }
+
+  return {
+    name: selectedComponentName(handler.name, 'function'),
+    handler,
+    options: {},
+  };
+}
+
+function resolveSelectedWorkflow(handler: WorkflowHandler): WorkflowConfig {
+  const attached = (handler as WorkflowHandler & {
+    _agnt5_config?: WorkflowConfig;
+  })._agnt5_config;
+  if (attached) {
+    return {
+      ...attached,
+      name: selectedComponentName(attached.name, 'workflow'),
+    };
+  }
+
+  for (const config of WorkflowRegistry.all().values()) {
+    if (config.handler === handler) {
+      return config;
+    }
+  }
+
+  return {
+    name: selectedComponentName(handler.name, 'workflow'),
+    handler,
+  };
+}
+
+function resolveSelectedTool(handler: ToolHandler) {
+  const attached = (handler as ToolHandler & {
+    _tool?: ReturnType<typeof ToolRegistry.get>;
+  })._tool;
+  if (attached) {
+    return attached;
+  }
+
+  for (const tool of ToolRegistry.all().values()) {
+    if (tool.handler === handler) {
+      return tool;
+    }
+  }
+
+  const name = selectedComponentName(handler.name, 'tool');
+  return {
+    name,
+    description: name,
+    inputSchema: undefined,
+    outputSchema: undefined,
+    confirmation: false,
+    invoke: (ctx: WorkerlessContext, input: Record<string, unknown>) => handler(ctx, input),
+  };
+}
+
+function selectedComponentName(name: unknown, componentType: WorkerlessComponentType): string {
+  const normalized = typeof name === 'string' ? name.trim() : '';
+  if (!normalized) {
+    throw new Error(`Explicit serverless ${componentType} handlers must have a name`);
+  }
+  return normalized;
 }
 
 function buildWorkerlessManifest(
