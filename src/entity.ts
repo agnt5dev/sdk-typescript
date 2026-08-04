@@ -10,6 +10,7 @@ import type { HITLInputType, HITLOption } from './errors.js';
 import Database from 'better-sqlite3';
 import { join } from 'path';
 import { mkdirSync, existsSync } from 'fs';
+import { isLogLevelEnabled } from './logging.js';
 
 /**
  * Entity storage backend interface
@@ -448,15 +449,19 @@ class EntityContext implements Context {
   get logger(): Logger {
     return {
       info: (message: string, meta?: Record<string, any>) => {
+        if (!isLogLevelEnabled('INFO')) return;
         console.log(`[INFO] ${message}`, meta || '');
       },
       error: (message: string, meta?: Record<string, any>) => {
+        if (!isLogLevelEnabled('ERROR')) return;
         console.error(`[ERROR] ${message}`, meta || '');
       },
       warn: (message: string, meta?: Record<string, any>) => {
+        if (!isLogLevelEnabled('WARN')) return;
         console.warn(`[WARN] ${message}`, meta || '');
       },
       debug: (message: string, meta?: Record<string, any>) => {
+        if (!isLogLevelEnabled('DEBUG')) return;
         console.debug(`[DEBUG] ${message}`, meta || '');
       }
     };

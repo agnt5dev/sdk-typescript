@@ -8,6 +8,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isLogLevelEnabled } from './logging.js';
 
 // Lazy-loaded native log function for OTLP export
 let _nativeLogFn: ((level: string, message: string, runId: string | null, traceId: string | null, spanId: string | null, attributes: Record<string, string> | null) => void) | null | undefined;
@@ -288,18 +289,22 @@ export class ContextImpl implements Context {
     const logFn = getNativeLogFn();
     return {
       info: (message: string, meta?: Record<string, any>) => {
+        if (!isLogLevelEnabled('INFO')) return;
         console.log(`[INFO] ${message}`, meta || '');
         logFn?.('INFO', message, runId, null, null, meta as Record<string, string> ?? null);
       },
       error: (message: string, meta?: Record<string, any>) => {
+        if (!isLogLevelEnabled('ERROR')) return;
         console.error(`[ERROR] ${message}`, meta || '');
         logFn?.('ERROR', message, runId, null, null, meta as Record<string, string> ?? null);
       },
       warn: (message: string, meta?: Record<string, any>) => {
+        if (!isLogLevelEnabled('WARN')) return;
         console.warn(`[WARN] ${message}`, meta || '');
         logFn?.('WARN', message, runId, null, null, meta as Record<string, string> ?? null);
       },
       debug: (message: string, meta?: Record<string, any>) => {
+        if (!isLogLevelEnabled('DEBUG')) return;
         console.debug(`[DEBUG] ${message}`, meta || '');
         logFn?.('DEBUG', message, runId, null, null, meta as Record<string, string> ?? null);
       },
