@@ -25,6 +25,7 @@ import {
 } from './events.js';
 import type { AgentEvent } from './events.js';
 import { loadNativeBindings, tryLoadNativeBindings } from './native-loader.js';
+import { isLogLevelEnabled } from './logging.js';
 import {
   executePromptWorkerInput,
   isPromptExecutorComponent,
@@ -380,21 +381,25 @@ class SimpleContext implements Context {
     const runId = this.runId;
     return {
       info: (message: string, meta?: Record<string, any>) => {
+        if (!isLogLevelEnabled('INFO')) return;
         console.log(`[INFO] ${message}`, meta || {});
         tryLoadNativeBindings()?.logFromTypescript('INFO', message, runId, null, null, meta ?? null);
         this._emitLog('INFO', message, meta);
       },
       error: (message: string, meta?: Record<string, any>) => {
+        if (!isLogLevelEnabled('ERROR')) return;
         console.error(`[ERROR] ${message}`, meta || {});
         tryLoadNativeBindings()?.logFromTypescript('ERROR', message, runId, null, null, meta ?? null);
         this._emitLog('ERROR', message, meta);
       },
       warn: (message: string, meta?: Record<string, any>) => {
+        if (!isLogLevelEnabled('WARN')) return;
         console.warn(`[WARN] ${message}`, meta || {});
         tryLoadNativeBindings()?.logFromTypescript('WARN', message, runId, null, null, meta ?? null);
         this._emitLog('WARN', message, meta);
       },
       debug: (message: string, meta?: Record<string, any>) => {
+        if (!isLogLevelEnabled('DEBUG')) return;
         console.debug(`[DEBUG] ${message}`, meta || {});
         tryLoadNativeBindings()?.logFromTypescript('DEBUG', message, runId, null, null, meta ?? null);
         this._emitLog('DEBUG', message, meta);
@@ -815,7 +820,9 @@ export class Worker {
         const maxAttempts = parseInt(message.metadata?.max_attempts || '1', 10);
 
         try {
-          console.log(`📨 Received ${message.componentType} execution: ${message.componentName}`);
+          if (isLogLevelEnabled('DEBUG')) {
+            console.debug(`[DEBUG] Received ${message.componentType} execution: ${message.componentName}`);
+          }
 
           // Parse input data
           const inputData = JSON.parse(message.inputJson);

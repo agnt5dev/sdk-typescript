@@ -42,6 +42,11 @@ function shouldLog(level: LogLevel): boolean {
   return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[_globalLogLevel];
 }
 
+/** Return whether a log level is enabled by the current SDK log level. */
+export function isLogLevelEnabled(level: LogLevel): boolean {
+  return shouldLog(level);
+}
+
 // ─── NAPI binding loader ─────────────────────────────────────────────
 
 let _nativeLogFn: ((
