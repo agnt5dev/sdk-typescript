@@ -97,6 +97,22 @@ afterEach(() => {
   delete (globalThis as any).__agnt5NativeWorkerOptions;
   delete (globalThis as any).__agnt5RegisteredComponents;
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+it('uses the canonical agent session entity key', async () => {
+  const fetchMock = vi.fn(async () => new Response(
+    JSON.stringify({ state: { messages: [] } }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  ));
+  vi.stubGlobal('fetch', fetchMock);
+  const worker = new Worker('test-service');
+
+  await (worker as any)._loadSessionHistory('session-1', 'helper');
+
+  expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+    '/v1/entity/AgentSession/agent:helper:session-1/get',
+  );
 });
 
 describe('Worker', () => {
