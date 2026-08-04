@@ -1270,7 +1270,7 @@ export class Worker {
     metadata?: Record<string, string>,
   ): Promise<Message[]> {
     const gatewayUrl = process.env.AGNT5_GATEWAY_URL || 'http://localhost:34181';
-    const entityKey = `agent_session_${sessionId}`;
+    const entityKey = `agent:${agentName}:${sessionId}`;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (metadata?.tenant_id) headers['X-Tenant-ID'] = metadata.tenant_id;
     if (metadata?.deployment_id) headers['X-Deployment-ID'] = metadata.deployment_id;
@@ -1301,7 +1301,7 @@ export class Worker {
     metadata?: Record<string, string>,
   ): Promise<void> {
     const gatewayUrl = process.env.AGNT5_GATEWAY_URL || 'http://localhost:34181';
-    const entityKey = `agent_session_${sessionId}`;
+    const entityKey = `agent:${agentName}:${sessionId}`;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (metadata?.tenant_id) headers['X-Tenant-ID'] = metadata.tenant_id;
     if (metadata?.deployment_id) headers['X-Deployment-ID'] = metadata.deployment_id;

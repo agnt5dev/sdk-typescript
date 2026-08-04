@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-08-04
+
+### Fixed
+
+- Use the canonical agent session entity key, including the agent name, when
+  loading and saving conversation history through the runtime gateway.
+
 ## [0.6.6] - 2026-07-31
 
 ### Fixed
@@ -65,7 +72,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Native package publishing now ignores unsupported empty platform directories.
 - Release builds no longer require their not-yet-published optional platform packages.
 
-[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.6...HEAD
+[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.7...HEAD
+[0.6.7]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.6...v0.6.7
 [0.6.6]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.3...v0.6.4
