@@ -29,6 +29,8 @@ export {
   RetryError,
   StateError,
   CheckpointError,
+  ActivationError,
+  ActivationErrorCode,
   RunError,
   WaitingForUserInputError,
   SuspensionRequestedError,
@@ -42,7 +44,28 @@ export {
   getErrorMessage,
   createErrorFromResponse,
 } from './errors.js';
-export type { HITLInputType, HITLOption } from './errors.js';
+export type { ActivationErrorCode as ActivationErrorCodeType, HITLInputType, HITLOption } from './errors.js';
+export {
+  ActivationClient,
+  ActivationKind,
+  ActivationRecoveryPolicy,
+  DURABLE_ACTIVATION_V1,
+  Float64,
+  UInt64,
+  activationDefinitionDigest,
+  activationId,
+  canonicalActivationValue,
+  stableStepKey,
+} from './activation.js';
+export type {
+  ActivationCompletionReceipt,
+  ActivationDecision,
+  ActivationDecisionKind,
+  ActivationFailureReceipt,
+  ActivationRunOptions,
+  ActivationTransport,
+  BeginActivationRequest,
+} from './activation.js';
 
 // Retry utilities exports
 export {

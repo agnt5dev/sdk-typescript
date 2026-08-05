@@ -86,6 +86,37 @@ export class CheckpointError extends AGNT5Error {
   }
 }
 
+export const ActivationErrorCode = {
+  DurabilityUnavailable: 'DURABILITY_UNAVAILABLE',
+  NonDeterministicReplay: 'NON_DETERMINISTIC_REPLAY',
+  StaleAuthority: 'STALE_AUTHORITY',
+  Cancelled: 'CANCELLED',
+  Contended: 'CONTENDED',
+  UnknownOutcome: 'UNKNOWN_OUTCOME',
+  PayloadConflict: 'PAYLOAD_CONFLICT',
+  IllegalTransition: 'ILLEGAL_TRANSITION',
+  InvalidArgument: 'INVALID_ARGUMENT',
+  ReferenceRequired: 'REFERENCE_REQUIRED',
+  StateVersionConflict: 'STATE_VERSION_CONFLICT',
+} as const;
+
+export type ActivationErrorCode =
+  (typeof ActivationErrorCode)[keyof typeof ActivationErrorCode];
+
+/** A correctness failure at the durable-activation boundary. */
+export class ActivationError extends AGNT5Error {
+  constructor(
+    public readonly code: ActivationErrorCode,
+    message: string,
+    public readonly activationId = '',
+    public readonly attempt = 0,
+  ) {
+    const identity = activationId ? ` activation=${activationId} attempt=${attempt}` : '';
+    super(`durable activation ${code}${identity}: ${message}`);
+    this.name = 'ActivationError';
+  }
+}
+
 /**
  * Run errors (component invocation failed)
  */
