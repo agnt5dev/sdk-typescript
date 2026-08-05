@@ -6,6 +6,38 @@ const DEFINITION_DOMAIN = utf8('agnt5.activation.definition.v1\0');
 const I64_MIN = -(2n ** 63n);
 const I64_MAX = 2n ** 63n - 1n;
 const U64_MAX = 2n ** 64n - 1n;
+const NATIVE_ACTIVATION_ERROR_PREFIX = 'AGNT5_ACTIVATION_ERROR:';
+
+function nativeActivationError(error: unknown): ActivationError {
+  if (error instanceof ActivationError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  const marker = message.indexOf(NATIVE_ACTIVATION_ERROR_PREFIX);
+  if (marker >= 0) {
+    try {
+      const detail = JSON.parse(
+        message.slice(marker + NATIVE_ACTIVATION_ERROR_PREFIX.length),
+      ) as {
+        code?: string;
+        message?: string;
+        activationId?: string;
+        attempt?: number;
+      };
+      const knownCodes = new Set<string>(Object.values(ActivationErrorCode));
+      const code = knownCodes.has(detail.code || '')
+        ? detail.code as (typeof ActivationErrorCode)[keyof typeof ActivationErrorCode]
+        : ActivationErrorCode.UnknownOutcome;
+      return new ActivationError(
+        code,
+        detail.message || message,
+        detail.activationId || '',
+        Number(detail.attempt || 0),
+      );
+    } catch {
+      // Fall through to an unknown-outcome error with the original message.
+    }
+  }
+  return new ActivationError(ActivationErrorCode.UnknownOutcome, message);
+}
 
 export class UInt64 {
   readonly value: bigint;
@@ -134,7 +166,12 @@ export class NativeActivationTransport implements ActivationTransport {
   }
 
   async begin(request: BeginActivationRequest): Promise<ActivationDecision> {
-    const response = await this.nativeWorker.beginActivation(request);
+    let response: any;
+    try {
+      response = await this.nativeWorker.beginActivation(request);
+    } catch (error) {
+      throw nativeActivationError(error);
+    }
     return {
       kind: response.kind,
       activationId: response.activationId,
@@ -147,7 +184,12 @@ export class NativeActivationTransport implements ActivationTransport {
   }
 
   async complete(request: Parameters<ActivationTransport['complete']>[0]) {
-    const response = await this.nativeWorker.completeActivation(request);
+    let response: any;
+    try {
+      response = await this.nativeWorker.completeActivation(request);
+    } catch (error) {
+      throw nativeActivationError(error);
+    }
     return {
       activationId: response.activationId,
       attempt: Number(response.attempt),
@@ -157,7 +199,12 @@ export class NativeActivationTransport implements ActivationTransport {
   }
 
   async fail(request: Parameters<ActivationTransport['fail']>[0]) {
-    const response = await this.nativeWorker.failActivation(request);
+    let response: any;
+    try {
+      response = await this.nativeWorker.failActivation(request);
+    } catch (error) {
+      throw nativeActivationError(error);
+    }
     return {
       activationId: response.activationId,
       attempt: Number(response.attempt),

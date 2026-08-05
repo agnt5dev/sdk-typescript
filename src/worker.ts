@@ -784,6 +784,8 @@ export class Worker {
       deploymentId: this.options.deploymentId ||
         process.env.AGNT5_DEPLOYMENT_ID,
       maxConcurrency: this.options.maxConcurrency,
+      activationArtifactSha256: this.options.activationArtifactSha256 ||
+        process.env.AGNT5_ACTIVATION_ARTIFACT_SHA256,
     });
 
     this.isInitialized = true;

@@ -10,6 +10,18 @@ use agnt5_sdk_core::pb::{
 use agnt5_sdk_core::worker::{Worker as CoreWorker, WorkerConfig};
 use agnt5_sdk_core::{JournalEventMessage, JournalEventQueue};
 
+#[cfg(feature = "durable-activation-v1")]
+use agnt5_sdk_core::client::EngineClient;
+#[cfg(feature = "durable-activation-v1")]
+use agnt5_sdk_core::error::{ErrorCode as CoreErrorCode, SdkError};
+#[cfg(feature = "durable-activation-v1")]
+use agnt5_sdk_core::pb::{
+    activation_payload, ActivationExternalOutcomeCertainty, ActivationPayload, ActivationUsage,
+    BeginActivationRequest, CompleteActivationRequest, FailActivationRequest,
+};
+#[cfg(feature = "durable-activation-v1")]
+use agnt5_sdk_core::runtime_adapter::{ActivationAdapter, ActivationDecision};
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex as TokioMutex;
@@ -167,6 +179,141 @@ pub struct WorkerOptions {
     /// and the coordinator's per-priority headroom denominator. Falls back to
     /// the AGNT5_MAX_CONCURRENCY env var, then 100.
     pub max_concurrency: Option<u32>,
+    /// Immutable deployed artifact SHA-256 used in durable activation identity.
+    pub activation_artifact_sha256: Option<String>,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+const NATIVE_ACTIVATION_ERROR_PREFIX: &str = "AGNT5_ACTIVATION_ERROR:";
+
+#[cfg(feature = "durable-activation-v1")]
+fn native_activation_error_code(code: CoreErrorCode) -> &'static str {
+    match code {
+        CoreErrorCode::DurabilityUnavailable => "DURABILITY_UNAVAILABLE",
+        CoreErrorCode::NondeterministicReplay => "NON_DETERMINISTIC_REPLAY",
+        CoreErrorCode::StaleAuthority => "STALE_AUTHORITY",
+        CoreErrorCode::ActivationCancelled => "CANCELLED",
+        CoreErrorCode::ActivationContended => "CONTENDED",
+        CoreErrorCode::PayloadConflict => "PAYLOAD_CONFLICT",
+        CoreErrorCode::IllegalTransition => "ILLEGAL_TRANSITION",
+        CoreErrorCode::StateVersionConflict => "STATE_VERSION_CONFLICT",
+        CoreErrorCode::InvalidInput
+        | CoreErrorCode::InvalidMessage
+        | CoreErrorCode::InvalidState => "INVALID_ARGUMENT",
+        _ => "UNKNOWN_OUTCOME",
+    }
+}
+
+#[cfg(feature = "durable-activation-v1")]
+fn native_activation_bridge_error(
+    code: &str,
+    message: impl Into<String>,
+    activation_id: &str,
+    attempt: u32,
+) -> napi::Error {
+    let payload = serde_json::json!({
+        "code": code,
+        "message": message.into(),
+        "activationId": activation_id,
+        "attempt": attempt,
+    });
+    napi::Error::new(
+        napi::Status::GenericFailure,
+        format!("{NATIVE_ACTIVATION_ERROR_PREFIX}{payload}"),
+    )
+}
+
+#[cfg(feature = "durable-activation-v1")]
+fn native_activation_error(error: SdkError) -> napi::Error {
+    let code = native_activation_error_code(error.code());
+    let (message, activation_id, attempt) = match error {
+        SdkError::Activation {
+            message,
+            activation_id,
+            attempt,
+            ..
+        } => (
+            message,
+            activation_id.unwrap_or_default(),
+            attempt.unwrap_or_default(),
+        ),
+        other => (other.to_string(), String::new(), 0),
+    };
+    native_activation_bridge_error(code, message, &activation_id, attempt)
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeBeginActivationRequest {
+    pub project_id: String,
+    pub run_id: String,
+    pub parent_activation_id: String,
+    pub kind: i32,
+    pub stable_key: String,
+    pub input_digest: Buffer,
+    pub definition_digest: Buffer,
+    pub recovery_policy: i32,
+    pub worker_session_id: String,
+    pub run_authority: Buffer,
+    pub lease_authority: Buffer,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeActivationDecision {
+    pub kind: String,
+    pub activation_id: String,
+    pub attempt: u32,
+    pub accepted_journal_offset: String,
+    pub fence_token: Option<Buffer>,
+    pub replay_output: Option<Buffer>,
+    pub message: Option<String>,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeCompleteActivationRequest {
+    pub project_id: String,
+    pub run_id: String,
+    pub activation_id: String,
+    pub attempt: u32,
+    pub fence_token: Buffer,
+    pub output: Buffer,
+    pub output_digest: Buffer,
+    pub latency_ms: i64,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeActivationCompletionReceipt {
+    pub activation_id: String,
+    pub attempt: u32,
+    pub accepted_journal_offset: String,
+    pub replayed: bool,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeFailActivationRequest {
+    pub project_id: String,
+    pub run_id: String,
+    pub activation_id: String,
+    pub attempt: u32,
+    pub fence_token: Buffer,
+    pub error_code: String,
+    pub error_data: Buffer,
+    pub retryable: bool,
+    pub external_outcome_certainty: String,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeActivationFailureReceipt {
+    pub activation_id: String,
+    pub attempt: u32,
+    pub accepted_journal_offset: String,
+    pub status: String,
+    pub replayed: bool,
 }
 
 /// Component type enum matching protobuf
@@ -388,6 +535,262 @@ pub struct Worker {
     /// Needed because run() holds core_worker's TokioMutex for its entire lifetime,
     /// which would deadlock if emit_checkpoint tried to acquire the same lock.
     emit_worker: Arc<StdMutex<Option<CoreWorker>>>,
+    #[cfg(feature = "durable-activation-v1")]
+    activation_adapter: Arc<TokioMutex<Option<ActivationAdapter>>>,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+impl Worker {
+    async fn connected_activation_adapter(
+        &self,
+    ) -> napi::Result<tokio::sync::MutexGuard<'_, Option<ActivationAdapter>>> {
+        let mut adapter = self.activation_adapter.lock().await;
+        if adapter.is_none() {
+            let endpoint = self
+                .config
+                .engine_endpoint
+                .clone()
+                .unwrap_or_else(|| self.config.coordinator_endpoint.clone());
+            let client = EngineClient::connect(&endpoint)
+                .await
+                .map_err(native_activation_error)?;
+            *adapter = Some(ActivationAdapter::new(client));
+        }
+        Ok(adapter)
+    }
+}
+
+#[cfg(feature = "durable-activation-v1")]
+fn native_activation_decision(
+    decision: ActivationDecision,
+) -> napi::Result<NativeActivationDecision> {
+    match decision {
+        ActivationDecision::Execute(receipt) => Ok(NativeActivationDecision {
+            kind: "EXECUTE".to_string(),
+            activation_id: receipt.activation_id,
+            attempt: receipt.attempt,
+            accepted_journal_offset: receipt.accepted_journal_offset.to_string(),
+            fence_token: Some(receipt.fence_token.into()),
+            replay_output: None,
+            message: None,
+        }),
+        ActivationDecision::Replay(receipt) => {
+            let replay_output = match receipt.result.value {
+                Some(activation_payload::Value::InlineData(value)) => value,
+                Some(activation_payload::Value::Reference(_)) => {
+                    return Err(native_activation_bridge_error(
+                        "REFERENCE_REQUIRED",
+                        "TypeScript activation replay does not yet support referenced payloads",
+                        &receipt.activation_id,
+                        receipt.attempt,
+                    ));
+                }
+                None => {
+                    return Err(native_activation_bridge_error(
+                        "UNKNOWN_OUTCOME",
+                        "activation replay receipt has no canonical payload",
+                        &receipt.activation_id,
+                        receipt.attempt,
+                    ));
+                }
+            };
+            Ok(NativeActivationDecision {
+                kind: "REPLAY".to_string(),
+                activation_id: receipt.activation_id,
+                attempt: receipt.attempt,
+                accepted_journal_offset: receipt.accepted_journal_offset.to_string(),
+                fence_token: None,
+                replay_output: Some(replay_output.into()),
+                message: None,
+            })
+        }
+        ActivationDecision::Wait {
+            activation_id,
+            receipt,
+        } => Ok(NativeActivationDecision {
+            kind: "WAIT".to_string(),
+            activation_id,
+            attempt: receipt.attempt,
+            accepted_journal_offset: receipt.accepted_journal_offset.to_string(),
+            fence_token: None,
+            replay_output: None,
+            message: Some(format!(
+                "activation attempt is active on worker session {}",
+                receipt.active_worker_session_id
+            )),
+        }),
+        ActivationDecision::Conflict {
+            activation_id,
+            receipt,
+        } => Ok(NativeActivationDecision {
+            kind: "CONFLICT".to_string(),
+            activation_id,
+            attempt: 0,
+            accepted_journal_offset: "0".to_string(),
+            fence_token: None,
+            replay_output: None,
+            message: Some(receipt.message),
+        }),
+        ActivationDecision::Cancelled {
+            activation_id,
+            attempt,
+            accepted_journal_offset,
+        } => Ok(NativeActivationDecision {
+            kind: "CANCELLED".to_string(),
+            activation_id,
+            attempt,
+            accepted_journal_offset: accepted_journal_offset.to_string(),
+            fence_token: None,
+            replay_output: None,
+            message: Some("activation is cancelled".to_string()),
+        }),
+        ActivationDecision::UnknownOutcome {
+            activation_id,
+            receipt,
+        } => Ok(NativeActivationDecision {
+            kind: "UNKNOWN_OUTCOME".to_string(),
+            activation_id,
+            attempt: 0,
+            accepted_journal_offset: receipt.accepted_journal_offset.to_string(),
+            fence_token: None,
+            replay_output: None,
+            message: Some(receipt.error_code),
+        }),
+    }
+}
+
+#[cfg(feature = "durable-activation-v1")]
+fn native_activation_status(status: agnt5_sdk_core::pb::ActivationStatus) -> &'static str {
+    match status {
+        agnt5_sdk_core::pb::ActivationStatus::Active => "ACTIVE",
+        agnt5_sdk_core::pb::ActivationStatus::RetryReady => "RETRY_READY",
+        agnt5_sdk_core::pb::ActivationStatus::Completed => "COMPLETED",
+        agnt5_sdk_core::pb::ActivationStatus::Failed => "FAILED",
+        agnt5_sdk_core::pb::ActivationStatus::Suspended => "SUSPENDED",
+        agnt5_sdk_core::pb::ActivationStatus::Cancelled => "CANCELLED",
+        agnt5_sdk_core::pb::ActivationStatus::UnknownOutcome => "UNKNOWN_OUTCOME",
+        agnt5_sdk_core::pb::ActivationStatus::Unspecified => "UNSPECIFIED",
+    }
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi]
+impl Worker {
+    /// Begin one journal-authoritative durable activation.
+    #[napi]
+    pub async fn begin_activation(
+        &self,
+        request: NativeBeginActivationRequest,
+    ) -> Result<NativeActivationDecision> {
+        let request = BeginActivationRequest {
+            project_id: request.project_id,
+            run_id: request.run_id,
+            parent_activation_id: request.parent_activation_id,
+            kind: request.kind,
+            stable_key: request.stable_key,
+            input_digest: request.input_digest.to_vec(),
+            definition_digest: request.definition_digest.to_vec(),
+            recovery_policy: request.recovery_policy,
+            worker_session_id: request.worker_session_id,
+            run_authority: request.run_authority.to_vec(),
+            lease_authority: request.lease_authority.to_vec(),
+        };
+        let mut adapter = self.connected_activation_adapter().await?;
+        let decision = adapter
+            .as_mut()
+            .expect("activation adapter initialized")
+            .begin(request)
+            .await
+            .map_err(native_activation_error)?;
+        native_activation_decision(decision)
+    }
+
+    /// Commit one accepted durable activation completion.
+    #[napi]
+    pub async fn complete_activation(
+        &self,
+        request: NativeCompleteActivationRequest,
+    ) -> Result<NativeActivationCompletionReceipt> {
+        let request = CompleteActivationRequest {
+            project_id: request.project_id,
+            run_id: request.run_id,
+            activation_id: request.activation_id,
+            attempt: request.attempt,
+            fence_token: request.fence_token.to_vec(),
+            output: Some(ActivationPayload {
+                value: Some(activation_payload::Value::InlineData(
+                    request.output.to_vec(),
+                )),
+            }),
+            output_digest: request.output_digest.to_vec(),
+            state_mutations: Vec::new(),
+            outbox_intents: Vec::new(),
+            usage: Some(ActivationUsage {
+                latency_ms: request.latency_ms,
+                ..Default::default()
+            }),
+            evidence: Vec::new(),
+        };
+        let mut adapter = self.connected_activation_adapter().await?;
+        let receipt = adapter
+            .as_mut()
+            .expect("activation adapter initialized")
+            .complete(request)
+            .await
+            .map_err(native_activation_error)?;
+        Ok(NativeActivationCompletionReceipt {
+            activation_id: receipt.activation_id,
+            attempt: receipt.attempt,
+            accepted_journal_offset: receipt.accepted_journal_offset.to_string(),
+            replayed: receipt.replayed,
+        })
+    }
+
+    /// Commit one fenced durable activation failure.
+    #[napi]
+    pub async fn fail_activation(
+        &self,
+        request: NativeFailActivationRequest,
+    ) -> Result<NativeActivationFailureReceipt> {
+        if request.external_outcome_certainty != "UNKNOWN" {
+            return Err(native_activation_bridge_error(
+                "INVALID_ARGUMENT",
+                "TypeScript V1 failure bridge currently requires UNKNOWN external outcome certainty",
+                &request.activation_id,
+                request.attempt,
+            ));
+        }
+        let request = FailActivationRequest {
+            project_id: request.project_id,
+            run_id: request.run_id,
+            activation_id: request.activation_id,
+            attempt: request.attempt,
+            fence_token: request.fence_token.to_vec(),
+            error_code: request.error_code,
+            error_data: Some(ActivationPayload {
+                value: Some(activation_payload::Value::InlineData(
+                    request.error_data.to_vec(),
+                )),
+            }),
+            retryable: request.retryable,
+            external_outcome_certainty: ActivationExternalOutcomeCertainty::Unknown as i32,
+            evidence: Vec::new(),
+        };
+        let mut adapter = self.connected_activation_adapter().await?;
+        let receipt = adapter
+            .as_mut()
+            .expect("activation adapter initialized")
+            .fail(request)
+            .await
+            .map_err(native_activation_error)?;
+        Ok(NativeActivationFailureReceipt {
+            activation_id: receipt.activation_id,
+            attempt: receipt.attempt,
+            accepted_journal_offset: receipt.accepted_journal_offset.to_string(),
+            status: native_activation_status(receipt.status).to_string(),
+            replayed: receipt.replayed,
+        })
+    }
 }
 
 #[napi]
@@ -433,6 +836,9 @@ impl Worker {
         } else if let Ok(did) = std::env::var("AGNT5_DEPLOYMENT_ID") {
             metadata.insert("deployment_id".to_string(), did);
         }
+        if let Some(artifact_sha256) = options.activation_artifact_sha256 {
+            metadata.insert("activation_artifact_sha256".to_string(), artifact_sha256);
+        }
 
         // Create core worker with empty components initially
         let core_worker = CoreWorker::new(config.clone(), vec![], metadata);
@@ -453,6 +859,8 @@ impl Worker {
             response_map: Arc::new(StdMutex::new(HashMap::new())),
             journal_queue,
             emit_worker: Arc::new(StdMutex::new(Some(emit_worker))),
+            #[cfg(feature = "durable-activation-v1")]
+            activation_adapter: Arc::new(TokioMutex::new(None)),
         })
     }
 

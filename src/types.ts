@@ -150,6 +150,11 @@ export interface Logger {
 export interface WorkerOptions {
   /** Runtime mode */
   runtime?: 'standalone' | 'managed';
+  /**
+   * Immutable deployed artifact SHA-256 used in durable activation identity.
+   * Managed runtimes normally inject this; local E2E workers may set it.
+   */
+  activationArtifactSha256?: string;
 }
 
 /**

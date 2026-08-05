@@ -47,6 +47,9 @@ futures-util = "0.3"
 [features]
 default = ["wasm-sandbox"]
 wasm-sandbox = ["agnt5-sdk-core/wasm-sandbox"]
+# Kept opt-in until an sdk-core release containing durable activation V1 is
+# published. Local E2E builds patch crates.io to the sibling sdk-core checkout.
+durable-activation-v1 = []
 
 [build-dependencies]
 napi-build = "2"

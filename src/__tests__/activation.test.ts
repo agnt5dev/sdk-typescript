@@ -7,6 +7,7 @@ import {
   ActivationTransport,
   BeginActivationRequest,
   Float64,
+  NativeActivationTransport,
   UInt64,
   activationDefinitionDigest,
   activationId,
@@ -80,6 +81,29 @@ class RecordingTransport implements ActivationTransport {
 }
 
 describe('durable activation V1 contract', () => {
+  it('maps structured native failures to typed activation errors', async () => {
+    const transport = new NativeActivationTransport({
+      beginActivation: vi.fn(async () => {
+        throw new Error(
+          'AGNT5_ACTIVATION_ERROR:' + JSON.stringify({
+            code: ActivationErrorCode.StaleAuthority,
+            message: 'lease was replaced',
+            activationId: 'actv1_test',
+            attempt: 2,
+          }),
+        );
+      }),
+      completeActivation: vi.fn(),
+      failActivation: vi.fn(),
+    });
+
+    await expect(transport.begin(request())).rejects.toMatchObject({
+      code: ActivationErrorCode.StaleAuthority,
+      activationId: 'actv1_test',
+      attempt: 2,
+    });
+  });
+
   it('matches the frozen canonical vectors', async () => {
     const vectors: [unknown, string][] = [
       [null, '["null"]'],
