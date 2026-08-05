@@ -552,21 +552,19 @@ class SimpleContext implements Context {
     if (this._stepCache.has(stepKey)) {
       const cached = this._stepCache.get(stepKey);
       if (this._nativeWorker?.emitCheckpoint) {
-        try {
-          await this._nativeWorker.emitCheckpoint(
-            this.runId,
-            'workflow.step.completed',
-            JSON.stringify({
-              step_key: stepKey,
-              step_name: stepName,
-              output: cached,
-              duration_ms: 0,
-            }),
-            this._stepCounter,
-            { cache_hit: 'true' },
-            Date.now() * 1_000_000,
-          );
-        } catch { /* checkpoint emission is best-effort */ }
+        await this._nativeWorker.emitCheckpoint(
+          this.runId,
+          'workflow.step.completed',
+          JSON.stringify({
+            step_key: stepKey,
+            step_name: stepName,
+            output: cached,
+            duration_ms: 0,
+          }),
+          this._stepCounter,
+          { cache_hit: 'true' },
+          Date.now() * 1_000_000,
+        );
       }
       return cached;
     }
@@ -575,16 +573,14 @@ class SimpleContext implements Context {
     const seqNum = this._stepCounter;
     const tsNs = Date.now() * 1_000_000;
     if (this._nativeWorker?.emitCheckpoint) {
-      try {
-        await this._nativeWorker.emitCheckpoint(
-          this.runId,
-          'workflow.step.started',
-          JSON.stringify({ step_key: stepKey, step_name: stepName }),
-          seqNum,
-          {},
-          tsNs,
-        );
-      } catch { /* checkpoint emission is best-effort */ }
+      await this._nativeWorker.emitCheckpoint(
+        this.runId,
+        'workflow.step.started',
+        JSON.stringify({ step_key: stepKey, step_name: stepName }),
+        seqNum,
+        {},
+        tsNs,
+      );
     }
 
     // Execute the step
@@ -597,21 +593,19 @@ class SimpleContext implements Context {
 
     // Emit step.completed checkpoint
     if (this._nativeWorker?.emitCheckpoint) {
-      try {
-        await this._nativeWorker.emitCheckpoint(
-          this.runId,
-          'workflow.step.completed',
-          JSON.stringify({
-            step_key: stepKey,
-            step_name: stepName,
-            output: result,
-            duration_ms: durationMs,
-          }),
-          seqNum + 1,
-          {},
-          Date.now() * 1_000_000,
-        );
-      } catch { /* checkpoint emission is best-effort */ }
+      await this._nativeWorker.emitCheckpoint(
+        this.runId,
+        'workflow.step.completed',
+        JSON.stringify({
+          step_key: stepKey,
+          step_name: stepName,
+          output: result,
+          duration_ms: durationMs,
+        }),
+        seqNum + 1,
+        {},
+        Date.now() * 1_000_000,
+      );
     }
 
     return result;
