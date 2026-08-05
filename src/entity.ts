@@ -4,7 +4,7 @@
  * Production ready with durable state and locks via SQLite or platform
  */
 
-import type { Context, EntityMethod, Logger } from './types.js';
+import type { Context, EntityMethod, Logger, StepOptions } from './types.js';
 import { ConfigurationError } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import Database from 'better-sqlite3';
@@ -393,18 +393,21 @@ class EntityContext implements Context {
     return await this.storage.delete(this.entityKey, key);
   }
 
-  async step<T>(stepName: string, fn: () => T | Promise<T>): Promise<T> {
-    const checkpointKey = `checkpoint:${stepName}`;
+  async step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T> {
+    const cacheKey = options?.key ? `${stepName}:${options.key}` : stepName;
+    const checkpointKey = options?.key
+      ? `checkpoint:${stepName}:${options.key}`
+      : `checkpoint:${stepName}`;
 
     // Check cache first
-    if (this.checkpointCache.has(stepName)) {
-      return this.checkpointCache.get(stepName);
+    if (this.checkpointCache.has(cacheKey)) {
+      return this.checkpointCache.get(cacheKey);
     }
 
     // Check persistent storage
     const existing = await this.storage.get(this.entityKey, checkpointKey);
     if (existing !== undefined) {
-      this.checkpointCache.set(stepName, existing);
+      this.checkpointCache.set(cacheKey, existing);
       return existing;
     }
 
@@ -413,7 +416,7 @@ class EntityContext implements Context {
 
     // Save checkpoint
     await this.storage.set(this.entityKey, checkpointKey, result);
-    this.checkpointCache.set(stepName, result);
+    this.checkpointCache.set(cacheKey, result);
 
     return result;
   }

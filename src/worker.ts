@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { WorkerOptions, Context } from './types.js';
+import type { WorkerOptions, Context, StepOptions } from './types.js';
 import { FunctionRegistry } from './function.js';
 import { WorkflowRegistry } from './workflow.js';
 import type { TriggerSpec } from './workflow.js';
@@ -11,7 +11,12 @@ import { ChatBot } from './chat.js';
 import { runWithContext, getCurrentContext } from './async-context.js';
 import { emptyRuntimeContext, runtimeContextFromMetadata } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
-import { ConfigurationError, WaitingForUserInputError } from './errors.js';
+import {
+  ActivationError,
+  ActivationErrorCode,
+  ConfigurationError,
+  WaitingForUserInputError,
+} from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import { EventEmitter } from './event-emitter.js';
 import {
@@ -33,6 +38,15 @@ import {
   PROMPT_EXECUTOR_METADATA,
 } from './prompt-executor.js';
 import { recordWorkerMemory } from './worker-memory.js';
+import {
+  ActivationClient,
+  ActivationDecision,
+  ActivationCompletionReceipt,
+  ActivationFailureReceipt,
+  NativeActivationTransport,
+  stableStepKey,
+  stepActivationRequest,
+} from './activation.js';
 
 /**
  * Platform worker configuration
@@ -115,6 +129,21 @@ function validateSleepDuration(durationMs: number): void {
   }
 }
 
+function encodeActivationJson(value: unknown): Uint8Array {
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) {
+    throw new ActivationError(
+      ActivationErrorCode.InvalidArgument,
+      'activation output is not JSON serializable',
+    );
+  }
+  return new TextEncoder().encode(encoded);
+}
+
+function decodeActivationJson<T>(value: Uint8Array): T {
+  return JSON.parse(new TextDecoder().decode(value)) as T;
+}
+
 function optionNumberToEnv(name: string, value: number | undefined): void {
   if (value === undefined) return;
   if (!Number.isInteger(value) || value <= 0) {
@@ -153,6 +182,7 @@ function configurePullWorkerEnvironment(options: PlatformWorkerOptions): void {
 class SimpleContext implements Context {
   private _emitter?: EventEmitter;
   private _nativeWorker?: any;
+  private _activationClient?: ActivationClient;
   private _stepCounter = 0;
   private _stepCache = new Map<string, any>();
 
@@ -296,6 +326,10 @@ class SimpleContext implements Context {
 
   setNativeWorker(worker: any): void {
     this._nativeWorker = worker;
+  }
+
+  setActivationClient(client: ActivationClient): void {
+    this._activationClient = client;
   }
 
   /**
@@ -541,8 +575,62 @@ class SimpleContext implements Context {
    * On first execution: runs fn(), caches result, emits checkpoint.
    * On replay: returns cached result without re-executing.
    */
-  async step<T>(stepName: string, fn: () => T | Promise<T>): Promise<T> {
-    const stepKey = `step:${stepName}:${this._stepCounter++}`;
+  async step<T>(
+    stepName: string,
+    fn: () => T | Promise<T>,
+    options?: StepOptions,
+  ): Promise<T> {
+    const ordinal = this._stepCounter++;
+    const stepKey = stableStepKey(stepName, ordinal, options?.key);
+
+    if (this._activationClient) {
+      const request = await stepActivationRequest({
+        metadata: this.metadata,
+        invocationId: this.invocationId,
+        runId: this.runId,
+        componentName: this.metadata.component_name || this.serviceName,
+        stepName,
+        ordinal,
+        explicitKey: options?.key,
+      });
+      const startMs = Date.now();
+      const { result } = await this._activationClient.run<T>(request, fn, {
+        encodeOutput: encodeActivationJson,
+        decodeOutput: value => decodeActivationJson<T>(value),
+        latencyMs: () => Date.now() - startMs,
+        onAdmitted: async decision => {
+          await this.emitActivationCheckpoint(
+            'workflow.step.started',
+            stepName,
+            stepKey,
+            decision,
+          );
+        },
+        onCompleted: async (decision, receipt, output) => {
+          await this.emitActivationCheckpoint(
+            'workflow.step.completed',
+            stepName,
+            stepKey,
+            decision,
+            receipt,
+            output,
+          );
+        },
+        onFailed: async (decision, receipt, error) => {
+          await this.emitActivationCheckpoint(
+            'workflow.step.failed',
+            stepName,
+            stepKey,
+            decision,
+            receipt,
+            undefined,
+            error,
+          );
+        },
+      });
+      this._stepCache.set(stepKey, result);
+      return result;
+    }
 
     // Cache hit: either same-run (local) or cross-dispatch (rehydrated from
     // workflow.paused metadata by loadReplayState). On a hit, emit a
@@ -609,6 +697,37 @@ class SimpleContext implements Context {
     }
 
     return result;
+  }
+
+  private async emitActivationCheckpoint(
+    eventType: string,
+    stepName: string,
+    stepKey: string,
+    decision: ActivationDecision,
+    receipt: ActivationDecision | ActivationCompletionReceipt | ActivationFailureReceipt = decision,
+    output?: unknown,
+    error?: unknown,
+  ): Promise<void> {
+    if (!this._nativeWorker?.emitCheckpoint) return;
+    await this._nativeWorker.emitCheckpoint(
+      this.runId,
+      eventType,
+      JSON.stringify({
+        step_key: stepKey,
+        step_name: stepName,
+        output,
+        error: error instanceof Error ? error.message : error === undefined ? undefined : String(error),
+        duration_ms: 0,
+      }),
+      this._stepCounter,
+      {
+        cache_hit: String(decision.kind === 'REPLAY'),
+        activation_id: decision.activationId,
+        activation_attempt: String(decision.attempt),
+        accepted_journal_offset: receipt.acceptedJournalOffset.toString(),
+      },
+      Date.now() * 1_000_000,
+    );
   }
 }
 
@@ -822,6 +941,14 @@ export class Worker {
           const inputData = JSON.parse(message.inputJson);
 
           // Create context with emitter
+          const contextMetadata: Record<string, string> = {
+            ...message.metadata,
+            component_name: message.metadata.component_name || message.componentName,
+            activation_definition_version:
+              message.metadata.activation_definition_version ||
+              this.options.serviceVersion ||
+              '0.1.0',
+          };
           const ctx = new SimpleContext(
             message.invocationId,
             runId,
@@ -829,12 +956,17 @@ export class Worker {
             this.serviceName,
             runtime,
             undefined,
-            message.metadata,
+            contextMetadata,
           );
           ctx.setEmitter(emitter);
           ctx.setSignal(abortController.signal);
           if (this.nativeWorker) {
             ctx.setNativeWorker(this.nativeWorker);
+          }
+          if (contextMetadata.durable_activation_v1 === 'true') {
+            ctx.setActivationClient(
+              new ActivationClient(new NativeActivationTransport(this.nativeWorker)),
+            );
           }
 
           // Expose the emitter + live correlation on the propagated context so

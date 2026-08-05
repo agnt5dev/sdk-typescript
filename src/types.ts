@@ -60,6 +60,11 @@ export type FunctionHandler<TInput = any, TOutput = any> = (
   ...args: TInput[]
 ) => Promise<TOutput> | TOutput;
 
+export interface StepOptions {
+  /** Stable identity required for reordered, repeated, or concurrent work. */
+  key?: string;
+}
+
 /**
  * Execution context provided to all AGNT5 components
  *
@@ -98,7 +103,7 @@ export interface Context {
 
   // Checkpointing
   /** Execute and checkpoint a step */
-  step<T>(stepName: string, fn: () => T | Promise<T>): Promise<T>;
+  step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T>;
   /** Suspend when the runtime budget is close to expiring. */
   yieldIfNeeded(reason?: string): Promise<void>;
   /** Sleep until a future time, using durable suspension when supported. */

@@ -48,6 +48,7 @@ export type { ActivationErrorCode as ActivationErrorCodeType, HITLInputType, HIT
 export {
   ActivationClient,
   ActivationKind,
+  NativeActivationTransport,
   ActivationRecoveryPolicy,
   DURABLE_ACTIVATION_V1,
   Float64,
@@ -55,7 +56,9 @@ export {
   activationDefinitionDigest,
   activationId,
   canonicalActivationValue,
+  decodeSha256,
   stableStepKey,
+  stepActivationRequest,
 } from './activation.js';
 export type {
   ActivationCompletionReceipt,
@@ -65,6 +68,7 @@ export type {
   ActivationRunOptions,
   ActivationTransport,
   BeginActivationRequest,
+  StepActivationRequestOptions,
 } from './activation.js';
 
 // Retry utilities exports
@@ -150,6 +154,7 @@ export type {
   WorkflowConfig,
   WorkflowOptions,
 } from './workflow.js';
+export type { StepOptions } from './types.js';
 export type {
   WorkerlessBackoffType,
   WorkerlessBatchPolicy,

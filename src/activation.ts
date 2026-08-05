@@ -121,6 +121,103 @@ export interface ActivationTransport {
   }): Promise<ActivationFailureReceipt>;
 }
 
+export class NativeActivationTransport implements ActivationTransport {
+  constructor(private readonly nativeWorker: any) {
+    for (const method of ['beginActivation', 'completeActivation', 'failActivation']) {
+      if (typeof nativeWorker?.[method] !== 'function') {
+        throw new ActivationError(
+          ActivationErrorCode.DurabilityUnavailable,
+          `runtime negotiated durable_activation_v1 but native worker method ${method} is unavailable`,
+        );
+      }
+    }
+  }
+
+  async begin(request: BeginActivationRequest): Promise<ActivationDecision> {
+    const response = await this.nativeWorker.beginActivation(request);
+    return {
+      kind: response.kind,
+      activationId: response.activationId,
+      attempt: Number(response.attempt),
+      acceptedJournalOffset: BigInt(response.acceptedJournalOffset),
+      fenceToken: optionalBytes(response.fenceToken),
+      replayOutput: optionalBytes(response.replayOutput),
+      message: response.message,
+    };
+  }
+
+  async complete(request: Parameters<ActivationTransport['complete']>[0]) {
+    const response = await this.nativeWorker.completeActivation(request);
+    return {
+      activationId: response.activationId,
+      attempt: Number(response.attempt),
+      acceptedJournalOffset: BigInt(response.acceptedJournalOffset),
+      replayed: Boolean(response.replayed),
+    };
+  }
+
+  async fail(request: Parameters<ActivationTransport['fail']>[0]) {
+    const response = await this.nativeWorker.failActivation(request);
+    return {
+      activationId: response.activationId,
+      attempt: Number(response.attempt),
+      acceptedJournalOffset: BigInt(response.acceptedJournalOffset),
+      status: response.status,
+      replayed: Boolean(response.replayed),
+    };
+  }
+}
+
+export interface StepActivationRequestOptions {
+  metadata: Record<string, string>;
+  invocationId: string;
+  runId: string;
+  componentName: string;
+  stepName: string;
+  ordinal: number;
+  explicitKey?: string;
+  input?: unknown;
+}
+
+export async function stepActivationRequest(
+  options: StepActivationRequestOptions,
+): Promise<BeginActivationRequest> {
+  const { metadata } = options;
+  const projectId = metadata.project_id || metadata.tenant_id || '';
+  const workerSessionId = metadata.worker_session_id || metadata.worker_id || '';
+  const runAuthority = metadata.run_authority || options.invocationId;
+  const leaseAuthority = metadata.lease_authority || metadata.lease_id || '';
+  const definitionVersion = metadata.activation_definition_version || '';
+  if (!projectId || !options.runId || !workerSessionId || !runAuthority ||
+      !leaseAuthority || !options.componentName || !definitionVersion) {
+    throw new ActivationError(
+      ActivationErrorCode.DurabilityUnavailable,
+      'durable activation requires project, run, worker-session, run, lease, and definition authority',
+    );
+  }
+  const canonicalConfig = utf8(
+    metadata.activation_definition_config || '["object",[]]',
+  );
+  return {
+    projectId,
+    runId: options.runId,
+    parentActivationId: metadata.parent_activation_id || '',
+    kind: ActivationKind.Step,
+    stableKey: stableStepKey(options.stepName, options.ordinal, options.explicitKey),
+    inputDigest: await sha256(canonicalActivationValue(options.input ?? null)),
+    definitionDigest: await activationDefinitionDigest(
+      decodeSha256(metadata.activation_artifact_sha256 || ''),
+      options.componentName,
+      definitionVersion,
+      canonicalConfig,
+    ),
+    recoveryPolicy: ActivationRecoveryPolicy.DurableSteps,
+    workerSessionId,
+    runAuthority: utf8(runAuthority),
+    leaseAuthority: utf8(leaseAuthority),
+  };
+}
+
 export interface ActivationRunOptions<T> {
   encodeOutput(value: T): Uint8Array;
   decodeOutput(value: Uint8Array): T;
@@ -129,6 +226,7 @@ export interface ActivationRunOptions<T> {
   onCompleted?(
     decision: ActivationDecision,
     receipt: ActivationDecision | ActivationCompletionReceipt,
+    result: T,
   ): void | Promise<void>;
   onFailed?(
     decision: ActivationDecision,
@@ -172,7 +270,7 @@ export class ActivationClient {
       }
       await options.onAdmitted?.(decision);
       const result = options.decodeOutput(decision.replayOutput);
-      await options.onCompleted?.(decision, decision);
+      await options.onCompleted?.(decision, decision, result);
       return { result, receipt: decision };
     }
     if (decision.kind !== 'EXECUTE') {
@@ -224,7 +322,7 @@ export class ActivationClient {
       latencyMs: options.latencyMs(),
     });
     validateReceiptAuthority(decision, receipt, 'completion');
-    await options.onCompleted?.(decision, receipt);
+    await options.onCompleted?.(decision, receipt, result);
     return { result, receipt };
   }
 }
@@ -312,6 +410,32 @@ export function stableStepKey(stepName: string, ordinal: number, explicitKey?: s
     );
   }
   return `step:${stepName}:${ordinal}`;
+}
+
+export function decodeSha256(value: string): Uint8Array {
+  if (!value) {
+    throw new ActivationError(
+      ActivationErrorCode.DurabilityUnavailable,
+      'activation artifact SHA-256 is unavailable',
+    );
+  }
+  let decoded: Uint8Array | undefined;
+  if (/^[0-9a-fA-F]{64}$/.test(value)) {
+    decoded = Uint8Array.from(value.match(/../g)!, part => Number.parseInt(part, 16));
+  } else {
+    try {
+      const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+      const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+      decoded = Uint8Array.from(atob(padded), char => char.charCodeAt(0));
+    } catch {
+      decoded = undefined;
+    }
+  }
+  if (decoded?.length === 32) return decoded;
+  throw new ActivationError(
+    ActivationErrorCode.InvalidArgument,
+    'activation artifact SHA-256 must encode exactly 32 bytes',
+  );
 }
 
 export async function sha256(value: Uint8Array): Promise<Uint8Array> {
@@ -455,4 +579,9 @@ function base64Url(value: Uint8Array): string {
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function optionalBytes(value: unknown): Uint8Array | undefined {
+  if (value === undefined || value === null) return undefined;
+  return value instanceof Uint8Array ? value : Uint8Array.from(value as ArrayLike<number>);
 }
