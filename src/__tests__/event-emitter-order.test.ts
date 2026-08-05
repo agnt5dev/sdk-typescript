@@ -38,4 +38,46 @@ describe('EventEmitter ordering', () => {
     expect(timestamps).toEqual([100, 1_100]);
     expect(payloadTimestamps).toEqual([100, 1_100]);
   });
+
+  it('does not let event metadata override execution authority', async () => {
+    const metadata: Record<string, string>[] = [];
+    const nativeWorker = {
+      emitCheckpoint: async (
+        _runId: string,
+        _eventType: string,
+        _data: string,
+        _sequence: number,
+        value: Record<string, string>,
+      ) => metadata.push(value),
+    };
+    const emitter = new EventEmitter('run-1', {
+      dispatch_mode: 'pull',
+      worker_id: 'worker-1',
+      worker_session_id: 'session-1',
+      lease_id: 'lease-1',
+      lease_attempt: '1',
+    });
+    emitter.setWorker(nativeWorker);
+
+    await emitter.emit({
+      eventType: 'function.started',
+      eventId: 'event-1',
+      name: 'function',
+      componentType: 'function',
+      correlationId: 'event-1',
+      parentCorrelationId: 'run-1',
+      timestampNs: 100n,
+      metadata: {
+        lease_id: 'forged-lease',
+        worker_id: 'forged-worker',
+        custom: 'preserved',
+      },
+    } as any);
+
+    expect(metadata[0]).toMatchObject({
+      lease_id: 'lease-1',
+      worker_id: 'worker-1',
+      custom: 'preserved',
+    });
+  });
 });

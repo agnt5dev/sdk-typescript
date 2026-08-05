@@ -48,6 +48,33 @@ import {
   stepActivationRequest,
 } from './activation.js';
 
+const DURABLE_EVENT_METADATA_KEYS = [
+  'traceparent',
+  'tracestate',
+  'experiment_id',
+  'tenant_id',
+  'project_id',
+  'deployment_id',
+  'attempt',
+  'max_attempts',
+  'component_name',
+  'component_type',
+  'dispatch_mode',
+  'worker_id',
+  'worker_session_id',
+  'lease_id',
+  'lease_attempt',
+] as const;
+
+function durableEventMetadata(metadata: Record<string, string>): Record<string, string> {
+  const selected: Record<string, string> = {};
+  for (const key of DURABLE_EVENT_METADATA_KEYS) {
+    const value = metadata[key];
+    if (value !== undefined) selected[key] = value;
+  }
+  return selected;
+}
+
 /**
  * Platform worker configuration
  */
@@ -922,10 +949,7 @@ export class Worker {
       },
       async () => {
         // Create EventEmitter wired to NAPI worker for event emission
-        const emitter = new EventEmitter(runId, {
-          traceparent: message.metadata?.traceparent || '',
-          tracestate: message.metadata?.tracestate || '',
-        });
+        const emitter = new EventEmitter(runId, durableEventMetadata(message.metadata || {}));
         emitter.setWorker(this.nativeWorker);
 
         // Correlation IDs: run CID from run_id[:8], component CID random

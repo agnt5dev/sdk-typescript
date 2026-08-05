@@ -107,6 +107,32 @@ describe('managed worker durable activations', () => {
     });
   });
 
+  it('propagates execution authority to lifecycle records without leaking secrets', async () => {
+    workflow('durable-workflow', async () => 'done');
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+    const authority = {
+      ...activationMetadata(),
+      dispatch_mode: 'pull',
+      worker_id: 'worker-1',
+      lease_attempt: '7',
+      workerless_signing_secret: 'must-not-leak',
+    };
+
+    await dispatch(worker, authority);
+
+    const started = native.emitCheckpoint.mock.calls.find(call => call[1] === 'run.started');
+    expect(started?.[4]).toMatchObject({
+      dispatch_mode: 'pull',
+      worker_id: 'worker-1',
+      worker_session_id: 'session-1',
+      lease_id: 'lease-1',
+      lease_attempt: '7',
+    });
+    expect(started?.[4]).not.toHaveProperty('workerless_signing_secret');
+  });
+
   it('replays accepted output without executing user code', async () => {
     let executions = 0;
     workflow('durable-workflow', async ctx => ctx.step('charge', async () => {

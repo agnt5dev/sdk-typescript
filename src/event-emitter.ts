@@ -9,6 +9,14 @@
 import type { BaseEvent } from './events.js';
 import { isCheckpointEvent } from './events.js';
 
+const EXECUTION_AUTHORITY_METADATA_KEYS = [
+  'dispatch_mode',
+  'worker_id',
+  'worker_session_id',
+  'lease_id',
+  'lease_attempt',
+] as const;
+
 /**
  * Convert camelCase key to snake_case.
  */
@@ -84,6 +92,10 @@ export class EventEmitter {
       if (typeof v === 'string') {
         metadata[k] = v;
       }
+    }
+    for (const key of EXECUTION_AUTHORITY_METADATA_KEYS) {
+      const value = this.baseMetadata[key];
+      if (value !== undefined) metadata[key] = value;
     }
 
     const timestampNs = Number(event.timestampNs);
