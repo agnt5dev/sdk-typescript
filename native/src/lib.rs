@@ -5,7 +5,7 @@ use napi_derive::napi;
 use agnt5_sdk_core::pb::{
     dispatch_component_response, ComponentInfo, ComponentSchema, ComponentType as PbComponentType,
     DispatchComponentRequest, DispatchComponentResponse, RuntimeMessage, ServiceMessage,
-    TriggerSpec,
+    TriggerSpec, WorkerSuspension,
 };
 use agnt5_sdk_core::worker::{Worker as CoreWorker, WorkerConfig};
 use agnt5_sdk_core::{JournalEventMessage, JournalEventQueue};
@@ -38,9 +38,24 @@ struct JsInvocationResponse {
     error_code: Option<String>,
     event_type: Option<String>,
     metadata: Option<HashMap<String, String>>,
+    worker_suspension: Option<JsWorkerSuspension>,
 }
 
-fn pull_completion_response(
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JsWorkerSuspension {
+    activation_id: String,
+    attempt: u32,
+    fence_token: Vec<u8>,
+    timer_key: String,
+    ready_at_ms: i64,
+    input_digest: Vec<u8>,
+    definition_digest: Vec<u8>,
+    continuation: Vec<u8>,
+    delay_ms: i64,
+}
+
+fn component_response(
     worker_id: &str,
     request: &DispatchComponentRequest,
     response_json: &str,
@@ -76,14 +91,35 @@ fn pull_completion_response(
     if let Some(error_code) = response.error_code {
         metadata.insert("error_code".to_string(), error_code);
     }
-    let result = success.then(|| {
-        dispatch_component_response::Result::OutputData(
-            response
-                .output_json
-                .unwrap_or_else(|| "null".to_string())
-                .into_bytes(),
-        )
-    });
+    let result = if let Some(suspension) = response.worker_suspension {
+        if !success {
+            return Err(agnt5_sdk_core::error::SdkError::Internal(
+                "TypeScript handler returned a failed worker suspension".to_string(),
+            ));
+        }
+        Some(dispatch_component_response::Result::WorkerSuspension(
+            WorkerSuspension {
+                activation_id: suspension.activation_id,
+                attempt: suspension.attempt,
+                fence_token: suspension.fence_token,
+                timer_key: suspension.timer_key,
+                ready_at_ms: suspension.ready_at_ms,
+                input_digest: suspension.input_digest,
+                definition_digest: suspension.definition_digest,
+                continuation: suspension.continuation,
+                delay_ms: suspension.delay_ms,
+            },
+        ))
+    } else {
+        success.then(|| {
+            dispatch_component_response::Result::OutputData(
+                response
+                    .output_json
+                    .unwrap_or_else(|| "null".to_string())
+                    .into_bytes(),
+            )
+        })
+    };
 
     Ok(ServiceMessage {
         worker_id: worker_id.to_string(),
@@ -106,6 +142,20 @@ fn pull_completion_response(
             ),
         ),
     })
+}
+
+fn is_worker_suspension_message(message: &ServiceMessage) -> bool {
+    matches!(
+        &message.message_type,
+        Some(
+            agnt5_sdk_core::pb::service_message::MessageType::FunctionResponse(
+                DispatchComponentResponse {
+                    result: Some(dispatch_component_response::Result::WorkerSuspension(_)),
+                    ..
+                }
+            )
+        )
+    )
 }
 
 fn sdk_core_builtin_scorer_response(
@@ -1151,20 +1201,23 @@ impl Worker {
                                 ))
                             })?;
 
-                    // Push workers retain the legacy journal-terminal path. Pull
-                    // assignments must return their terminal response so sdk-core
-                    // can fence it through CompleteJob.
-                    if dispatch_request
+                    let response =
+                        component_response(&worker_id, &dispatch_request, &response_json)?;
+                    let is_suspension = is_worker_suspension_message(&response);
+
+                    // Push terminals retain the legacy journal path, but a
+                    // typed suspension must cross WorkerStream so the runtime
+                    // can atomically pause and release its execution lease.
+                    let is_pull = dispatch_request
                         .metadata
                         .get("dispatch_mode")
                         .map(String::as_str)
-                        != Some("pull")
-                    {
-                        return Ok(None);
+                        == Some("pull");
+                    if is_pull || is_suspension {
+                        Ok(Some(response))
+                    } else {
+                        Ok(None)
                     }
-
-                    pull_completion_response(&worker_id, &dispatch_request, &response_json)
-                        .map(Some)
                 }
             };
 
@@ -1676,7 +1729,7 @@ mod tests {
 
     #[test]
     fn builds_successful_pull_completion_from_javascript_response() {
-        let message = pull_completion_response(
+        let message = component_response(
             "worker-1",
             &pull_request(),
             r#"{"invocationId":"run-1","outputJson":"{\"ok\":true}","eventType":"run.completed"}"#,
@@ -1703,7 +1756,7 @@ mod tests {
 
     #[test]
     fn builds_failed_pull_completion_from_javascript_response() {
-        let message = pull_completion_response(
+        let message = component_response(
             "worker-1",
             &pull_request(),
             r#"{"invocationId":"run-1","error":"boom","errorCode":"EXECUTION_ERROR","eventType":"run.failed"}"#,
@@ -1728,7 +1781,7 @@ mod tests {
 
     #[test]
     fn preserves_paused_pull_completion_metadata() {
-        let message = pull_completion_response(
+        let message = component_response(
             "worker-1",
             &pull_request(),
             r#"{"invocationId":"run-1","outputJson":"{\"_paused\":true}","eventType":"workflow.paused","metadata":{"pause_index":"2","step_events":"{\"0\":\"Ada\",\"1\":\"blue\"}","completed_steps":"{\"draft\":{\"ok\":true}}"}}"#,
@@ -1758,8 +1811,36 @@ mod tests {
     }
 
     #[test]
+    fn converts_javascript_sleep_into_typed_worker_suspension() {
+        let message = component_response(
+            "worker-1",
+            &pull_request(),
+            r#"{"invocationId":"run-1","eventType":"workflow.paused","workerSuspension":{"activationId":"activation-1","attempt":2,"fenceToken":[1,2],"timerKey":"sleep:backoff","readyAtMs":0,"inputDigest":[1,1],"definitionDigest":[2,2],"continuation":[3,3],"delayMs":5000}}"#,
+        )
+        .expect("typed suspension");
+        assert!(is_worker_suspension_message(&message));
+
+        let response = match message.message_type {
+            Some(agnt5_sdk_core::pb::service_message::MessageType::FunctionResponse(response)) => {
+                response
+            }
+            _ => panic!("expected function response"),
+        };
+        let Some(dispatch_component_response::Result::WorkerSuspension(suspension)) =
+            response.result
+        else {
+            panic!("expected worker suspension");
+        };
+        assert!(response.success);
+        assert_eq!(response.event_type, "workflow.paused");
+        assert_eq!(suspension.activation_id, "activation-1");
+        assert_eq!(suspension.timer_key, "sleep:backoff");
+        assert_eq!(suspension.delay_ms, 5_000);
+    }
+
+    #[test]
     fn marks_runtime_authored_pull_cancellation_explicitly() {
-        let message = pull_completion_response(
+        let message = component_response(
             "worker-1",
             &pull_request(),
             r#"{"invocationId":"run-1","outputJson":"{\"_cancelled\":true}","eventType":"run.cancelled"}"#,

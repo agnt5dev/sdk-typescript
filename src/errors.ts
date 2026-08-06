@@ -193,6 +193,23 @@ export class WaitingForUserInputError extends AGNT5Error {
   }
 }
 
+/** Internal nonterminal signal converted into a typed worker suspension. */
+export class DurableSleepSuspensionError extends AGNT5Error {
+  constructor(
+    public readonly activationId: string,
+    public readonly attempt: number,
+    public readonly fenceToken: Uint8Array,
+    public readonly timerKey: string,
+    public readonly inputDigest: Uint8Array,
+    public readonly definitionDigest: Uint8Array,
+    public readonly continuation: Uint8Array,
+    public readonly delayMs: number,
+  ) {
+    super(`Durable sleep suspended: ${timerKey}`);
+    this.name = 'DurableSleepSuspensionError';
+  }
+}
+
 /**
  * Durable execution suspension requested by the runtime budget or another
  * resumable boundary.

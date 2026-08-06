@@ -226,6 +226,15 @@ export interface StepActivationRequestOptions {
   input?: unknown;
 }
 
+export interface TimerActivationRequestOptions {
+  metadata: Record<string, string>;
+  invocationId: string;
+  runId: string;
+  componentName: string;
+  timerKey: string;
+  delayMs: number;
+}
+
 export async function stepActivationRequest(
   options: StepActivationRequestOptions,
 ): Promise<BeginActivationRequest> {
@@ -265,6 +274,48 @@ export async function stepActivationRequest(
   };
 }
 
+export async function timerActivationRequest(
+  options: TimerActivationRequestOptions,
+): Promise<BeginActivationRequest> {
+  const { metadata } = options;
+  const projectId = metadata.project_id || metadata.tenant_id || '';
+  const workerSessionId = metadata.worker_session_id || metadata.worker_id || '';
+  const runAuthority = metadata.run_authority || options.invocationId;
+  const leaseAuthority = metadata.lease_authority || metadata.lease_id || '';
+  const definitionVersion = metadata.activation_definition_version || '';
+  if (!projectId || !options.runId || !workerSessionId || !runAuthority ||
+      !leaseAuthority || !options.componentName || !definitionVersion) {
+    throw new ActivationError(
+      ActivationErrorCode.DurabilityUnavailable,
+      'durable timer requires project, run, worker-session, run, lease, and definition authority',
+    );
+  }
+  const canonicalConfig = utf8(
+    metadata.activation_definition_config || '["object",[]]',
+  );
+  return {
+    projectId,
+    runId: options.runId,
+    parentActivationId: metadata.parent_activation_id || '',
+    kind: ActivationKind.Timer,
+    stableKey: options.timerKey,
+    inputDigest: await sha256(canonicalActivationValue({
+      delay_ms: options.delayMs,
+      timer_key: options.timerKey,
+    })),
+    definitionDigest: await activationDefinitionDigest(
+      decodeSha256(metadata.activation_artifact_sha256 || ''),
+      options.componentName,
+      definitionVersion,
+      canonicalConfig,
+    ),
+    recoveryPolicy: ActivationRecoveryPolicy.DurableSteps,
+    workerSessionId,
+    runAuthority: utf8(runAuthority),
+    leaseAuthority: utf8(leaseAuthority),
+  };
+}
+
 export interface ActivationRunOptions<T> {
   encodeOutput(value: T): Uint8Array;
   decodeOutput(value: Uint8Array): T;
@@ -285,11 +336,7 @@ export interface ActivationRunOptions<T> {
 export class ActivationClient {
   constructor(private readonly transport: ActivationTransport) {}
 
-  async run<T>(
-    request: BeginActivationRequest,
-    execute: () => T | Promise<T>,
-    options: ActivationRunOptions<T>,
-  ): Promise<{ result: T; receipt: ActivationDecision | ActivationCompletionReceipt }> {
+  async begin(request: BeginActivationRequest): Promise<ActivationDecision> {
     const expectedId = await activationId(
       request.projectId,
       request.runId,
@@ -306,6 +353,24 @@ export class ActivationClient {
         decision.attempt,
       );
     }
+    if (decision.kind === 'EXECUTE' &&
+        (decision.attempt <= 0 || !decision.fenceToken?.length)) {
+      throw new ActivationError(
+        ActivationErrorCode.UnknownOutcome,
+        'EXECUTE receipt is missing fenced authority',
+        decision.activationId,
+        decision.attempt,
+      );
+    }
+    return decision;
+  }
+
+  async run<T>(
+    request: BeginActivationRequest,
+    execute: () => T | Promise<T>,
+    options: ActivationRunOptions<T>,
+  ): Promise<{ result: T; receipt: ActivationDecision | ActivationCompletionReceipt }> {
+    const decision = await this.begin(request);
     if (decision.kind === 'REPLAY') {
       if (!decision.replayOutput) {
         throw new ActivationError(
@@ -321,16 +386,9 @@ export class ActivationClient {
       return { result, receipt: decision };
     }
     if (decision.kind !== 'EXECUTE') {
-      throw decisionError(decision);
+      throw activationDecisionError(decision);
     }
-    if (decision.attempt <= 0 || !decision.fenceToken?.length) {
-      throw new ActivationError(
-        ActivationErrorCode.UnknownOutcome,
-        'EXECUTE receipt is missing fenced authority',
-        decision.activationId,
-        decision.attempt,
-      );
-    }
+    const fenceToken = decision.fenceToken!;
     await options.onAdmitted?.(decision);
 
     let result: T;
@@ -346,7 +404,7 @@ export class ActivationClient {
         runId: request.runId,
         activationId: decision.activationId,
         attempt: decision.attempt,
-        fenceToken: decision.fenceToken,
+        fenceToken,
         errorCode: 'STEP_FAILED',
         errorData,
         retryable: false,
@@ -363,7 +421,7 @@ export class ActivationClient {
       runId: request.runId,
       activationId: decision.activationId,
       attempt: decision.attempt,
-      fenceToken: decision.fenceToken,
+      fenceToken,
       output,
       outputDigest: await sha256(output),
       latencyMs: options.latencyMs(),
@@ -535,7 +593,7 @@ function canonicalValue(value: unknown): unknown[] {
   throw invalidValue(`unsupported canonical activation value type ${typeof value}`);
 }
 
-function decisionError(decision: ActivationDecision): ActivationError {
+export function activationDecisionError(decision: ActivationDecision): ActivationError {
   const codes: Record<Exclude<ActivationDecisionKind, 'EXECUTE' | 'REPLAY'>, ActivationErrorCode> = {
     WAIT: ActivationErrorCode.Contended,
     CONFLICT: ActivationErrorCode.NonDeterministicReplay,

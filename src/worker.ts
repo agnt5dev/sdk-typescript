@@ -15,6 +15,7 @@ import {
   ActivationError,
   ActivationErrorCode,
   ConfigurationError,
+  DurableSleepSuspensionError,
   WaitingForUserInputError,
 } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
@@ -40,12 +41,15 @@ import {
 import { recordWorkerMemory } from './worker-memory.js';
 import {
   ActivationClient,
+  activationDecisionError,
+  activationId,
   ActivationDecision,
   ActivationCompletionReceipt,
   ActivationFailureReceipt,
   NativeActivationTransport,
   stableStepKey,
   stepActivationRequest,
+  timerActivationRequest,
 } from './activation.js';
 
 const DURABLE_EVENT_METADATA_KEYS = [
@@ -154,6 +158,31 @@ function validateSleepDuration(durationMs: number): void {
   if (!Number.isSafeInteger(durationMs) || durationMs < 0) {
     throw new Error('sleep durationMs must be a non-negative safe integer');
   }
+}
+
+function workflowDispatchMetadata(metadata: Record<string, string>): Record<string, string> {
+  const merged = { ...metadata };
+  const encoded = merged.continuation_b64;
+  if (!encoded) return merged;
+  try {
+    const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+    const bytes = Uint8Array.from(atob(padded), char => char.charCodeAt(0));
+    const continuation = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+    for (const key of ['completed_steps', 'step_events', 'workflow_state'] as const) {
+      if (merged[key] === undefined && continuation[key] !== undefined) {
+        merged[key] = JSON.stringify(continuation[key]);
+      }
+    }
+    if (merged.workflow_correlation_id === undefined &&
+        typeof continuation.workflow_correlation_id === 'string') {
+      merged.workflow_correlation_id = continuation.workflow_correlation_id;
+    }
+  } catch {
+    // The runtime-authored timer identity still gates resume; malformed
+    // continuation data is ignored and cannot create completion authority.
+  }
+  return merged;
 }
 
 function encodeActivationJson(value: unknown): Uint8Array {
@@ -273,10 +302,72 @@ class SimpleContext implements Context {
     // Persistent workers do not need cooperative workerless suspension.
   }
 
-  async sleep(durationMs: number, _name?: string): Promise<void> {
+  async sleep(durationMs: number, name?: string): Promise<void> {
     validateSleepDuration(durationMs);
     if (durationMs === 0) {
       return;
+    }
+
+    const sleepName = name || `sleep_${this._stepCounter}`;
+    this._stepCounter += 1;
+    const timerKey = `sleep:${sleepName}`;
+
+    if (this.metadata.durable_suspension_v1 === 'true') {
+      if (!this._activationClient) {
+        throw new ActivationError(
+          ActivationErrorCode.DurabilityUnavailable,
+          'runtime negotiated durable_suspension_v1 but no activation client is available',
+        );
+      }
+      if (this._stepCache.has(timerKey)) return;
+
+      const request = await timerActivationRequest({
+        metadata: this.metadata,
+        invocationId: this.invocationId,
+        runId: this.runId,
+        componentName: this.metadata.component_name || this.serviceName,
+        timerKey,
+        delayMs: durationMs,
+      });
+      const expectedActivationId = await activationId(
+        request.projectId,
+        request.runId,
+        request.parentActivationId,
+        request.kind,
+        request.stableKey,
+      );
+      if (this.metadata.timer_key === timerKey) {
+        if (this.metadata.activation_id !== expectedActivationId) {
+          throw new ActivationError(
+            ActivationErrorCode.NonDeterministicReplay,
+            'timer resume authority does not match the deterministic sleep activation',
+            this.metadata.activation_id || '',
+          );
+        }
+        this._stepCache.set(timerKey, null);
+        return;
+      }
+
+      const decision = await this._activationClient.begin(request);
+      if (decision.kind !== 'EXECUTE') throw activationDecisionError(decision);
+
+      const completedSteps = Object.fromEntries(this._stepCache);
+      const workflowState = Object.fromEntries(this.state);
+      const continuation = new TextEncoder().encode(JSON.stringify({
+        completed_steps: completedSteps,
+        workflow_state: workflowState,
+        workflow_correlation_id: this._workflowCid,
+      }));
+      throw new DurableSleepSuspensionError(
+        decision.activationId,
+        decision.attempt,
+        decision.fenceToken!,
+        timerKey,
+        request.inputDigest,
+        request.definitionDigest,
+        continuation,
+        durationMs,
+      );
     }
     await new Promise<void>(resolve => setTimeout(resolve, durationMs));
   }
@@ -324,6 +415,18 @@ class SimpleContext implements Context {
         }
       } catch {
         // Best effort: ignore corrupt completed_steps
+      }
+    }
+
+    const workflowStateStr = metadata.workflow_state;
+    if (workflowStateStr) {
+      try {
+        const parsed = JSON.parse(workflowStateStr) as Record<string, any>;
+        for (const [key, value] of Object.entries(parsed)) {
+          this.state.set(key, value);
+        }
+      } catch {
+        // Best effort: ignore corrupt continuation state.
       }
     }
 
@@ -968,7 +1071,7 @@ export class Worker {
 
           // Create context with emitter
           const contextMetadata: Record<string, string> = {
-            ...message.metadata,
+            ...workflowDispatchMetadata(message.metadata),
             component_name: message.metadata.component_name || message.componentName,
             activation_definition_version:
               message.metadata.activation_definition_version ||
@@ -1007,7 +1110,7 @@ export class Worker {
           // Seed HITL replay state from incoming resume metadata (no-op on
           // fresh dispatches). Mirrors sdk-python's executors which read
           // user_response/pause_index from request.metadata on resume.
-          ctx.loadReplayState(message.metadata);
+          ctx.loadReplayState(contextMetadata);
 
           ctx.logger.info(
             `run.started | ${message.componentType} ${message.componentName} | run_id=${runId}`,
@@ -1130,7 +1233,8 @@ export class Worker {
                 // emit workflow.failed. Let the outer catch short-circuit
                 // the run.failed emission and return a success response to
                 // the coordinator (the run is in the paused status already).
-                if (wfError instanceof WaitingForUserInputError) {
+                if (wfError instanceof WaitingForUserInputError ||
+                    wfError instanceof DurableSleepSuspensionError) {
                   throw wfError;
                 }
 
@@ -1340,6 +1444,28 @@ export class Worker {
             eventType: 'run.completed',
           });
         } catch (error) {
+          if (error instanceof DurableSleepSuspensionError) {
+            return JSON.stringify({
+              invocationId: message.invocationId,
+              eventType: 'workflow.paused',
+              metadata: {
+                component_name: message.componentName,
+                component_type: message.componentType,
+              },
+              workerSuspension: {
+                activationId: error.activationId,
+                attempt: error.attempt,
+                fenceToken: Array.from(error.fenceToken),
+                timerKey: error.timerKey,
+                readyAtMs: 0,
+                inputDigest: Array.from(error.inputDigest),
+                definitionDigest: Array.from(error.definitionDigest),
+                continuation: Array.from(error.continuation),
+                delayMs: error.delayMs,
+              },
+            });
+          }
+
           // HITL: workflow.paused has already been journaled by waitForUser
           // and the run is in the `paused` status. Return a success response
           // (no `error` field) so the native layer emits a dispatch response

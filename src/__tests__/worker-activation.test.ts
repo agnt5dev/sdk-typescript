@@ -31,7 +31,7 @@ function activationNative(overrides: Record<string, unknown> = {}) {
         request.projectId,
         request.runId,
         request.parentActivationId,
-        ActivationKind.Step,
+        request.kind,
         request.stableKey,
       ),
       attempt: 1,
@@ -105,6 +105,83 @@ describe('managed worker durable activations', () => {
       activation_attempt: '1',
       accepted_journal_offset: '12',
     });
+  });
+
+  it('yields durable sleep authority without holding a local timer', async () => {
+    workflow('durable-workflow', async ctx => {
+      await ctx.sleep(2_500, 'backoff');
+      return 'resumed';
+    });
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    const response = await dispatch(worker, {
+      ...activationMetadata(),
+      durable_suspension_v1: 'true',
+    });
+
+    expect(response.eventType).toBe('workflow.paused');
+    expect(response.workerSuspension).toMatchObject({
+      attempt: 1,
+      timerKey: 'sleep:backoff',
+      readyAtMs: 0,
+      delayMs: 2_500,
+    });
+    expect(response.workerSuspension.fenceToken).toEqual(Array.from(encoder.encode('fence-1')));
+    expect(native.beginActivation.mock.calls[0][0].kind).toBe(ActivationKind.Timer);
+    expect(native.completeActivation).not.toHaveBeenCalled();
+    expect(native.failActivation).not.toHaveBeenCalled();
+  });
+
+  it('completes only the matching deterministic timer resume', async () => {
+    workflow('durable-workflow', async ctx => {
+      await ctx.sleep(2_500, 'backoff');
+      return 'resumed';
+    });
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+    const timerKey = 'sleep:backoff';
+    const timerActivationId = await activationId(
+      'project-1',
+      'run-1',
+      '',
+      ActivationKind.Timer,
+      timerKey,
+    );
+
+    const response = await dispatch(worker, {
+      ...activationMetadata(),
+      durable_suspension_v1: 'true',
+      timer_key: timerKey,
+      activation_id: timerActivationId,
+    });
+
+    expect(response.eventType).toBe('run.completed');
+    expect(JSON.parse(response.outputJson)).toBe('resumed');
+    expect(native.beginActivation).not.toHaveBeenCalled();
+  });
+
+  it('rejects a mismatched timer resume without completing the sleep', async () => {
+    workflow('durable-workflow', async ctx => {
+      await ctx.sleep(2_500, 'backoff');
+      return 'must-not-complete';
+    });
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    const response = await dispatch(worker, {
+      ...activationMetadata(),
+      durable_suspension_v1: 'true',
+      timer_key: 'sleep:backoff',
+      activation_id: 'wrong-activation',
+    });
+
+    expect(response.eventType).toBe('run.failed');
+    expect(response.error).toContain('timer resume authority does not match');
+    expect(native.beginActivation).not.toHaveBeenCalled();
   });
 
   it('propagates execution authority to lifecycle records without leaking secrets', async () => {
