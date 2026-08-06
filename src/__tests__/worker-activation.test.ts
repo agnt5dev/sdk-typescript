@@ -184,6 +184,39 @@ describe('managed worker durable activations', () => {
     expect(native.beginActivation).not.toHaveBeenCalled();
   });
 
+  it('skips earlier completed sleeps while resuming a later timer', async () => {
+    workflow('durable-workflow', async ctx => {
+      await ctx.sleep(1_000, 'first');
+      await ctx.sleep(1_000, 'second');
+      return 'resumed-both';
+    });
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+    const secondActivationId = await activationId(
+      'project-1',
+      'run-1',
+      '',
+      ActivationKind.Timer,
+      'sleep:second',
+    );
+    const continuation = Buffer.from(JSON.stringify({
+      completed_steps: { 'sleep:first': null },
+    })).toString('base64url');
+
+    const response = await dispatch(worker, {
+      ...activationMetadata(),
+      durable_suspension_v1: 'true',
+      timer_key: 'sleep:second',
+      activation_id: secondActivationId,
+      continuation_b64: continuation,
+    });
+
+    expect(response.eventType).toBe('run.completed');
+    expect(JSON.parse(response.outputJson)).toBe('resumed-both');
+    expect(native.beginActivation).not.toHaveBeenCalled();
+  });
+
   it('propagates execution authority to lifecycle records without leaking secrets', async () => {
     workflow('durable-workflow', async () => 'done');
     const native = activationNative();
