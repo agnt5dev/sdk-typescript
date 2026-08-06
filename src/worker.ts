@@ -70,6 +70,8 @@ const DURABLE_EVENT_METADATA_KEYS = [
   'worker_session_id',
   'lease_id',
   'lease_attempt',
+  'run_authority',
+  'lease_authority',
 ] as const;
 
 function durableEventMetadata(metadata: Record<string, string>): Record<string, string> {
@@ -1051,6 +1053,19 @@ export class Worker {
     const runId = message.metadata?.run_id || message.invocationId;
     const runtime = runtimeContextFromMetadata(message.metadata);
     const isPullDispatch = message.metadata?.dispatch_mode === 'pull';
+    const requiredAuthorityKeys = [
+      'dispatch_mode',
+      'worker_id',
+      'worker_session_id',
+      'lease_id',
+      'lease_attempt',
+    ];
+    const missingAuthorityKeys = requiredAuthorityKeys.filter((key) => !message.metadata?.[key]);
+    if (message.metadata?.durable_activation_v1 === 'true' && missingAuthorityKeys.length > 0) {
+      console.error(
+        `Durable dispatch is missing execution authority metadata: ${missingAuthorityKeys.join(', ')}`,
+      );
+    }
 
     // Per-invocation AbortController for cooperative cancellation. The cancel
     // handler aborts it when a CancelExecution arrives for this run; handlers

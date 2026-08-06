@@ -12,6 +12,8 @@ function activationMetadata(): Record<string, string> {
     project_id: 'project-1',
     worker_session_id: 'session-1',
     lease_id: 'lease-1',
+    run_authority: 'run-authority-1',
+    lease_authority: 'lease-authority-1',
     durable_activation_v1: 'true',
     activation_artifact_sha256: btoa(
       String.fromCharCode(...new Uint8Array(32).fill(97)),
@@ -239,6 +241,8 @@ describe('managed worker durable activations', () => {
       worker_session_id: 'session-1',
       lease_id: 'lease-1',
       lease_attempt: '7',
+      run_authority: 'run-authority-1',
+      lease_authority: 'lease-authority-1',
     });
     expect(started?.[4]).not.toHaveProperty('workerless_signing_secret');
   });
