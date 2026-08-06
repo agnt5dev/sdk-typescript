@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from '../event-emitter';
 
 describe('EventEmitter ordering', () => {
@@ -79,5 +79,37 @@ describe('EventEmitter ordering', () => {
       worker_id: 'worker-1',
       custom: 'preserved',
     });
+  });
+
+  it('queues ordinary lifecycle events but acknowledges correctness boundaries', async () => {
+    const nativeWorker = {
+      queueEvent: vi.fn(),
+      emitCheckpoint: vi.fn(),
+    };
+    const emitter = new EventEmitter('run-1');
+    emitter.setWorker(nativeWorker);
+    const event = (eventType: string) =>
+      ({
+        eventType,
+        eventId: eventType,
+        name: 'workflow',
+        componentType: 'workflow',
+        correlationId: eventType,
+        parentCorrelationId: 'run-1',
+        timestampNs: 100n,
+        metadata: {},
+      }) as any;
+
+    await emitter.emit(event('run.started'));
+    await emitter.emit(event('workflow.step.completed'));
+    await emitter.emit(event('run.completed'));
+
+    expect(nativeWorker.queueEvent.mock.calls.map(call => call[1])).toEqual([
+      'run.started',
+    ]);
+    expect(nativeWorker.emitCheckpoint.mock.calls.map(call => call[1])).toEqual([
+      'workflow.step.completed',
+      'run.completed',
+    ]);
   });
 });

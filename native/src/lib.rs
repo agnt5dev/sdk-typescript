@@ -1054,8 +1054,8 @@ impl Worker {
         Ok(())
     }
 
-    /// Queue an SSE-only event (output.delta, log, progress, etc.) into the journal queue.
-    /// The background flush task (spawned by run()) drains this queue every 50ms.
+    /// Queue an event for batched delivery. SSE-only events are streamed;
+    /// lifecycle events are durably appended by the background flush task.
     #[napi]
     pub fn queue_event(
         &self,

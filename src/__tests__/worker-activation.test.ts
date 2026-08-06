@@ -243,13 +243,13 @@ describe('managed worker durable activations', () => {
       run_authority: 'run-authority-1',
       lease_authority: 'lease-authority-1',
     };
-    const started = native.emitCheckpoint.mock.calls.find(call => call[1] === 'run.started');
+    const started = native.queueEvent.mock.calls.find(call => call[1] === 'run.started');
     const stepStarted = native.emitCheckpoint.mock.calls.find(
       call => call[1] === 'workflow.step.started',
     );
-    expect(started?.[4]).toMatchObject(expectedAuthority);
+    expect(started?.[5]).toMatchObject(expectedAuthority);
     expect(stepStarted?.[4]).toMatchObject(expectedAuthority);
-    expect(started?.[4]).not.toHaveProperty('workerless_signing_secret');
+    expect(started?.[5]).not.toHaveProperty('workerless_signing_secret');
     expect(stepStarted?.[4]).not.toHaveProperty('workerless_signing_secret');
   });
 

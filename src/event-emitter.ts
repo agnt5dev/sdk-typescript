@@ -2,8 +2,8 @@
  * EventEmitter routes events to the platform via NAPI Worker methods.
  *
  * Mirrors Python SDK's EventEmitter (events.py):
- * - Checkpoint events → nativeWorker.emitCheckpoint() → EE gRPC WriteCheckpoint
- * - SSE-only events → nativeWorker.queueEvent() → JournalEventQueue → flush task
+ * - Terminal/correctness checkpoints → nativeWorker.emitCheckpoint() → acknowledged append
+ * - Non-terminal lifecycle and SSE-only events → JournalEventQueue → flush task
  */
 
 import type { BaseEvent } from './events.js';
@@ -16,6 +16,29 @@ const EXECUTION_AUTHORITY_METADATA_KEYS = [
   'lease_id',
   'lease_attempt',
 ] as const;
+
+const TERMINAL_EVENT_TYPES = new Set([
+  'run.completed',
+  'run.failed',
+  'run.cancelled',
+  'workflow.completed',
+  'workflow.failed',
+  'workflow.paused',
+]);
+
+const IMMEDIATE_ACK_PREFIXES = [
+  'workflow.step.',
+  'workflow.state.',
+  'approval.',
+  'activation.',
+];
+
+function requiresImmediateAcknowledgement(eventType: string): boolean {
+  return (
+    TERMINAL_EVENT_TYPES.has(eventType) ||
+    IMMEDIATE_ACK_PREFIXES.some(prefix => eventType.startsWith(prefix))
+  );
+}
 
 /**
  * Convert camelCase key to snake_case.
@@ -66,8 +89,8 @@ export class EventEmitter {
   /**
    * Emit an event to the platform.
    *
-   * Checkpoint events (lifecycle) are sent synchronously via gRPC WriteCheckpoint.
-   * SSE-only events (streaming) are queued for async batch flush.
+   * Terminal and replay-sensitive checkpoints await persistence. Ordinary
+   * non-terminal lifecycle events and SSE-only events use the batch queue.
    */
   async emit(event: BaseEvent): Promise<void> {
     if (!this.nativeWorker) {
@@ -100,7 +123,11 @@ export class EventEmitter {
 
     const timestampNs = Number(event.timestampNs);
 
-    if (isCheckpointEvent(event.eventType)) {
+    if (
+      isCheckpointEvent(event.eventType) &&
+      (requiresImmediateAcknowledgement(event.eventType) ||
+        typeof this.nativeWorker.queueEvent !== 'function')
+    ) {
       // Add correlation IDs to metadata (matches Python EventEmitter convention)
       metadata['cid'] = event.correlationId;
       metadata['pcid'] = event.parentCorrelationId || '';
@@ -115,7 +142,8 @@ export class EventEmitter {
         5000, // timeout_ms
       );
     } else {
-      // SSE-only — push to journal queue (non-blocking)
+      // Queue ordinary lifecycle and SSE-only events. An acknowledged terminal
+      // checkpoint drains this run first, preserving per-run order.
       this.nativeWorker.queueEvent(
         this.runId,
         event.eventType,
