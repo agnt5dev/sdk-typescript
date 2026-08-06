@@ -228,6 +228,70 @@ describe('Client', () => {
     }
   });
 
+  it('sends invocation idempotency keys on run, submit, stream, and batch', async () => {
+    const seen: Array<{ url: string; key: string | null }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({ url, key: new Headers(init?.headers).get('Idempotency-Key') });
+      if (url.endsWith('/stream')) {
+        return new Response([
+          'event: output.delta',
+          'data: {"event_type":"output.delta","run_id":"run-1","data":{"content":"ok"}}',
+          '',
+          'event: run.completed',
+          'data: {"event_type":"run.completed","run_id":"run-1","data":{"output_data":"ok"}}',
+          '',
+        ].join('\n'), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      }
+      if (url.endsWith('/batch')) {
+        return new Response(JSON.stringify({ batch_id: 'batch-1', status: 'queued', results: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/submit')) {
+        return new Response(JSON.stringify({ run_id: 'run-1', status: 'enqueued' }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ run_id: 'run-1', status: 'completed', output: { ok: true } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test' });
+      await client.run('checkout', { value: 1 }, { idempotencyKey: 'run-key' });
+      await client.submit('checkout', { value: 1 }, { idempotencyKey: 'submit-key' });
+      for await (const _chunk of client.stream(
+        'checkout',
+        { value: 1 },
+        { idempotencyKey: 'stream-key' },
+      )) {
+        // Consume the stream so the request executes.
+      }
+      await client.batch(
+        'checkout',
+        [{ value: 1 }],
+        { idempotencyKey: 'batch-key' },
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(seen.map(({ key }) => key)).toEqual([
+      'run-key',
+      'submit-key',
+      'stream-key',
+      'batch-key',
+    ]);
+  });
+
   it('should accept custom gateway URL', () => {
     const client = new Client({ gatewayUrl: 'https://api.example.com' });
     expect(client).toBeDefined();
@@ -592,4 +656,5 @@ describe('Client', () => {
       vi.unstubAllGlobals();
     }
   });
+
 });

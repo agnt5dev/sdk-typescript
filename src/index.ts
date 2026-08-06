@@ -15,7 +15,7 @@ export { PlatformContext } from './platform-context.js';
 
 // Client exports
 export { Client, RunResponse, WorkflowProxy, SessionProxy } from './client.js';
-export type { ClientOptions, RunOptions, RunStatus, RunErrorDetail, OutputRef, SubmitResponse, ReceivedEvent, EventRecord, EventsResponse } from './client.js';
+export type { ClientOptions, InvocationOptions, RunOptions, RunStatus, RunErrorDetail, OutputRef, SubmitResponse, ReceivedEvent, EventRecord, EventsResponse } from './client.js';
 
 // Batch exports
 export { BatchResult, BatchStatusResult } from './batch.js';
