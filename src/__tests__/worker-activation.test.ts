@@ -27,6 +27,7 @@ function activationNative(overrides: Record<string, unknown> = {}) {
   return {
     queueEvent: vi.fn(),
     emitCheckpoint: vi.fn(),
+    emitCheckpointBatch: vi.fn(),
     beginActivation: vi.fn(async (request: any) => ({
       kind: 'EXECUTE',
       activationId: await activationId(
@@ -243,13 +244,19 @@ describe('managed worker durable activations', () => {
       run_authority: 'run-authority-1',
       lease_authority: 'lease-authority-1',
     };
-    const started = native.queueEvent.mock.calls.find(call => call[1] === 'run.started');
+    const batchedStarted = native.emitCheckpointBatch.mock.calls
+      .flatMap(call => call[0])
+      .find((event: any) => event.eventType === 'run.started');
+    const directStarted = native.emitCheckpoint.mock.calls.find(
+      call => call[1] === 'run.started',
+    );
+    const startedMetadata = batchedStarted?.metadata ?? directStarted?.[4];
     const stepStarted = native.emitCheckpoint.mock.calls.find(
       call => call[1] === 'workflow.step.started',
     );
-    expect(started?.[5]).toMatchObject(expectedAuthority);
+    expect(startedMetadata).toMatchObject(expectedAuthority);
     expect(stepStarted?.[4]).toMatchObject(expectedAuthority);
-    expect(started?.[5]).not.toHaveProperty('workerless_signing_secret');
+    expect(startedMetadata).not.toHaveProperty('workerless_signing_secret');
     expect(stepStarted?.[4]).not.toHaveProperty('workerless_signing_secret');
   });
 

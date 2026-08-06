@@ -2,8 +2,9 @@
  * EventEmitter routes events to the platform via NAPI Worker methods.
  *
  * Mirrors Python SDK's EventEmitter (events.py):
- * - Terminal/correctness checkpoints → nativeWorker.emitCheckpoint() → acknowledged append
- * - Non-terminal lifecycle and SSE-only events → JournalEventQueue → flush task
+ * - Consecutive lifecycle checkpoints → one acknowledged AppendBatch
+ * - Terminal/correctness checkpoints → acknowledged append
+ * - SSE-only events → JournalEventQueue → flush task
  */
 
 import type { BaseEvent } from './events.js';
@@ -40,6 +41,15 @@ function requiresImmediateAcknowledgement(eventType: string): boolean {
   );
 }
 
+interface PendingCheckpoint {
+  runId: string;
+  eventType: string;
+  eventData: string;
+  sequenceNumber: number;
+  metadata: Record<string, string>;
+  sourceTimestampNs: number;
+}
+
 /**
  * Convert camelCase key to snake_case.
  */
@@ -72,6 +82,9 @@ export class EventEmitter {
   private sequence = 0;
   private lastTimestampNs = 0n;
   private nativeWorker: any = null;
+  private pendingCheckpoints: PendingCheckpoint[] = [];
+  private hasQueuedTransient = false;
+  private emissionChain: Promise<void> = Promise.resolve();
 
   constructor(runId: string, baseMetadata: Record<string, string> = {}) {
     this.runId = runId;
@@ -89,10 +102,27 @@ export class EventEmitter {
   /**
    * Emit an event to the platform.
    *
-   * Terminal and replay-sensitive checkpoints await persistence. Ordinary
-   * non-terminal lifecycle events and SSE-only events use the batch queue.
+   * Consecutive lifecycle events are coalesced into one acknowledged batch.
+   * Before a transient frame is queued, that batch is persisted so lifecycle
+   * boundaries cannot be overtaken. A checkpoint following transient output
+   * remains an immediate ordering barrier.
    */
-  async emit(event: BaseEvent): Promise<void> {
+  emit(event: BaseEvent): Promise<void> {
+    const operation = this.emissionChain.then(() => this.emitOrdered(event));
+    // Keep later fire-and-forget log events ordered even if their caller does
+    // not observe a rejection. Awaited lifecycle calls still receive it.
+    this.emissionChain = operation.catch(() => undefined);
+    return operation;
+  }
+
+  /** Persist any trailing lifecycle batch before the worker returns a result. */
+  flush(): Promise<void> {
+    const operation = this.emissionChain.then(() => this.flushPendingCheckpoints());
+    this.emissionChain = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async emitOrdered(event: BaseEvent): Promise<void> {
     if (!this.nativeWorker) {
       return; // No worker — running locally or in tests
     }
@@ -123,27 +153,39 @@ export class EventEmitter {
 
     const timestampNs = Number(event.timestampNs);
 
-    if (
-      isCheckpointEvent(event.eventType) &&
-      (requiresImmediateAcknowledgement(event.eventType) ||
-        typeof this.nativeWorker.queueEvent !== 'function')
-    ) {
+    if (isCheckpointEvent(event.eventType)) {
       // Add correlation IDs to metadata (matches Python EventEmitter convention)
       metadata['cid'] = event.correlationId;
       metadata['pcid'] = event.parentCorrelationId || '';
 
-      await this.nativeWorker.emitCheckpoint(
-        this.runId,
-        event.eventType,
-        eventData,
-        this.sequence,
-        metadata,
-        timestampNs,
-        5000, // timeout_ms
-      );
+      if (
+        requiresImmediateAcknowledgement(event.eventType) ||
+        this.hasQueuedTransient ||
+        typeof this.nativeWorker.emitCheckpointBatch !== 'function'
+      ) {
+        await this.flushPendingCheckpoints();
+        await this.nativeWorker.emitCheckpoint(
+          this.runId,
+          event.eventType,
+          eventData,
+          this.sequence,
+          metadata,
+          timestampNs,
+          5000, // timeout_ms
+        );
+        this.hasQueuedTransient = false;
+      } else {
+        this.pendingCheckpoints.push({
+          runId: this.runId,
+          eventType: event.eventType,
+          eventData,
+          sequenceNumber: this.sequence,
+          metadata,
+          sourceTimestampNs: timestampNs,
+        });
+      }
     } else {
-      // Queue ordinary lifecycle and SSE-only events. An acknowledged terminal
-      // checkpoint drains this run first, preserving per-run order.
+      await this.flushPendingCheckpoints();
       this.nativeWorker.queueEvent(
         this.runId,
         event.eventType,
@@ -154,6 +196,32 @@ export class EventEmitter {
         timestampNs,
         event.correlationId,
         event.parentCorrelationId || '',
+      );
+      this.hasQueuedTransient = true;
+    }
+  }
+
+  private async flushPendingCheckpoints(): Promise<void> {
+    if (this.pendingCheckpoints.length === 0) return;
+    const pending = this.pendingCheckpoints;
+    this.pendingCheckpoints = [];
+
+    if (typeof this.nativeWorker.emitCheckpointBatch === 'function') {
+      await this.nativeWorker.emitCheckpointBatch(pending);
+      return;
+    }
+
+    // Older native addons do not expose the batch method. Preserve correctness
+    // and compatibility by acknowledging each buffered checkpoint in order.
+    for (const event of pending) {
+      await this.nativeWorker.emitCheckpoint(
+        event.runId,
+        event.eventType,
+        event.eventData,
+        event.sequenceNumber,
+        event.metadata,
+        event.sourceTimestampNs,
+        5000,
       );
     }
   }

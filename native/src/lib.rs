@@ -234,6 +234,17 @@ pub struct WorkerOptions {
     pub activation_artifact_sha256: Option<String>,
 }
 
+/// One lifecycle checkpoint in an acknowledged append batch.
+#[napi(object)]
+pub struct CheckpointBatchEvent {
+    pub run_id: String,
+    pub event_type: String,
+    pub event_data: String,
+    pub sequence_number: i64,
+    pub metadata: HashMap<String, String>,
+    pub source_timestamp_ns: f64,
+}
+
 #[cfg(feature = "durable-activation-v1")]
 const NATIVE_ACTIVATION_ERROR_PREFIX: &str = "AGNT5_ACTIVATION_ERROR:";
 
@@ -1129,6 +1140,41 @@ impl Worker {
             .await
             .map_err(|e| Error::from_reason(format!("Checkpoint emission failed: {}", e)))?;
         Ok(())
+    }
+
+    /// Emit consecutive lifecycle checkpoints in one acknowledged AppendBatch.
+    /// The core flushes earlier queued frames for these runs before the batch.
+    #[napi]
+    pub async fn emit_checkpoint_batch(&self, events: Vec<CheckpointBatchEvent>) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let worker = {
+            let guard = self
+                .emit_worker
+                .lock()
+                .map_err(|e| Error::from_reason(format!("Failed to lock emit_worker: {}", e)))?;
+            guard
+                .clone()
+                .ok_or_else(|| Error::from_reason("emit_worker not available"))?
+        };
+        let events = events
+            .into_iter()
+            .map(|event| {
+                (
+                    event.run_id,
+                    event.event_type,
+                    event.event_data.into_bytes(),
+                    event.sequence_number,
+                    event.metadata,
+                    event.source_timestamp_ns as i64,
+                )
+            })
+            .collect();
+        worker
+            .emit_checkpoint_batch(events)
+            .await
+            .map_err(|e| Error::from_reason(format!("Checkpoint batch emission failed: {}", e)))
     }
 
     /// Set components for registration

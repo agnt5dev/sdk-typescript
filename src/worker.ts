@@ -1572,6 +1572,10 @@ export class Worker {
             eventType: 'run.failed',
           });
         } finally {
+          // Pull dispatches return their terminal outcome through CompleteJob,
+          // so they do not emit run.completed/run.failed through EventEmitter.
+          // Flush any trailing component/session lifecycle batch first.
+          await emitter.flush();
           recordWorkerMemory({
             phase: 'after',
             componentType: message.componentType,
