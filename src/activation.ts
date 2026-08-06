@@ -64,8 +64,9 @@ export class Float64 {
 
 export enum ActivationKind {
   Step = 1,
-  Model = 2,
-  Agent = 3,
+  Function = 2,
+  Agent = Function,
+  Model = 3,
   Tool = 4,
   Child = 5,
   Approval = 6,

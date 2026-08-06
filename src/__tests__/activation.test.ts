@@ -81,6 +81,15 @@ class RecordingTransport implements ActivationTransport {
 }
 
 describe('durable activation V1 contract', () => {
+  it('matches the frozen proto activation-kind values', () => {
+    expect(ActivationKind.Step).toBe(1);
+    expect(ActivationKind.Function).toBe(2);
+    expect(ActivationKind.Agent).toBe(ActivationKind.Function);
+    expect(ActivationKind.Model).toBe(3);
+    expect(ActivationKind.Tool).toBe(4);
+    expect(ActivationKind.Child).toBe(5);
+  });
+
   it('maps structured native failures to typed activation errors', async () => {
     const transport = new NativeActivationTransport({
       beginActivation: vi.fn(async () => {
