@@ -17,8 +17,10 @@ import { fileURLToPath } from 'node:url';
 import { isLogLevelEnabled } from './logging.js';
 import {
   ActivationClient,
+  currentActivation,
   stepActivationRequest,
 } from './activation.js';
+import type { ActivationExecution } from './activation.js';
 
 // Lazy-loaded native log function for OTLP export
 let _nativeLogFn: ((level: string, message: string, runId: string | null, traceId: string | null, spanId: string | null, attributes: Record<string, string> | null) => void) | null | undefined;
@@ -201,6 +203,7 @@ export class ContextImpl implements Context {
   private _workerlessYieldBeforeMs: number;
   private _activationClient?: ActivationClient;
   private _activationStepCounter = 0;
+  private _activationSequences = new Map<string, number>();
   /** Cancellation signal (never aborted on this context path). */
   readonly signal: AbortSignal = new AbortController().signal;
 
@@ -238,6 +241,25 @@ export class ContextImpl implements Context {
 
   readonly runtime: RuntimeContext;
   readonly metadata?: Record<string, string>;
+
+  get activation(): ActivationExecution | undefined {
+    return currentActivation();
+  }
+
+  allocateActivationKey(kind: string, name: string): string {
+    const namespace = `${kind}:${name}`;
+    const ordinal = this._activationSequences.get(namespace) ?? 0;
+    this._activationSequences.set(namespace, ordinal + 1);
+    return `${namespace}:${ordinal}`;
+  }
+
+  getActivationClient(): ActivationClient | undefined {
+    return this._activationClient;
+  }
+
+  setActivationClient(client: ActivationClient): void {
+    this._activationClient = client;
+  }
 
   async get<T>(key: string, defaultValue?: T): Promise<T | undefined> {
     const value = await this.storage.get(key);

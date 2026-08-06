@@ -1,6 +1,14 @@
 import type { RuntimeContext } from './runtime-context.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import type { WorkerlessFlowControlPolicy } from './flow-control.js';
+import type { ActivationExecution } from './activation.js';
+
+export type RecoveryPolicy =
+  | 'idempotent_retry'
+  | 'durable_steps'
+  | 'unknown_outcome'
+  | 'compensate'
+  | 'fail';
 
 /**
  * Retry policy configuration for functions
@@ -92,6 +100,8 @@ export interface Context {
    * calls (`fetch(url, { signal: ctx.signal })`) so in-flight work stops.
    */
   readonly signal: AbortSignal;
+  /** Current durable unit while model/tool/child user code is executing. */
+  readonly activation?: ActivationExecution;
 
   // State management (async for durable storage)
   /** Get value from state (async) */
@@ -206,6 +216,10 @@ export interface ToolOptions {
   autoSchema?: boolean;
   /** Require confirmation before execution */
   confirmation?: boolean;
+  /** Interrupted-work policy; ordinary effectful tools default to unknown_outcome. */
+  recoveryPolicy?: RecoveryPolicy;
+  /** Disable activation wrapping for suspension-native built-ins. */
+  durable?: boolean;
 }
 
 /**

@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { ActivationError, ActivationErrorCode } from './errors.js';
 
 export const DURABLE_ACTIVATION_V1 = 'durable_activation_v1';
@@ -127,6 +129,29 @@ export interface ActivationFailureReceipt {
   acceptedJournalOffset: bigint;
   status: string;
   replayed?: boolean;
+}
+
+export interface ActivationExecution {
+  activationId: string;
+  attempt: number;
+  idempotencyKey: string;
+}
+
+const activationStorage = new AsyncLocalStorage<ActivationExecution>();
+
+export function currentActivation(): ActivationExecution | undefined {
+  return activationStorage.getStore();
+}
+
+export function runWithActivation<T>(
+  decision: ActivationDecision,
+  execute: () => T | Promise<T>,
+): T | Promise<T> {
+  return activationStorage.run({
+    activationId: decision.activationId,
+    attempt: decision.attempt,
+    idempotencyKey: `agnt5:${decision.activationId}`,
+  }, execute);
 }
 
 export interface ActivationTransport {
@@ -332,6 +357,9 @@ export interface ActivationRunOptions<T> {
     receipt: ActivationFailureReceipt,
     error: unknown,
   ): void | Promise<void>;
+  failureErrorCode?: string;
+  failureRetryable?: boolean;
+  failureExternalOutcomeCertainty?: 'UNKNOWN';
 }
 
 export class ActivationClient {
@@ -406,10 +434,10 @@ export class ActivationClient {
         activationId: decision.activationId,
         attempt: decision.attempt,
         fenceToken,
-        errorCode: 'STEP_FAILED',
+        errorCode: options.failureErrorCode ?? 'STEP_FAILED',
         errorData,
-        retryable: false,
-        externalOutcomeCertainty: 'UNKNOWN',
+        retryable: options.failureRetryable ?? false,
+        externalOutcomeCertainty: options.failureExternalOutcomeCertainty ?? 'UNKNOWN',
       });
       validateReceiptAuthority(decision, receipt, 'failure');
       await options.onFailed?.(decision, receipt, error);
@@ -431,6 +459,54 @@ export class ActivationClient {
     await options.onCompleted?.(decision, receipt, result);
     return { result, receipt };
   }
+}
+
+export async function activationRequestFromContext(
+  context: {
+    invocationId: string;
+    runId: string;
+    serviceName: string;
+    metadata?: Record<string, string>;
+  },
+  options: {
+    kind: ActivationKind;
+    stableKey: string;
+    input: unknown;
+    recoveryPolicy: ActivationRecoveryPolicy;
+  },
+): Promise<BeginActivationRequest> {
+  const metadata = context.metadata || {};
+  const projectId = metadata.project_id || metadata.tenant_id || '';
+  const workerSessionId = metadata.worker_session_id || metadata.worker_id || '';
+  const runAuthority = metadata.run_authority || context.invocationId;
+  const leaseAuthority = metadata.lease_authority || metadata.lease_id || '';
+  const componentName = metadata.component_name || context.serviceName;
+  const definitionVersion = metadata.activation_definition_version || '';
+  if (!projectId || !context.runId || !workerSessionId || !runAuthority ||
+      !leaseAuthority || !componentName || !definitionVersion) {
+    throw new ActivationError(
+      ActivationErrorCode.DurabilityUnavailable,
+      'durable activation requires project, run, worker-session, run, lease, component, and definition authority',
+    );
+  }
+  return {
+    projectId,
+    runId: context.runId,
+    parentActivationId: metadata.parent_activation_id || '',
+    kind: options.kind,
+    stableKey: options.stableKey,
+    inputDigest: await sha256(canonicalActivationValue(options.input)),
+    definitionDigest: await activationDefinitionDigest(
+      decodeSha256(metadata.activation_artifact_sha256 || ''),
+      componentName,
+      definitionVersion,
+      utf8(metadata.activation_definition_config || '["object",[]]'),
+    ),
+    recoveryPolicy: options.recoveryPolicy,
+    workerSessionId,
+    runAuthority: utf8(runAuthority),
+    leaseAuthority: utf8(leaseAuthority),
+  };
 }
 
 export function canonicalActivationValue(value: unknown): Uint8Array {

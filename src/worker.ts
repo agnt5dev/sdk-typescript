@@ -46,11 +46,13 @@ import {
   ActivationDecision,
   ActivationCompletionReceipt,
   ActivationFailureReceipt,
+  currentActivation,
   NativeActivationTransport,
   stableStepKey,
   stepActivationRequest,
   timerActivationRequest,
 } from './activation.js';
+import type { ActivationExecution } from './activation.js';
 
 const DURABLE_EVENT_METADATA_KEYS = [
   'traceparent',
@@ -241,6 +243,7 @@ class SimpleContext implements Context {
   private _activationClient?: ActivationClient;
   private _stepCounter = 0;
   private _stepCache = new Map<string, any>();
+  private _activationSequences = new Map<string, number>();
 
   // HITL state — populated by Worker.processMessage on resume from message metadata.
   // _pauseIndex is the running counter incremented by each waitForUser call.
@@ -292,6 +295,21 @@ class SimpleContext implements Context {
 
   get signal(): AbortSignal {
     return this._signal;
+  }
+
+  get activation(): ActivationExecution | undefined {
+    return currentActivation();
+  }
+
+  allocateActivationKey(kind: string, name: string): string {
+    const namespace = `${kind}:${name}`;
+    const ordinal = this._activationSequences.get(namespace) ?? 0;
+    this._activationSequences.set(namespace, ordinal + 1);
+    return `${namespace}:${ordinal}`;
+  }
+
+  getActivationClient(): ActivationClient | undefined {
+    return this._activationClient;
   }
 
   setSignal(signal: AbortSignal): void {

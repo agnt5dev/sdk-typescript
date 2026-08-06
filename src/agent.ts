@@ -220,6 +220,7 @@ export interface ToolCallbackContext {
   iteration: number;
   toolName: string;
   toolCallId: string;
+  providerToolCallId?: string;
   toolCall: ToolCall;
   args: Record<string, any>;
   tool?: Tool;
@@ -1278,7 +1279,11 @@ export class Agent {
       throw new Error(`Tool '${toolCtx.toolName}' not found`);
     }
 
-    let result = await toolCtx.tool.invoke(toolCtx.context, toolCtx.args);
+    let result = await toolCtx.tool.invoke(
+      toolCtx.context,
+      toolCtx.args,
+      toolCtx.providerToolCallId,
+    );
 
     if (this.callbacks.afterTool) {
       const raw = await this.callbacks.afterTool(toolCtx, toolCtx.toolCall, result);
@@ -1471,6 +1476,7 @@ export class Agent {
                 iteration: iteration + 1,
                 toolName,
                 toolCallId: tc.id || tcId,
+                providerToolCallId: tc.id || undefined,
                 toolCall: { ...tc, id: tc.id || tcId },
                 args: toolArgs,
                 tool,

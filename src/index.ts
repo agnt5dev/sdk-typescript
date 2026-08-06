@@ -55,6 +55,7 @@ export {
   UInt64,
   activationDefinitionDigest,
   activationId,
+  currentActivation,
   canonicalActivationValue,
   decodeSha256,
   stableStepKey,
@@ -65,6 +66,7 @@ export type {
   ActivationDecision,
   ActivationDecisionKind,
   ActivationFailureReceipt,
+  ActivationExecution,
   ActivationRunOptions,
   ActivationTransport,
   BeginActivationRequest,
@@ -542,6 +544,7 @@ export type {
   ToolHandler,
   ToolSchema,
   ToolOptions,
+  RecoveryPolicy,
   WorkflowHandler
 } from './types.js';
 
