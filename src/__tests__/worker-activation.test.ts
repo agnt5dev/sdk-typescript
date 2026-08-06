@@ -220,7 +220,7 @@ describe('managed worker durable activations', () => {
   });
 
   it('propagates execution authority to lifecycle records without leaking secrets', async () => {
-    workflow('durable-workflow', async () => 'done');
+    workflow('durable-workflow', async ctx => ctx.step('authority', async () => 'done'));
     const native = activationNative();
     const worker = new Worker('durability-test', { serviceVersion: 'v1' });
     (worker as any).nativeWorker = native;
@@ -234,8 +234,7 @@ describe('managed worker durable activations', () => {
 
     await dispatch(worker, authority);
 
-    const started = native.emitCheckpoint.mock.calls.find(call => call[1] === 'run.started');
-    expect(started?.[4]).toMatchObject({
+    const expectedAuthority = {
       dispatch_mode: 'pull',
       worker_id: 'worker-1',
       worker_session_id: 'session-1',
@@ -243,8 +242,15 @@ describe('managed worker durable activations', () => {
       lease_attempt: '7',
       run_authority: 'run-authority-1',
       lease_authority: 'lease-authority-1',
-    });
+    };
+    const started = native.emitCheckpoint.mock.calls.find(call => call[1] === 'run.started');
+    const stepStarted = native.emitCheckpoint.mock.calls.find(
+      call => call[1] === 'workflow.step.started',
+    );
+    expect(started?.[4]).toMatchObject(expectedAuthority);
+    expect(stepStarted?.[4]).toMatchObject(expectedAuthority);
     expect(started?.[4]).not.toHaveProperty('workerless_signing_secret');
+    expect(stepStarted?.[4]).not.toHaveProperty('workerless_signing_secret');
   });
 
   it('replays accepted output without executing user code', async () => {

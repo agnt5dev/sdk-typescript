@@ -111,6 +111,9 @@ describe('Worker durable step checkpoint failures', () => {
     const replayCheckpoint = emitCheckpoint.mock.calls.find(
       (call) => call[1] === 'workflow.step.completed',
     );
-    expect(replayCheckpoint?.[4]).toEqual({ cache_hit: 'true' });
+    expect(replayCheckpoint?.[4]).toMatchObject({
+      cache_hit: 'true',
+      component_name: 'durable-workflow',
+    });
   });
 });

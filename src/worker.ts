@@ -800,7 +800,10 @@ class SimpleContext implements Context {
             duration_ms: 0,
           }),
           this._stepCounter,
-          { cache_hit: 'true' },
+          {
+            ...durableEventMetadata(this.metadata),
+            cache_hit: 'true',
+          },
           Date.now() * 1_000_000,
         );
       }
@@ -816,7 +819,7 @@ class SimpleContext implements Context {
         'workflow.step.started',
         JSON.stringify({ step_key: stepKey, step_name: stepName }),
         seqNum,
-        {},
+        durableEventMetadata(this.metadata),
         tsNs,
       );
     }
@@ -841,7 +844,7 @@ class SimpleContext implements Context {
           duration_ms: durationMs,
         }),
         seqNum + 1,
-        {},
+        durableEventMetadata(this.metadata),
         Date.now() * 1_000_000,
       );
     }
@@ -871,6 +874,7 @@ class SimpleContext implements Context {
       }),
       this._stepCounter,
       {
+        ...durableEventMetadata(this.metadata),
         cache_hit: String(decision.kind === 'REPLAY'),
         activation_id: decision.activationId,
         activation_attempt: String(decision.attempt),
