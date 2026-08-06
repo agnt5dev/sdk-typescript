@@ -772,6 +772,12 @@ export class LM {
       failureRetryable: policy === ActivationRecoveryPolicy.IdempotentRetry ||
         policy === ActivationRecoveryPolicy.DurableSteps,
       failureExternalOutcomeCertainty: 'UNKNOWN',
+      completionUsage: result => ({
+        tokensIn: result.usage?.promptTokens ?? 0,
+        tokensOut: result.usage?.completionTokens ?? 0,
+        provider: this.providerName,
+        model,
+      }),
     });
     return response.result;
   }

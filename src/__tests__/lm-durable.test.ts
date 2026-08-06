@@ -118,6 +118,12 @@ describe('LM durable activation', () => {
     expect(transport.beginRequests[0].recoveryPolicy)
       .toBe(ActivationRecoveryPolicy.UnknownOutcome);
     expect(transport.completeRequests).toHaveLength(1);
+    expect(transport.completeRequests[0].usage).toMatchObject({
+      tokensIn: 3,
+      tokensOut: 2,
+      provider: 'openai',
+      model: 'openai/gpt-4o-mini',
+    });
     expect(observedActivation).toMatchObject({
       idempotencyKey: expect.stringMatching(/^agnt5:actv1_/),
     });

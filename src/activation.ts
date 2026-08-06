@@ -137,6 +137,21 @@ export interface ActivationExecution {
   idempotencyKey: string;
 }
 
+export interface ActivationUsage {
+  tokensIn?: number;
+  tokensOut?: number;
+  costUsd?: number;
+  latencyMs?: number;
+  provider?: string;
+  model?: string;
+}
+
+export interface ActivationEvidence {
+  evidenceType: string;
+  payload: Uint8Array;
+  sha256: Uint8Array;
+}
+
 const activationStorage = new AsyncLocalStorage<ActivationExecution>();
 
 export function currentActivation(): ActivationExecution | undefined {
@@ -164,7 +179,8 @@ export interface ActivationTransport {
     fenceToken: Uint8Array;
     output: Uint8Array;
     outputDigest: Uint8Array;
-    latencyMs: number;
+    usage: ActivationUsage;
+    evidence: ActivationEvidence[];
   }): Promise<ActivationCompletionReceipt>;
   fail(request: {
     projectId: string;
@@ -176,6 +192,7 @@ export interface ActivationTransport {
     errorData: Uint8Array;
     retryable: boolean;
     externalOutcomeCertainty: 'UNKNOWN';
+    evidence: ActivationEvidence[];
   }): Promise<ActivationFailureReceipt>;
 }
 
@@ -212,7 +229,17 @@ export class NativeActivationTransport implements ActivationTransport {
   async complete(request: Parameters<ActivationTransport['complete']>[0]) {
     let response: any;
     try {
-      response = await this.nativeWorker.completeActivation(request);
+      const { usage, evidence, ...identity } = request;
+      response = await this.nativeWorker.completeActivation({
+        ...identity,
+        tokensIn: usage.tokensIn ?? 0,
+        tokensOut: usage.tokensOut ?? 0,
+        costUsd: usage.costUsd ?? 0,
+        latencyMs: usage.latencyMs ?? 0,
+        provider: usage.provider ?? '',
+        model: usage.model ?? '',
+        evidence,
+      });
     } catch (error) {
       throw nativeActivationError(error);
     }
@@ -360,6 +387,9 @@ export interface ActivationRunOptions<T> {
   failureErrorCode?: string;
   failureRetryable?: boolean;
   failureExternalOutcomeCertainty?: 'UNKNOWN';
+  completionUsage?(result: T): ActivationUsage;
+  completionEvidence?(result: T): ActivationEvidence[] | Promise<ActivationEvidence[]>;
+  failureEvidence?(error: unknown): ActivationEvidence[] | Promise<ActivationEvidence[]>;
 }
 
 export class ActivationClient {
@@ -438,6 +468,7 @@ export class ActivationClient {
         errorData,
         retryable: options.failureRetryable ?? false,
         externalOutcomeCertainty: options.failureExternalOutcomeCertainty ?? 'UNKNOWN',
+        evidence: await options.failureEvidence?.(error) ?? [],
       });
       validateReceiptAuthority(decision, receipt, 'failure');
       await options.onFailed?.(decision, receipt, error);
@@ -453,7 +484,11 @@ export class ActivationClient {
       fenceToken,
       output,
       outputDigest: await sha256(output),
-      latencyMs: options.latencyMs(),
+      usage: {
+        ...options.completionUsage?.(result),
+        latencyMs: options.latencyMs(),
+      },
+      evidence: await options.completionEvidence?.(result) ?? [],
     });
     validateReceiptAuthority(decision, receipt, 'completion');
     await options.onCompleted?.(decision, receipt, result);

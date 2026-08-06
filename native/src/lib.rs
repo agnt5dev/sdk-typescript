@@ -16,8 +16,8 @@ use agnt5_sdk_core::client::EngineClient;
 use agnt5_sdk_core::error::{ErrorCode as CoreErrorCode, SdkError};
 #[cfg(feature = "durable-activation-v1")]
 use agnt5_sdk_core::pb::{
-    activation_payload, ActivationExternalOutcomeCertainty, ActivationPayload, ActivationUsage,
-    BeginActivationRequest, CompleteActivationRequest, FailActivationRequest,
+    activation_payload, ActivationEvidence, ActivationExternalOutcomeCertainty, ActivationPayload,
+    ActivationUsage, BeginActivationRequest, CompleteActivationRequest, FailActivationRequest,
 };
 #[cfg(feature = "durable-activation-v1")]
 use agnt5_sdk_core::runtime_adapter::{ActivationAdapter, ActivationDecision};
@@ -330,7 +330,21 @@ pub struct NativeCompleteActivationRequest {
     pub fence_token: Buffer,
     pub output: Buffer,
     pub output_digest: Buffer,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub cost_usd: f64,
     pub latency_ms: i64,
+    pub provider: String,
+    pub model: String,
+    pub evidence: Vec<NativeActivationEvidence>,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeActivationEvidence {
+    pub evidence_type: String,
+    pub payload: Buffer,
+    pub sha256: Buffer,
 }
 
 #[cfg(feature = "durable-activation-v1")]
@@ -354,6 +368,7 @@ pub struct NativeFailActivationRequest {
     pub error_data: Buffer,
     pub retryable: bool,
     pub external_outcome_certainty: String,
+    pub evidence: Vec<NativeActivationEvidence>,
 }
 
 #[cfg(feature = "durable-activation-v1")]
@@ -611,6 +626,22 @@ impl Worker {
 }
 
 #[cfg(feature = "durable-activation-v1")]
+fn native_activation_evidence(entries: Vec<NativeActivationEvidence>) -> Vec<ActivationEvidence> {
+    entries
+        .into_iter()
+        .map(|entry| ActivationEvidence {
+            evidence_type: entry.evidence_type,
+            payload: Some(ActivationPayload {
+                value: Some(activation_payload::Value::InlineData(
+                    entry.payload.to_vec(),
+                )),
+            }),
+            sha256: entry.sha256.to_vec(),
+        })
+        .collect()
+}
+
+#[cfg(feature = "durable-activation-v1")]
 fn native_activation_decision(
     decision: ActivationDecision,
 ) -> napi::Result<NativeActivationDecision> {
@@ -776,10 +807,14 @@ impl Worker {
             state_mutations: Vec::new(),
             outbox_intents: Vec::new(),
             usage: Some(ActivationUsage {
+                tokens_in: request.tokens_in,
+                tokens_out: request.tokens_out,
+                cost_usd: request.cost_usd,
                 latency_ms: request.latency_ms,
-                ..Default::default()
+                provider: request.provider,
+                model: request.model,
             }),
-            evidence: Vec::new(),
+            evidence: native_activation_evidence(request.evidence),
         };
         let mut adapter = self.connected_activation_adapter().await?;
         let receipt = adapter
@@ -824,7 +859,7 @@ impl Worker {
             }),
             retryable: request.retryable,
             external_outcome_certainty: ActivationExternalOutcomeCertainty::Unknown as i32,
-            evidence: Vec::new(),
+            evidence: native_activation_evidence(request.evidence),
         };
         let mut adapter = self.connected_activation_adapter().await?;
         let receipt = adapter

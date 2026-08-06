@@ -179,10 +179,22 @@ describe('durable activation V1 contract', () => {
       fenceToken: encoder.encode('fence-1'),
     });
     const execute = vi.fn(async () => ({ value: 42 }));
+    const evidencePayload = encoder.encode('{"finishReason":"stop"}');
     const response = await new ActivationClient(transport).run(value, execute, {
       encodeOutput: output => encoder.encode(JSON.stringify(output)),
       decodeOutput: output => JSON.parse(decoder.decode(output)),
       latencyMs: () => 1,
+      completionUsage: () => ({
+        tokensIn: 3,
+        tokensOut: 2,
+        provider: 'openai',
+        model: 'openai/gpt-test',
+      }),
+      completionEvidence: async () => [{
+        evidenceType: 'provider_terminal',
+        payload: evidencePayload,
+        sha256: await sha256(evidencePayload),
+      }],
     });
 
     expect(response.result).toEqual({ value: 42 });
@@ -190,6 +202,16 @@ describe('durable activation V1 contract', () => {
     expect(transport.completeRequests).toHaveLength(1);
     expect(transport.completeRequests[0].outputDigest).toEqual(
       await sha256(encoder.encode('{"value":42}')),
+    );
+    expect(transport.completeRequests[0].usage).toMatchObject({
+      tokensIn: 3,
+      tokensOut: 2,
+      latencyMs: 1,
+      provider: 'openai',
+      model: 'openai/gpt-test',
+    });
+    expect(transport.completeRequests[0].evidence[0].sha256).toEqual(
+      await sha256(evidencePayload),
     );
   });
 

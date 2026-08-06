@@ -65,10 +65,12 @@ export type {
   ActivationCompletionReceipt,
   ActivationDecision,
   ActivationDecisionKind,
+  ActivationEvidence,
   ActivationFailureReceipt,
   ActivationExecution,
   ActivationRunOptions,
   ActivationTransport,
+  ActivationUsage,
   BeginActivationRequest,
   StepActivationRequestOptions,
 } from './activation.js';
