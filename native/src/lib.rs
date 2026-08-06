@@ -708,10 +708,7 @@ fn native_activation_decision(
             accepted_journal_offset: receipt.accepted_journal_offset.to_string(),
             fence_token: None,
             replay_output: None,
-            message: Some(format!(
-                "activation attempt is active on worker session {}",
-                receipt.active_worker_session_id
-            )),
+            message: Some("activation attempt is owned by another worker session".to_string()),
         }),
         ActivationDecision::Conflict {
             activation_id,
@@ -1771,6 +1768,28 @@ impl Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "durable-activation-v1")]
+    #[test]
+    fn wait_message_does_not_expose_worker_session_authority() {
+        let secret_session = "agnt5ws1.payload.signature";
+        let decision = ActivationDecision::Wait {
+            activation_id: "activation-1".to_string(),
+            receipt: agnt5_sdk_core::pb::ActivationWaitReceipt {
+                attempt: 2,
+                active_worker_session_id: secret_session.to_string(),
+                accepted_journal_offset: 7,
+            },
+        };
+
+        let converted = native_activation_decision(decision).expect("WAIT decision");
+
+        assert_eq!(
+            converted.message.as_deref(),
+            Some("activation attempt is owned by another worker session")
+        );
+        assert!(!converted.message.unwrap().contains(secret_session));
+    }
 
     fn pull_request() -> DispatchComponentRequest {
         DispatchComponentRequest {
