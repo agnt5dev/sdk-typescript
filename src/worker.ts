@@ -1121,6 +1121,7 @@ export class Worker {
           // events tied to this run — populates the Studio Logs panel (AGNT5-569).
           const propagated = getCurrentContext();
           if (propagated) {
+            propagated.executionContext = ctx;
             propagated.emitter = emitter;
             propagated.getCorrelationId = () => ctx.getCurrentCorrelationId();
           }

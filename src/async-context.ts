@@ -15,6 +15,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RuntimeContext } from './runtime-context.js';
+import type { Context } from './types.js';
 
 /**
  * Propagated context data available throughout an async execution chain.
@@ -34,6 +35,8 @@ export interface PropagatedContext {
   metadata?: Record<string, any>;
   /** Runtime-provided execution options */
   runtime?: RuntimeContext;
+  /** Live SDK execution context for activation-aware module APIs. */
+  executionContext?: Context;
   /**
    * Active event emitter for the run. Set by the worker after dispatch so that
    * module-level loggers (getLogger / ContextLogger) can emit `log.*` journal

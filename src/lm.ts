@@ -22,9 +22,16 @@
  * - OpenAI Chat (custom OpenAI-compatible APIs)
  */
 
-import { ConfigurationError } from './errors.js';
-import type { JSONSchema } from './types.js';
+import { ActivationError, ActivationErrorCode, ConfigurationError } from './errors.js';
+import type { Context, JSONSchema, RecoveryPolicy } from './types.js';
 import { getCurrentContext } from './async-context.js';
+import {
+  ActivationKind,
+  ActivationRecoveryPolicy,
+  activationRequestFromContext,
+  runWithActivation,
+} from './activation.js';
+import type { ActivationClient, ActivationDecision } from './activation.js';
 import { loadNativeBindings } from './native-loader.js';
 import { resolvePromptFromManifest } from './prompt-manifest.js';
 import type { LLMRuntimeOptions } from './runtime-context.js';
@@ -118,6 +125,8 @@ export interface GenerationConfig {
   reasoningEffort?: ReasoningEffort;
   modalities?: Modality[];
   builtInTools?: BuiltInTool[];
+  /** Interrupted-work policy; model calls default to unknown_outcome. */
+  recoveryPolicy?: RecoveryPolicy;
 }
 
 export interface ResponseFormatOption {
@@ -308,6 +317,7 @@ function normalizeGenerationConfigForNative(
     cacheControl,
     cacheTtl,
     googleCachedContent,
+    recoveryPolicy: _recoveryPolicy,
     ...nativeConfig
   } = config;
 
@@ -431,6 +441,67 @@ export interface OpenAiChatConfig {
   apiKey?: string;
   baseUrl?: string;
   organization?: string;
+}
+
+type DurableModelContext = Context & {
+  allocateActivationKey?: (kind: string, name: string) => string;
+  getActivationClient?: () => ActivationClient | undefined;
+};
+
+function modelRecoveryPolicy(value: RecoveryPolicy | undefined): ActivationRecoveryPolicy {
+  switch (value ?? 'unknown_outcome') {
+    case 'idempotent_retry': return ActivationRecoveryPolicy.IdempotentRetry;
+    case 'durable_steps': return ActivationRecoveryPolicy.DurableSteps;
+    case 'unknown_outcome': return ActivationRecoveryPolicy.UnknownOutcome;
+    case 'compensate': return ActivationRecoveryPolicy.Compensate;
+    case 'fail': return ActivationRecoveryPolicy.Fail;
+    default:
+      throw new ActivationError(
+        ActivationErrorCode.InvalidArgument,
+        `Unsupported model recovery policy: ${JSON.stringify(value)}`,
+      );
+  }
+}
+
+function withoutUndefined(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutUndefined);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, item]) => item !== undefined)
+        .map(([key, item]) => [key, withoutUndefined(item)]),
+    );
+  }
+  return value;
+}
+
+function durableModelInput(request: GenerateRequest): unknown {
+  return withoutUndefined({
+    model: request.model,
+    systemPrompt: request.systemPrompt,
+    messages: request.messages ?? [],
+    tools: request.tools ?? [],
+    toolChoice: request.toolChoice,
+    userId: request.userId,
+    config: request.config
+      ? { ...request.config, recoveryPolicy: undefined }
+      : undefined,
+  });
+}
+
+function encodeDurableModelResponse(response: GenerateResponse): Uint8Array {
+  const encoded = JSON.stringify(response);
+  if (encoded === undefined) {
+    throw new ActivationError(
+      ActivationErrorCode.InvalidArgument,
+      'durable model output is not JSON serializable',
+    );
+  }
+  return new TextEncoder().encode(encoded);
+}
+
+function decodeDurableModelResponse(value: Uint8Array): GenerateResponse {
+  return JSON.parse(new TextDecoder().decode(value)) as GenerateResponse;
 }
 
 // ============================================================================
@@ -643,6 +714,14 @@ export class LM {
     if (request.prompt || request.promptRef) {
       return await runManagedPrompt(request);
     }
+    const context = getCurrentContext()?.executionContext as DurableModelContext | undefined;
+    if (context?.metadata?.durable_activation_v1 === 'true') {
+      return await this.generateDurable(request, context);
+    }
+    return await this.generateNative(request);
+  }
+
+  private async generateNative(request: GenerateRequest): Promise<GenerateResponse> {
     const { __runtimeOverridesApplied: _runtimeOverridesApplied, ...nativeRequest } = request;
     const model = validateModelForProvider(request.model, this.providerName);
     return await this.model.generate({
@@ -653,6 +732,48 @@ export class LM {
       config: normalizeGenerationConfigForNative(request.config, this.providerName),
       model,
     });
+  }
+
+  private async generateDurable(
+    request: GenerateRequest,
+    context: DurableModelContext,
+  ): Promise<GenerateResponse> {
+    const client = context.getActivationClient?.();
+    if (!client || !context.allocateActivationKey) {
+      throw new ActivationError(
+        ActivationErrorCode.DurabilityUnavailable,
+        'runtime negotiated durable_activation_v1 but no activation client is available',
+      );
+    }
+    const policy = modelRecoveryPolicy(request.config?.recoveryPolicy);
+    const model = validateModelForProvider(request.model, this.providerName);
+    const activationRequest = await activationRequestFromContext(context, {
+      kind: ActivationKind.Model,
+      stableKey: context.allocateActivationKey('model', model),
+      input: durableModelInput({ ...request, model }),
+      recoveryPolicy: policy,
+    });
+    let decision: ActivationDecision | undefined;
+    const started = Date.now();
+    const response = await client.run<GenerateResponse>(activationRequest, () => {
+      if (!decision) {
+        throw new ActivationError(
+          ActivationErrorCode.UnknownOutcome,
+          'model activation executed without admitted authority',
+        );
+      }
+      return runWithActivation(decision, () => this.generateNative({ ...request, model }));
+    }, {
+      encodeOutput: encodeDurableModelResponse,
+      decodeOutput: decodeDurableModelResponse,
+      latencyMs: () => Date.now() - started,
+      onAdmitted: admitted => { decision = admitted; },
+      failureErrorCode: 'MODEL_FAILED',
+      failureRetryable: policy === ActivationRecoveryPolicy.IdempotentRetry ||
+        policy === ActivationRecoveryPolicy.DurableSteps,
+      failureExternalOutcomeCertainty: 'UNKNOWN',
+    });
+    return response.result;
   }
 
   /** Create a Google Gemini explicit context cache. */
