@@ -98,6 +98,7 @@ export const ActivationErrorCode = {
   InvalidArgument: 'INVALID_ARGUMENT',
   ReferenceRequired: 'REFERENCE_REQUIRED',
   StateVersionConflict: 'STATE_VERSION_CONFLICT',
+  RequiredChildUnresolved: 'REQUIRED_CHILD_UNRESOLVED',
 } as const;
 
 export type ActivationErrorCode =
