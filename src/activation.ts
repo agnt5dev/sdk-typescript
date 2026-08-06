@@ -424,6 +424,55 @@ export class ActivationClient {
     return decision;
   }
 
+  async complete(
+    request: BeginActivationRequest,
+    decision: ActivationDecision,
+    output: Uint8Array,
+    usage: ActivationUsage,
+    evidence: ActivationEvidence[] = [],
+  ): Promise<ActivationCompletionReceipt> {
+    const receipt = await this.transport.complete({
+      projectId: request.projectId,
+      runId: request.runId,
+      activationId: decision.activationId,
+      attempt: decision.attempt,
+      fenceToken: decision.fenceToken!,
+      output,
+      outputDigest: await sha256(output),
+      usage,
+      evidence,
+    });
+    validateReceiptAuthority(decision, receipt, 'completion');
+    return receipt;
+  }
+
+  async fail(
+    request: BeginActivationRequest,
+    decision: ActivationDecision,
+    options: {
+      errorCode: string;
+      errorData: Uint8Array;
+      retryable: boolean;
+      externalOutcomeCertainty?: 'UNKNOWN';
+      evidence?: ActivationEvidence[];
+    },
+  ): Promise<ActivationFailureReceipt> {
+    const receipt = await this.transport.fail({
+      projectId: request.projectId,
+      runId: request.runId,
+      activationId: decision.activationId,
+      attempt: decision.attempt,
+      fenceToken: decision.fenceToken!,
+      errorCode: options.errorCode,
+      errorData: options.errorData,
+      retryable: options.retryable,
+      externalOutcomeCertainty: options.externalOutcomeCertainty ?? 'UNKNOWN',
+      evidence: options.evidence ?? [],
+    });
+    validateReceiptAuthority(decision, receipt, 'failure');
+    return receipt;
+  }
+
   async run<T>(
     request: BeginActivationRequest,
     execute: () => T | Promise<T>,
@@ -447,7 +496,6 @@ export class ActivationClient {
     if (decision.kind !== 'EXECUTE') {
       throw activationDecisionError(decision);
     }
-    const fenceToken = decision.fenceToken!;
     await options.onAdmitted?.(decision);
 
     let result: T;
@@ -458,39 +506,28 @@ export class ActivationClient {
         message: error instanceof Error ? error.message : String(error),
         type: error instanceof Error ? error.constructor.name : typeof error,
       }));
-      const receipt = await this.transport.fail({
-        projectId: request.projectId,
-        runId: request.runId,
-        activationId: decision.activationId,
-        attempt: decision.attempt,
-        fenceToken,
+      const receipt = await this.fail(request, decision, {
         errorCode: options.failureErrorCode ?? 'STEP_FAILED',
         errorData,
         retryable: options.failureRetryable ?? false,
         externalOutcomeCertainty: options.failureExternalOutcomeCertainty ?? 'UNKNOWN',
         evidence: await options.failureEvidence?.(error) ?? [],
       });
-      validateReceiptAuthority(decision, receipt, 'failure');
       await options.onFailed?.(decision, receipt, error);
       throw error;
     }
 
     const output = options.encodeOutput(result);
-    const receipt = await this.transport.complete({
-      projectId: request.projectId,
-      runId: request.runId,
-      activationId: decision.activationId,
-      attempt: decision.attempt,
-      fenceToken,
+    const receipt = await this.complete(
+      request,
+      decision,
       output,
-      outputDigest: await sha256(output),
-      usage: {
+      {
         ...options.completionUsage?.(result),
         latencyMs: options.latencyMs(),
       },
-      evidence: await options.completionEvidence?.(result) ?? [],
-    });
-    validateReceiptAuthority(decision, receipt, 'completion');
+      await options.completionEvidence?.(result) ?? [],
+    );
     await options.onCompleted?.(decision, receipt, result);
     return { result, receipt };
   }

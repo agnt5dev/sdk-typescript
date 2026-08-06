@@ -21,11 +21,24 @@ const generate = vi.fn(async (request: any) => ({
   usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
   finishReason: 'stop',
 }));
+const stream = vi.fn(async (request: any, callback: (chunk: any) => void) => {
+  callback({ chunkType: 'delta', content: 'provider ' });
+  callback({
+    chunkType: 'completed',
+    response: {
+      id: 'response-stream-1',
+      model: request.model,
+      text: 'provider final',
+      usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+      finishReason: 'stop',
+    },
+  });
+});
 
 vi.mock('../native-loader.js', () => ({
   loadNativeBindings: () => ({
     LanguageModel: {
-      openai: vi.fn(() => ({ generate })),
+      openai: vi.fn(() => ({ generate, stream })),
     },
   }),
 }));
@@ -33,6 +46,7 @@ vi.mock('../native-loader.js', () => ({
 class ModelActivationTransport {
   readonly beginRequests: BeginActivationRequest[] = [];
   readonly completeRequests: any[] = [];
+  readonly failRequests: any[] = [];
 
   constructor(private readonly replay?: Record<string, unknown>) {}
 
@@ -65,8 +79,14 @@ class ModelActivationTransport {
     };
   }
 
-  async fail(): Promise<never> {
-    throw new Error('model failure was not expected');
+  async fail(request: any) {
+    this.failRequests.push(request);
+    return {
+      activationId: request.activationId,
+      attempt: request.attempt,
+      acceptedJournalOffset: 8n,
+      status: 'UNKNOWN_OUTCOME',
+    };
   }
 }
 
@@ -124,6 +144,8 @@ describe('LM durable activation', () => {
       provider: 'openai',
       model: 'openai/gpt-4o-mini',
     });
+    expect(transport.completeRequests[0].evidence[0].evidenceType)
+      .toBe('model_provider_terminal_v1');
     expect(observedActivation).toMatchObject({
       idempotencyKey: expect.stringMatching(/^agnt5:actv1_/),
     });
@@ -154,5 +176,94 @@ describe('LM durable activation', () => {
     expect(response.usage?.totalTokens).toBe(5);
     expect(generate).not.toHaveBeenCalled();
     expect(transport.completeRequests).toHaveLength(0);
+  });
+
+  it('withholds a stream final until durable completion is accepted', async () => {
+    stream.mockClear();
+    const transport = new ModelActivationTransport();
+    const context = durableContext(transport);
+    const chunks: any[] = [];
+
+    await runWithContext(
+      { runId: context.runId, executionContext: context },
+      () => LM.openai().stream({
+        model: 'openai/gpt-4o-mini',
+        messages: [{ role: 'user', content: 'hello' }],
+      }, chunk => {
+        if (chunk.chunkType === 'completed') {
+          expect(transport.completeRequests).toHaveLength(1);
+        }
+        chunks.push(chunk);
+      }),
+    );
+
+    expect(chunks.map(chunk => chunk.chunkType)).toEqual(['delta', 'completed']);
+    expect(transport.completeRequests[0].usage).toMatchObject({
+      tokensIn: 3,
+      tokensOut: 2,
+      provider: 'openai',
+      model: 'openai/gpt-4o-mini',
+    });
+    expect(transport.completeRequests[0].evidence[0].evidenceType)
+      .toBe('model_provider_terminal_v1');
+    expect(transport.failRequests).toHaveLength(0);
+    expect(stream).toHaveBeenCalledOnce();
+  });
+
+  it('replays an accepted stream final without another provider stream', async () => {
+    stream.mockClear();
+    const transport = new ModelActivationTransport({
+      id: 'response-replay',
+      model: 'openai/gpt-4o-mini',
+      text: 'replayed stream final',
+      usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+      finishReason: 'stop',
+    });
+    const context = durableContext(transport);
+    const chunks: any[] = [];
+
+    await runWithContext(
+      { runId: context.runId, executionContext: context },
+      () => LM.openai().stream({
+        model: 'openai/gpt-4o-mini',
+        messages: [{ role: 'user', content: 'hello' }],
+      }, chunk => chunks.push(chunk)),
+    );
+
+    expect(chunks).toMatchObject([
+      { chunkType: 'delta', content: 'replayed stream final' },
+      { chunkType: 'completed', response: { text: 'replayed stream final' } },
+    ]);
+    expect(stream).not.toHaveBeenCalled();
+    expect(transport.completeRequests).toHaveLength(0);
+  });
+
+  it('classifies an interrupted stream with bounded non-text evidence', async () => {
+    stream.mockReset();
+    stream.mockImplementationOnce(async (_request, callback) => {
+      callback({ chunkType: 'delta', content: 'partial' });
+      throw new Error('provider stream interrupted');
+    });
+    const transport = new ModelActivationTransport();
+    const context = durableContext(transport);
+    const chunks: any[] = [];
+
+    await expect(runWithContext(
+      { runId: context.runId, executionContext: context },
+      () => LM.openai().stream({
+        model: 'openai/gpt-4o-mini',
+        messages: [{ role: 'user', content: 'hello' }],
+      }, chunk => chunks.push(chunk)),
+    )).rejects.toThrow('provider stream interrupted');
+
+    expect(chunks).toEqual([{ chunkType: 'delta', content: 'partial' }]);
+    expect(transport.completeRequests).toHaveLength(0);
+    expect(transport.failRequests).toHaveLength(1);
+    const failure = transport.failRequests[0];
+    expect(failure.errorCode).toBe('MODEL_STREAM_INTERRUPTED');
+    const evidenceText = new TextDecoder().decode(failure.evidence[0].payload);
+    expect(evidenceText).toContain('"partialChunks":1');
+    expect(evidenceText).toContain('"partialUtf8Bytes":7');
+    expect(evidenceText).not.toContain('"partial"');
   });
 });
