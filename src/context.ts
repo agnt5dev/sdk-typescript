@@ -12,9 +12,9 @@ import {
 import type { HITLInputType, HITLOption } from './errors.js';
 import { existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { isLogLevelEnabled } from './logging.js';
+import { getLoadedNativeBindings } from './native-loader.js';
 import {
   ActivationClient,
   currentActivation,
@@ -22,33 +22,11 @@ import {
 } from './activation.js';
 import type { ActivationExecution } from './activation.js';
 
-// Lazy-loaded native log function for OTLP export
-let _nativeLogFn: ((level: string, message: string, runId: string | null, traceId: string | null, spanId: string | null, attributes: Record<string, string> | null) => void) | null | undefined;
-
 function getNativeLogFn() {
-  if (_nativeLogFn !== undefined) return _nativeLogFn;
-  try {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const require = createRequire(import.meta.url);
-    const paths = [
-      join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),
-      join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),
-      join(__dirname, '../../native/agnt5-sdk-native.linux-x64-gnu.node'),
-      join(__dirname, '../native/agnt5-sdk-native.linux-x64-gnu.node'),
-    ];
-    for (const p of paths) {
-      try {
-        const native = require(p);
-        if (native.logFromTypescript) {
-          _nativeLogFn = native.logFromTypescript;
-          return _nativeLogFn;
-        }
-      } catch { continue; }
-    }
-  } catch { /* native not available */ }
-  _nativeLogFn = null;
-  return null;
+  const native = getLoadedNativeBindings();
+  return typeof native?.logFromTypescript === 'function'
+    ? native.logFromTypescript
+    : null;
 }
 
 /**

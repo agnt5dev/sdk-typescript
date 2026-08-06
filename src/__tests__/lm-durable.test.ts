@@ -36,6 +36,7 @@ const stream = vi.fn(async (request: any, callback: (chunk: any) => void) => {
 });
 
 vi.mock('../native-loader.js', () => ({
+  getLoadedNativeBindings: () => null,
   loadNativeBindings: () => ({
     LanguageModel: {
       openai: vi.fn(() => ({ generate, stream })),

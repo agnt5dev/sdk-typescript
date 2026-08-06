@@ -8,44 +8,12 @@
 
 import { AsyncLocalStorage } from 'async_hooks';
 import { randomUUID } from 'crypto';
-import { createRequire } from 'module';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { getLoadedNativeBindings } from './native-loader.js';
 
 // ─── NAPI binding loader ─────────────────────────────────────────────
 
-let nativeBindings: any = null;
-let napiAvailable = false;
-
 function tryLoadNapi(): any {
-  if (nativeBindings !== null) return nativeBindings;
-
-  try {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const require = createRequire(import.meta.url);
-
-    const possiblePaths = [
-      join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),
-      join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),
-      join(__dirname, '../../native/agnt5-sdk-native.linux-x64-gnu.node'),
-      join(__dirname, '../native/agnt5-sdk-native.linux-x64-gnu.node'),
-    ];
-
-    for (const nativePath of possiblePaths) {
-      try {
-        nativeBindings = require(nativePath);
-        napiAvailable = true;
-        return nativeBindings;
-      } catch {
-        continue;
-      }
-    }
-  } catch {
-    // NAPI not available — fall back to log-only
-  }
-  nativeBindings = false; // Mark as attempted
-  return null;
+  return getLoadedNativeBindings();
 }
 
 // ─── Span context propagation ────────────────────────────────────────

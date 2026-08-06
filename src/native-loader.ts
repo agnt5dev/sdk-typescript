@@ -5,6 +5,11 @@ import { fileURLToPath } from 'node:url';
 let cached: any = null;
 let loadAttempted = false;
 
+/** Return bindings already loaded by the worker without triggering native I/O. */
+export function getLoadedNativeBindings(): any | null {
+  return cached;
+}
+
 export function tryLoadNativeBindings(): any | null {
   if (cached) return cached;
   if (loadAttempted) return null;

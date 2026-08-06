@@ -5,12 +5,10 @@
  * for consistent, NAPI-backed logging that mirrors the Python SDK's _telemetry module.
  */
 
-import { createRequire } from 'module';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import type { Logger } from './types.js';
 import { getCurrentContext } from './async-context.js';
 import { logEvent } from './events.js';
+import { getLoadedNativeBindings } from './native-loader.js';
 
 // ─── Log level management ────────────────────────────────────────────
 
@@ -49,39 +47,11 @@ export function isLogLevelEnabled(level: LogLevel): boolean {
 
 // ─── NAPI binding loader ─────────────────────────────────────────────
 
-let _nativeLogFn: ((
-  level: string,
-  message: string,
-  runId: string | null,
-  traceId: string | null,
-  spanId: string | null,
-  attributes: Record<string, string> | null,
-) => void) | null | undefined;
-
 function getNativeLogFn() {
-  if (_nativeLogFn !== undefined) return _nativeLogFn;
-  try {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const require = createRequire(import.meta.url);
-    const paths = [
-      join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),
-      join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),
-      join(__dirname, '../../native/agnt5-sdk-native.linux-x64-gnu.node'),
-      join(__dirname, '../native/agnt5-sdk-native.linux-x64-gnu.node'),
-    ];
-    for (const p of paths) {
-      try {
-        const native = require(p);
-        if (native.logFromTypescript) {
-          _nativeLogFn = native.logFromTypescript;
-          return _nativeLogFn;
-        }
-      } catch { continue; }
-    }
-  } catch { /* native not available */ }
-  _nativeLogFn = null;
-  return null;
+  const native = getLoadedNativeBindings();
+  return typeof native?.logFromTypescript === 'function'
+    ? native.logFromTypescript
+    : null;
 }
 
 // ─── Console formatting ──────────────────────────────────────────────

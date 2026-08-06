@@ -46,6 +46,7 @@ vi.mock('../native-loader', () => {
   };
 
   return {
+    getLoadedNativeBindings: () => null,
     loadNativeBindings: () => native,
     tryLoadNativeBindings: () => native,
   };
