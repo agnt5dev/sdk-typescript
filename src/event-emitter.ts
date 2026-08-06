@@ -127,6 +127,16 @@ export class EventEmitter {
       return; // No worker — running locally or in tests
     }
 
+    // Signal language-runtime admission before any checkpoint I/O or batching.
+    // SDK-core gates pull-slot ramp-up on this edge, so a blocked Node event
+    // loop cannot cause the worker to claim its entire concurrency budget.
+    if (
+      event.eventType === 'run.started' &&
+      typeof this.nativeWorker.markExecutionStarted === 'function'
+    ) {
+      this.nativeWorker.markExecutionStarted(this.runId);
+    }
+
     this.sequence++;
     if (event.timestampNs <= this.lastTimestampNs) {
       // Native transport accepts a JavaScript Number, whose precision at

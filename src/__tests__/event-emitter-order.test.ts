@@ -2,6 +2,30 @@ import { describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from '../event-emitter';
 
 describe('EventEmitter ordering', () => {
+  it('signals language execution before batching run.started', async () => {
+    const nativeWorker = {
+      markExecutionStarted: vi.fn(),
+      emitCheckpoint: vi.fn(),
+      emitCheckpointBatch: vi.fn(),
+    };
+    const emitter = new EventEmitter('run-1');
+    emitter.setWorker(nativeWorker);
+
+    await emitter.emit({
+      eventType: 'run.started',
+      eventId: 'run.started',
+      name: 'run',
+      componentType: 'run',
+      correlationId: 'run-1',
+      parentCorrelationId: null,
+      timestampNs: 100n,
+      metadata: {},
+    } as any);
+
+    expect(nativeWorker.markExecutionStarted).toHaveBeenCalledWith('run-1');
+    expect(nativeWorker.emitCheckpointBatch).not.toHaveBeenCalled();
+  });
+
   it('makes equal source timestamps strictly monotonic in emission order', async () => {
     const timestamps: number[] = [];
     const payloadTimestamps: number[] = [];

@@ -1065,6 +1065,24 @@ impl Worker {
         Ok(())
     }
 
+    /// Signal that a claimed pull job has entered the JavaScript runtime.
+    /// The core uses this edge to gate slot ramp-up and to split claimed
+    /// scheduler backlog from actively executing handlers.
+    #[napi]
+    pub fn mark_execution_started(&self, run_id: String) -> Result<()> {
+        let worker = {
+            let guard = self
+                .emit_worker
+                .lock()
+                .map_err(|e| Error::from_reason(format!("Failed to lock emit_worker: {}", e)))?;
+            guard
+                .clone()
+                .ok_or_else(|| Error::from_reason("emit_worker not available"))?
+        };
+        worker.mark_execution_started(&run_id);
+        Ok(())
+    }
+
     /// Queue an event for batched delivery. SSE-only events are streamed;
     /// lifecycle events are durably appended by the background flush task.
     #[napi]
