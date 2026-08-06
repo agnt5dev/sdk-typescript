@@ -248,6 +248,7 @@ fn native_activation_error_code(code: CoreErrorCode) -> &'static str {
         CoreErrorCode::PayloadConflict => "PAYLOAD_CONFLICT",
         CoreErrorCode::IllegalTransition => "ILLEGAL_TRANSITION",
         CoreErrorCode::StateVersionConflict => "STATE_VERSION_CONFLICT",
+        CoreErrorCode::RequiredChildUnresolved => "REQUIRED_CHILD_UNRESOLVED",
         CoreErrorCode::InvalidInput
         | CoreErrorCode::InvalidMessage
         | CoreErrorCode::InvalidState => "INVALID_ARGUMENT",
@@ -1909,6 +1910,15 @@ mod tests {
         };
         assert!(response.success);
         assert_eq!(response.event_type, "run.cancelled");
+    }
+
+    #[cfg(feature = "durable-activation-v1")]
+    #[test]
+    fn preserves_required_child_activation_error_code() {
+        assert_eq!(
+            native_activation_error_code(CoreErrorCode::RequiredChildUnresolved),
+            "REQUIRED_CHILD_UNRESOLVED"
+        );
     }
 
     #[test]
