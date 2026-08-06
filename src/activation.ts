@@ -5,6 +5,7 @@ import { ActivationError, ActivationErrorCode } from './errors.js';
 export const DURABLE_ACTIVATION_V1 = 'durable_activation_v1';
 const IDENTITY_DOMAIN = utf8('agnt5.activation.identity.v1\0');
 const DEFINITION_DOMAIN = utf8('agnt5.activation.definition.v1\0');
+const CHILD_DEFINITION_DOMAIN = utf8('agnt5.activation.child-definition.v1\0');
 const I64_MIN = -(2n ** 63n);
 const I64_MAX = 2n ** 63n - 1n;
 const U64_MAX = 2n ** 64n - 1n;
@@ -84,6 +85,19 @@ export enum ActivationRecoveryPolicy {
   Fail = 5,
 }
 
+export enum ChildJoinPolicy {
+  Required = 1,
+  Detached = 2,
+}
+
+export interface ChildActivationLinkage {
+  childKey: string;
+  childRunId: string;
+  childSessionId: string;
+  childDefinitionDigest: Uint8Array;
+  joinPolicy: ChildJoinPolicy;
+}
+
 export type ActivationDecisionKind =
   | 'EXECUTE'
   | 'REPLAY'
@@ -104,6 +118,7 @@ export interface BeginActivationRequest {
   workerSessionId: string;
   runAuthority: Uint8Array;
   leaseAuthority: Uint8Array;
+  child?: ChildActivationLinkage;
 }
 
 export interface ActivationDecision {
@@ -310,7 +325,7 @@ export async function stepActivationRequest(
   return {
     projectId,
     runId: options.runId,
-    parentActivationId: metadata.parent_activation_id || '',
+    parentActivationId: currentActivation()?.activationId || metadata.parent_activation_id || '',
     kind: ActivationKind.Step,
     stableKey: stableStepKey(options.stepName, options.ordinal, options.explicitKey),
     inputDigest: await sha256(canonicalActivationValue(options.input ?? null)),
@@ -349,7 +364,7 @@ export async function timerActivationRequest(
   return {
     projectId,
     runId: options.runId,
-    parentActivationId: metadata.parent_activation_id || '',
+    parentActivationId: currentActivation()?.activationId || metadata.parent_activation_id || '',
     kind: ActivationKind.Timer,
     stableKey: options.timerKey,
     inputDigest: await sha256(canonicalActivationValue({
@@ -545,6 +560,8 @@ export async function activationRequestFromContext(
     stableKey: string;
     input: unknown;
     recoveryPolicy: ActivationRecoveryPolicy;
+    definitionDigest?: Uint8Array;
+    child?: ChildActivationLinkage;
   },
 ): Promise<BeginActivationRequest> {
   const metadata = context.metadata || {};
@@ -564,11 +581,11 @@ export async function activationRequestFromContext(
   return {
     projectId,
     runId: context.runId,
-    parentActivationId: metadata.parent_activation_id || '',
+    parentActivationId: currentActivation()?.activationId || metadata.parent_activation_id || '',
     kind: options.kind,
     stableKey: options.stableKey,
     inputDigest: await sha256(canonicalActivationValue(options.input)),
-    definitionDigest: await activationDefinitionDigest(
+    definitionDigest: options.definitionDigest ?? await activationDefinitionDigest(
       decodeSha256(metadata.activation_artifact_sha256 || ''),
       componentName,
       definitionVersion,
@@ -578,7 +595,57 @@ export async function activationRequestFromContext(
     workerSessionId,
     runAuthority: utf8(runAuthority),
     leaseAuthority: utf8(leaseAuthority),
+    child: options.child,
   };
+}
+
+export async function childActivationRequestFromContext(
+  context: {
+    invocationId: string;
+    runId: string;
+    serviceName: string;
+    metadata?: Record<string, string>;
+  },
+  options: {
+    childName: string;
+    stableKey: string;
+    input: unknown;
+    joinPolicy?: ChildJoinPolicy;
+  },
+): Promise<BeginActivationRequest> {
+  if (!options.childName.trim() || !options.stableKey.trim()) {
+    throw new ActivationError(
+      ActivationErrorCode.InvalidArgument,
+      'childName and stableKey are required',
+    );
+  }
+  const base = await activationRequestFromContext(context, {
+    kind: ActivationKind.Child,
+    stableKey: options.stableKey,
+    input: options.input,
+    recoveryPolicy: ActivationRecoveryPolicy.DurableSteps,
+  });
+  const childDefinitionDigest = await sha256(concatBytes(
+    CHILD_DEFINITION_DOMAIN,
+    frame(base.definitionDigest),
+    frame(utf8(options.childName)),
+  ));
+  const logicalId = await activationId(
+    base.projectId,
+    base.runId,
+    base.parentActivationId,
+    ActivationKind.Child,
+    options.stableKey,
+  );
+  const suffix = logicalId.replace(/^actv1_/, '');
+  const linkage: ChildActivationLinkage = {
+    childKey: options.stableKey,
+    childRunId: `child_${suffix}`,
+    childSessionId: context.metadata?.session_id || `session_${suffix}`,
+    childDefinitionDigest,
+    joinPolicy: options.joinPolicy ?? ChildJoinPolicy.Required,
+  };
+  return { ...base, definitionDigest: childDefinitionDigest, child: linkage };
 }
 
 export function canonicalActivationValue(value: unknown): Uint8Array {

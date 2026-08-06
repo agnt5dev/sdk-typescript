@@ -17,7 +17,8 @@ use agnt5_sdk_core::error::{ErrorCode as CoreErrorCode, SdkError};
 #[cfg(feature = "durable-activation-v1")]
 use agnt5_sdk_core::pb::{
     activation_payload, ActivationEvidence, ActivationExternalOutcomeCertainty, ActivationPayload,
-    ActivationUsage, BeginActivationRequest, CompleteActivationRequest, FailActivationRequest,
+    ActivationUsage, BeginActivationRequest, ChildActivationLinkage, CompleteActivationRequest,
+    FailActivationRequest,
 };
 #[cfg(feature = "durable-activation-v1")]
 use agnt5_sdk_core::runtime_adapter::{ActivationAdapter, ActivationDecision};
@@ -306,6 +307,17 @@ pub struct NativeBeginActivationRequest {
     pub worker_session_id: String,
     pub run_authority: Buffer,
     pub lease_authority: Buffer,
+    pub child: Option<NativeChildActivationLinkage>,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeChildActivationLinkage {
+    pub child_key: String,
+    pub child_run_id: String,
+    pub child_session_id: String,
+    pub child_definition_digest: Buffer,
+    pub join_policy: i32,
 }
 
 #[cfg(feature = "durable-activation-v1")]
@@ -775,6 +787,13 @@ impl Worker {
             worker_session_id: request.worker_session_id,
             run_authority: request.run_authority.to_vec(),
             lease_authority: request.lease_authority.to_vec(),
+            child: request.child.map(|child| ChildActivationLinkage {
+                child_key: child.child_key,
+                child_run_id: child.child_run_id,
+                child_session_id: child.child_session_id,
+                child_definition_digest: child.child_definition_digest.to_vec(),
+                join_policy: child.join_policy,
+            }),
         };
         let mut adapter = self.connected_activation_adapter().await?;
         let decision = adapter

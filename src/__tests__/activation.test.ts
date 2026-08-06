@@ -6,15 +6,18 @@ import {
   ActivationRecoveryPolicy,
   ActivationTransport,
   BeginActivationRequest,
+  ChildJoinPolicy,
   Float64,
   NativeActivationTransport,
   UInt64,
   activationDefinitionDigest,
   activationId,
   canonicalActivationValue,
+  childActivationRequestFromContext,
   sha256,
   stableStepKey,
 } from '../activation.js';
+import { ContextImpl } from '../context.js';
 import { ActivationError, ActivationErrorCode } from '../errors.js';
 
 const encoder = new TextEncoder();
@@ -88,6 +91,35 @@ describe('durable activation V1 contract', () => {
     expect(ActivationKind.Model).toBe(3);
     expect(ActivationKind.Tool).toBe(4);
     expect(ActivationKind.Child).toBe(5);
+  });
+
+  it('derives stable immutable linkage for delegated children', async () => {
+    const context = new ContextImpl('inv-1', 'run-1', 0, 'router', {
+      metadata: {
+        project_id: 'project-1',
+        component_name: 'router',
+        worker_session_id: 'worker-1',
+        run_authority: 'run-authority',
+        lease_authority: 'lease-authority',
+        activation_definition_version: 'v1',
+        activation_artifact_sha256: '00'.repeat(32),
+        activation_definition_config: '["object",[]]',
+      },
+    });
+    const child = await childActivationRequestFromContext(context, {
+      childName: 'researcher',
+      stableKey: 'child:researcher:0',
+      input: { message: 'investigate' },
+      joinPolicy: ChildJoinPolicy.Required,
+    });
+
+    expect(child.kind).toBe(ActivationKind.Child);
+    expect(child.recoveryPolicy).toBe(ActivationRecoveryPolicy.DurableSteps);
+    expect(child.child?.childKey).toBe(child.stableKey);
+    expect(bytes(child.child!.childDefinitionDigest)).toEqual(bytes(child.definitionDigest));
+    expect(child.child?.childRunId).toMatch(/^child_/);
+    expect(child.child?.childSessionId).toMatch(/^session_/);
+    expect(child.child?.joinPolicy).toBe(ChildJoinPolicy.Required);
   });
 
   it('maps structured native failures to typed activation errors', async () => {

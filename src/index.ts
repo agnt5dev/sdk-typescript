@@ -50,11 +50,13 @@ export {
   ActivationKind,
   NativeActivationTransport,
   ActivationRecoveryPolicy,
+  ChildJoinPolicy,
   DURABLE_ACTIVATION_V1,
   Float64,
   UInt64,
   activationDefinitionDigest,
   activationId,
+  childActivationRequestFromContext,
   currentActivation,
   canonicalActivationValue,
   decodeSha256,
@@ -72,6 +74,7 @@ export type {
   ActivationTransport,
   ActivationUsage,
   BeginActivationRequest,
+  ChildActivationLinkage,
   StepActivationRequestOptions,
 } from './activation.js';
 
