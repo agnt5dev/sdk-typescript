@@ -262,8 +262,8 @@ describe('LM durable activation', () => {
     const failure = transport.failRequests[0];
     expect(failure.errorCode).toBe('MODEL_STREAM_INTERRUPTED');
     const evidenceText = new TextDecoder().decode(failure.evidence[0].payload);
-    expect(evidenceText).toContain('"partialChunks":1');
-    expect(evidenceText).toContain('"partialUtf8Bytes":7');
+    expect(evidenceText).toContain('"partial_chunks":1');
+    expect(evidenceText).toContain('"partial_utf8_bytes":7');
     expect(evidenceText).not.toContain('"partial"');
   });
 });

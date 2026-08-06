@@ -515,8 +515,8 @@ async function modelTerminalEvidence(response: GenerateResponse): Promise<Activa
   const payload = new TextEncoder().encode(JSON.stringify({
     schema: 'agnt5.model_provider_terminal.v1',
     classification: 'accepted_final',
-    finishReason: response.finishReason ?? null,
-    responseId: response.id || null,
+    finish_reason: response.finishReason ?? null,
+    response_id: response.id || null,
   }));
   return [{
     evidenceType: 'model_provider_terminal_v1',
@@ -534,9 +534,9 @@ async function modelStreamInterruptionEvidence(options: {
   const payload = new TextEncoder().encode(JSON.stringify({
     schema: 'agnt5.model_stream_interruption.v1',
     attempt: options.attempt,
-    partialChunks: options.partialChunks,
-    partialUtf8Bytes: options.partialUtf8Bytes,
-    partialSha256: options.partialSha256,
+    partial_chunks: options.partialChunks,
+    partial_utf8_bytes: options.partialUtf8Bytes,
+    partial_sha256: options.partialSha256,
     classification: 'provider_interrupted',
   }));
   return [{
@@ -955,9 +955,11 @@ export class LM {
         chunk => {
           if (chunk.chunkType === 'delta') {
             const encoded = new TextEncoder().encode(chunk.content ?? '');
-            partialHash.update(encoded);
-            partialChunks += 1;
-            partialUtf8Bytes += encoded.byteLength;
+            if (encoded.byteLength > 0) {
+              partialHash.update(encoded);
+              partialChunks += 1;
+              partialUtf8Bytes += encoded.byteLength;
+            }
             callback(chunk);
             return;
           }
