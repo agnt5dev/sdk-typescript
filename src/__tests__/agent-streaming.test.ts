@@ -359,15 +359,9 @@ describe('Agent Handoffs', () => {
     const result = await source.run('route this', context);
 
     expect(result.output).toBe('handled');
-    const toolRequest = requests.find(request => request.kind === ActivationKind.Tool)!;
     const childRequest = requests.find(request => request.kind === ActivationKind.Child)!;
-    expect(childRequest.parentActivationId).toBe(await activationId(
-      toolRequest.projectId,
-      toolRequest.runId,
-      toolRequest.parentActivationId,
-      toolRequest.kind,
-      toolRequest.stableKey,
-    ));
+    expect(requests.every(request => request.kind !== ActivationKind.Tool)).toBe(true);
+    expect(childRequest.parentActivationId).toBe('');
     expect(childRequest.child?.joinPolicy).toBe(ChildJoinPolicy.Required);
   });
 

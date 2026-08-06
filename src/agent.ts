@@ -584,6 +584,7 @@ export class Agent {
             required: ['message'],
           },
           recoveryPolicy: 'durable_steps',
+          durable: false,
         },
       );
       this.tools.set(subAgent.name, wrapped);
@@ -633,6 +634,7 @@ export class Agent {
           required: ['message'],
         },
         recoveryPolicy: 'durable_steps',
+        durable: false,
       },
     );
   }
