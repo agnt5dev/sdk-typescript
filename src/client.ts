@@ -72,6 +72,7 @@ export interface RunOptions extends InvocationOptions {
 /** Run execution status values */
 export type RunStatus =
   | 'enqueued'
+  | 'queued'
   | 'started'
   | 'running'
   | 'completed'
@@ -205,7 +206,7 @@ export class RunResponse<T = any> {
 
   /** True if the run is still in progress */
   get isPending(): boolean {
-    return ['enqueued', 'started', 'running', 'paused', 'awaiting_input'].includes(this.status);
+    return ['enqueued', 'queued', 'started', 'running', 'paused', 'awaiting_input'].includes(this.status);
   }
 
   /** True if the run failed, was cancelled, or timed out */
@@ -493,8 +494,46 @@ export class Client {
       }
 
       const data = (await response.json()) as RawRunResponse;
-      return new RunResponse<T>(data);
+      const result = new RunResponse<T>(data);
+      if (response.status === 202 && result.runId) {
+        return await this.waitForDetachedRun<T>(result.runId, this.timeout);
+      }
+      return result;
     }, options.maxRetries);
+  }
+
+  /** Wait for a durably detached /run receipt without retaining its gateway tail. */
+  private async waitForDetachedRun<T>(runId: string, timeoutMs: number): Promise<RunResponse<T>> {
+    const deadline = Date.now() + timeoutMs;
+    let pollIntervalMs = 100;
+    let terminalStatusObserved = false;
+
+    while (true) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new RunError(`Timeout waiting for run to complete after ${timeoutMs}ms`, runId);
+      }
+
+      if (!terminalStatusObserved) {
+        const status = await this.getStatus(runId);
+        terminalStatusObserved = ['completed', 'failed', 'cancelled', 'timeout'].includes(status.status);
+      }
+
+      if (terminalStatusObserved) {
+        try {
+          return await this.getResult<T>(runId);
+        } catch (error) {
+          // Terminal journal state can become visible just before the result
+          // projection. Keep waiting within the original run() deadline.
+          if (!(error instanceof RunError)) {
+            throw error;
+          }
+        }
+      }
+
+      await new Promise(resolve => setTimeout(resolve, Math.min(pollIntervalMs, remainingMs)));
+      pollIntervalMs = Math.min(Math.ceil(pollIntervalMs * 1.5), 2_000);
+    }
   }
 
   /**

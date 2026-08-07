@@ -115,7 +115,7 @@ describe('RunResponse', () => {
   });
 
   it('should detect pending status', () => {
-    for (const status of ['enqueued', 'started', 'running', 'paused', 'awaiting_input'] as const) {
+    for (const status of ['enqueued', 'queued', 'started', 'running', 'paused', 'awaiting_input'] as const) {
       const resp = new RunResponse({ run_id: 'run-x', status, status_code: 202 });
       expect(resp.isPending).toBe(true);
       expect(resp.isSuccess).toBe(false);
@@ -226,6 +226,63 @@ describe('Client', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('waits through status/result APIs when the gateway detaches an excess run waiter', async () => {
+    const seen: string[] = [];
+    let resultAttempts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(new URL(url).pathname);
+      if (url.endsWith('/run')) {
+        return new Response(JSON.stringify({ run_id: 'run-detached', status: 'queued' }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/status/run-detached')) {
+        return new Response(JSON.stringify({ run_id: 'run-detached', status: 'completed' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/result/run-detached')) {
+        resultAttempts += 1;
+        if (resultAttempts === 1) {
+          return new Response(JSON.stringify({ status: 'completed', error: 'result not projected yet' }), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({
+          run_id: 'run-detached',
+          status: 'completed',
+          output: { ok: true },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test', timeout: 1_000 });
+      await expect(client.run('noop')).resolves.toMatchObject({
+        runId: 'run-detached',
+        isSuccess: true,
+        output: { ok: true },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(seen).toEqual([
+      '/v1/functions/noop/run',
+      '/v1/status/run-detached',
+      '/v1/result/run-detached',
+      '/v1/result/run-detached',
+    ]);
   });
 
   it('sends invocation idempotency keys on run, submit, stream, and batch', async () => {
