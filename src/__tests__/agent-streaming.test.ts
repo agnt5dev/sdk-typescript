@@ -4,6 +4,17 @@ import { tool, ToolRegistry } from '../tool.js';
 import type { LanguageModel, GenerateRequest, GenerateResponse } from '../agent.js';
 import type { AgentEvent } from '../events.js';
 import type { AgentResult } from '../agent.js';
+import {
+  ActivationKind,
+  ChildJoinPolicy,
+  activationId,
+} from '../activation.js';
+import type {
+  ActivationClient,
+  ActivationDecision,
+  BeginActivationRequest,
+} from '../activation.js';
+import { ContextImpl } from '../context.js';
 
 // Mock language model for testing
 class MockLanguageModel implements LanguageModel {
@@ -283,6 +294,75 @@ describe('Agent Handoffs', () => {
     expect(h.description).toBe('Transfer to the specialist');
     expect(h.toolName).toBe('transfer_to_specialist');
     expect(h.passFullHistory).toBe(true);
+    expect(h.joinPolicy).toBe(ChildJoinPolicy.Required);
+  });
+
+  it('nests a durable handoff under one child activation', async () => {
+    const requests: BeginActivationRequest[] = [];
+    const client = {
+      async run<T>(
+        request: BeginActivationRequest,
+        execute: () => Promise<T>,
+        options: { onAdmitted?: (decision: ActivationDecision) => void | Promise<void> },
+      ) {
+        requests.push(request);
+        const decision: ActivationDecision = {
+          kind: 'EXECUTE',
+          activationId: await activationId(
+            request.projectId,
+            request.runId,
+            request.parentActivationId,
+            request.kind,
+            request.stableKey,
+          ),
+          attempt: 1,
+          acceptedJournalOffset: BigInt(requests.length),
+          fenceToken: new Uint8Array([1]),
+        };
+        await options.onAdmitted?.(decision);
+        return { result: await execute(), receipt: decision };
+      },
+    };
+    const target = new Agent({
+      name: 'target',
+      model: new MockLanguageModel([{ text: 'handled', finishReason: 'stop' }]),
+      instructions: 'Handle delegated work',
+    });
+    const source = new Agent({
+      name: 'source',
+      model: new MockLanguageModel([{
+        text: 'delegating',
+        toolCalls: [{
+          id: 'provider-call-1',
+          name: 'transfer_to_target',
+          arguments: JSON.stringify({ message: 'take this' }),
+        }],
+      }]),
+      instructions: 'Delegate work',
+      handoffs: [handoff(target)],
+    });
+    const context = new ContextImpl('inv-1', 'run-1', 0, 'router', {
+      metadata: {
+        durable_activation_v1: 'true',
+        project_id: 'project-1',
+        component_name: 'router',
+        worker_session_id: 'worker-1',
+        run_authority: 'run-authority',
+        lease_authority: 'lease-authority',
+        activation_definition_version: 'v1',
+        activation_artifact_sha256: '00'.repeat(32),
+        activation_definition_config: '["object",[]]',
+      },
+    });
+    context.setActivationClient(client as unknown as ActivationClient);
+
+    const result = await source.run('route this', context);
+
+    expect(result.output).toBe('handled');
+    const childRequest = requests.find(request => request.kind === ActivationKind.Child)!;
+    expect(requests.every(request => request.kind !== ActivationKind.Tool)).toBe(true);
+    expect(childRequest.parentActivationId).toBe('');
+    expect(childRequest.child?.joinPolicy).toBe(ChildJoinPolicy.Required);
   });
 
   it('should auto-generate transfer tools from handoffs', () => {

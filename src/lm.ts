@@ -22,9 +22,23 @@
  * - OpenAI Chat (custom OpenAI-compatible APIs)
  */
 
-import { ConfigurationError } from './errors.js';
-import type { JSONSchema } from './types.js';
+import { ActivationError, ActivationErrorCode, ConfigurationError } from './errors.js';
+import { createHash } from 'node:crypto';
+import type { Context, JSONSchema, RecoveryPolicy } from './types.js';
 import { getCurrentContext } from './async-context.js';
+import {
+  ActivationKind,
+  ActivationRecoveryPolicy,
+  activationDecisionError,
+  activationRequestFromContext,
+  runWithActivation,
+  sha256,
+} from './activation.js';
+import type {
+  ActivationClient,
+  ActivationDecision,
+  ActivationEvidence,
+} from './activation.js';
 import { loadNativeBindings } from './native-loader.js';
 import { resolvePromptFromManifest } from './prompt-manifest.js';
 import type { LLMRuntimeOptions } from './runtime-context.js';
@@ -118,6 +132,8 @@ export interface GenerationConfig {
   reasoningEffort?: ReasoningEffort;
   modalities?: Modality[];
   builtInTools?: BuiltInTool[];
+  /** Interrupted-work policy; model calls default to unknown_outcome. */
+  recoveryPolicy?: RecoveryPolicy;
 }
 
 export interface ResponseFormatOption {
@@ -308,6 +324,7 @@ function normalizeGenerationConfigForNative(
     cacheControl,
     cacheTtl,
     googleCachedContent,
+    recoveryPolicy: _recoveryPolicy,
     ...nativeConfig
   } = config;
 
@@ -431,6 +448,102 @@ export interface OpenAiChatConfig {
   apiKey?: string;
   baseUrl?: string;
   organization?: string;
+}
+
+type DurableModelContext = Context & {
+  allocateActivationKey?: (kind: string, name: string) => string;
+  getActivationClient?: () => ActivationClient | undefined;
+};
+
+function modelRecoveryPolicy(value: RecoveryPolicy | undefined): ActivationRecoveryPolicy {
+  switch (value ?? 'unknown_outcome') {
+    case 'idempotent_retry': return ActivationRecoveryPolicy.IdempotentRetry;
+    case 'durable_steps': return ActivationRecoveryPolicy.DurableSteps;
+    case 'unknown_outcome': return ActivationRecoveryPolicy.UnknownOutcome;
+    case 'compensate': return ActivationRecoveryPolicy.Compensate;
+    case 'fail': return ActivationRecoveryPolicy.Fail;
+    default:
+      throw new ActivationError(
+        ActivationErrorCode.InvalidArgument,
+        `Unsupported model recovery policy: ${JSON.stringify(value)}`,
+      );
+  }
+}
+
+function withoutUndefined(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutUndefined);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, item]) => item !== undefined)
+        .map(([key, item]) => [key, withoutUndefined(item)]),
+    );
+  }
+  return value;
+}
+
+function durableModelInput(request: GenerateRequest): unknown {
+  return withoutUndefined({
+    model: request.model,
+    systemPrompt: request.systemPrompt,
+    messages: request.messages ?? [],
+    tools: request.tools ?? [],
+    toolChoice: request.toolChoice,
+    userId: request.userId,
+    config: request.config
+      ? { ...request.config, recoveryPolicy: undefined }
+      : undefined,
+  });
+}
+
+function encodeDurableModelResponse(response: GenerateResponse): Uint8Array {
+  const encoded = JSON.stringify(response);
+  if (encoded === undefined) {
+    throw new ActivationError(
+      ActivationErrorCode.InvalidArgument,
+      'durable model output is not JSON serializable',
+    );
+  }
+  return new TextEncoder().encode(encoded);
+}
+
+function decodeDurableModelResponse(value: Uint8Array): GenerateResponse {
+  return JSON.parse(new TextDecoder().decode(value)) as GenerateResponse;
+}
+
+async function modelTerminalEvidence(response: GenerateResponse): Promise<ActivationEvidence[]> {
+  const payload = new TextEncoder().encode(JSON.stringify({
+    schema: 'agnt5.model_provider_terminal.v1',
+    classification: 'accepted_final',
+    finish_reason: response.finishReason ?? null,
+    response_id: response.id || null,
+  }));
+  return [{
+    evidenceType: 'model_provider_terminal_v1',
+    payload,
+    sha256: await sha256(payload),
+  }];
+}
+
+async function modelStreamInterruptionEvidence(options: {
+  attempt: number;
+  partialChunks: number;
+  partialUtf8Bytes: number;
+  partialSha256: string;
+}): Promise<ActivationEvidence[]> {
+  const payload = new TextEncoder().encode(JSON.stringify({
+    schema: 'agnt5.model_stream_interruption.v1',
+    attempt: options.attempt,
+    partial_chunks: options.partialChunks,
+    partial_utf8_bytes: options.partialUtf8Bytes,
+    partial_sha256: options.partialSha256,
+    classification: 'provider_interrupted',
+  }));
+  return [{
+    evidenceType: 'model_stream_interruption_v1',
+    payload,
+    sha256: await sha256(payload),
+  }];
 }
 
 // ============================================================================
@@ -643,6 +756,14 @@ export class LM {
     if (request.prompt || request.promptRef) {
       return await runManagedPrompt(request);
     }
+    const context = getCurrentContext()?.executionContext as DurableModelContext | undefined;
+    if (context?.metadata?.durable_activation_v1 === 'true') {
+      return await this.generateDurable(request, context);
+    }
+    return await this.generateNative(request);
+  }
+
+  private async generateNative(request: GenerateRequest): Promise<GenerateResponse> {
     const { __runtimeOverridesApplied: _runtimeOverridesApplied, ...nativeRequest } = request;
     const model = validateModelForProvider(request.model, this.providerName);
     return await this.model.generate({
@@ -653,6 +774,55 @@ export class LM {
       config: normalizeGenerationConfigForNative(request.config, this.providerName),
       model,
     });
+  }
+
+  private async generateDurable(
+    request: GenerateRequest,
+    context: DurableModelContext,
+  ): Promise<GenerateResponse> {
+    const client = context.getActivationClient?.();
+    if (!client || !context.allocateActivationKey) {
+      throw new ActivationError(
+        ActivationErrorCode.DurabilityUnavailable,
+        'runtime negotiated durable_activation_v1 but no activation client is available',
+      );
+    }
+    const policy = modelRecoveryPolicy(request.config?.recoveryPolicy);
+    const model = validateModelForProvider(request.model, this.providerName);
+    const activationRequest = await activationRequestFromContext(context, {
+      kind: ActivationKind.Model,
+      stableKey: context.allocateActivationKey('model', model),
+      input: durableModelInput({ ...request, model }),
+      recoveryPolicy: policy,
+    });
+    let decision: ActivationDecision | undefined;
+    const started = Date.now();
+    const response = await client.run<GenerateResponse>(activationRequest, () => {
+      if (!decision) {
+        throw new ActivationError(
+          ActivationErrorCode.UnknownOutcome,
+          'model activation executed without admitted authority',
+        );
+      }
+      return runWithActivation(decision, () => this.generateNative({ ...request, model }));
+    }, {
+      encodeOutput: encodeDurableModelResponse,
+      decodeOutput: decodeDurableModelResponse,
+      latencyMs: () => Date.now() - started,
+      onAdmitted: admitted => { decision = admitted; },
+      failureErrorCode: 'MODEL_FAILED',
+      failureRetryable: policy === ActivationRecoveryPolicy.IdempotentRetry ||
+        policy === ActivationRecoveryPolicy.DurableSteps,
+      failureExternalOutcomeCertainty: 'UNKNOWN',
+      completionUsage: result => ({
+        tokensIn: result.usage?.promptTokens ?? 0,
+        tokensOut: result.usage?.completionTokens ?? 0,
+        provider: this.providerName,
+        model,
+      }),
+      completionEvidence: modelTerminalEvidence,
+    });
+    return response.result;
   }
 
   /** Create a Google Gemini explicit context cache. */
@@ -714,6 +884,17 @@ export class LM {
       callback({ chunkType: 'completed', response: await runManagedPrompt(request) });
       return;
     }
+    const context = getCurrentContext()?.executionContext as DurableModelContext | undefined;
+    if (context?.metadata?.durable_activation_v1 === 'true') {
+      return await this.streamDurable(request, context, callback);
+    }
+    return await this.streamNative(request, callback);
+  }
+
+  private async streamNative(
+    request: GenerateRequest,
+    callback: (chunk: StreamChunk) => void,
+  ): Promise<void> {
     const { __runtimeOverridesApplied: _runtimeOverridesApplied, ...nativeRequest } = request;
     const model = validateModelForProvider(request.model, this.providerName);
     return await this.model.stream({
@@ -724,6 +905,130 @@ export class LM {
       config: normalizeGenerationConfigForNative(request.config, this.providerName),
       model,
     }, callback);
+  }
+
+  private async streamDurable(
+    request: GenerateRequest,
+    context: DurableModelContext,
+    callback: (chunk: StreamChunk) => void,
+  ): Promise<void> {
+    const client = context.getActivationClient?.();
+    if (!client || !context.allocateActivationKey) {
+      throw new ActivationError(
+        ActivationErrorCode.DurabilityUnavailable,
+        'runtime negotiated durable_activation_v1 but no activation client is available',
+      );
+    }
+    const policy = modelRecoveryPolicy(request.config?.recoveryPolicy);
+    const model = validateModelForProvider(request.model, this.providerName);
+    const activationRequest = await activationRequestFromContext(context, {
+      kind: ActivationKind.Model,
+      stableKey: context.allocateActivationKey('model', model),
+      input: durableModelInput({ ...request, model }),
+      recoveryPolicy: policy,
+    });
+    const decision = await client.begin(activationRequest);
+    if (decision.kind === 'REPLAY') {
+      if (!decision.replayOutput) {
+        throw new ActivationError(
+          ActivationErrorCode.UnknownOutcome,
+          'REPLAY receipt is missing its canonical output',
+          decision.activationId,
+          decision.attempt,
+        );
+      }
+      const replayed = decodeDurableModelResponse(decision.replayOutput);
+      if (replayed.text) callback({ chunkType: 'delta', content: replayed.text });
+      callback({ chunkType: 'completed', response: replayed });
+      return;
+    }
+    if (decision.kind !== 'EXECUTE') throw activationDecisionError(decision);
+
+    const partialHash = createHash('sha256');
+    let partialChunks = 0;
+    let partialUtf8Bytes = 0;
+    let terminal: StreamChunk | undefined;
+    const started = Date.now();
+    try {
+      await runWithActivation(decision, () => this.streamNative(
+        { ...request, model },
+        chunk => {
+          if (chunk.chunkType === 'delta') {
+            const encoded = new TextEncoder().encode(chunk.content ?? '');
+            if (encoded.byteLength > 0) {
+              partialHash.update(encoded);
+              partialChunks += 1;
+              partialUtf8Bytes += encoded.byteLength;
+            }
+            callback(chunk);
+            return;
+          }
+          if (chunk.chunkType === 'completed') {
+            terminal = chunk;
+          }
+        },
+      ));
+    } catch (error) {
+      const evidence = await modelStreamInterruptionEvidence({
+        attempt: decision.attempt,
+        partialChunks,
+        partialUtf8Bytes,
+        partialSha256: partialHash.digest('hex'),
+      });
+      await client.fail(activationRequest, decision, {
+        errorCode: 'MODEL_STREAM_INTERRUPTED',
+        errorData: new TextEncoder().encode(JSON.stringify({
+          message: error instanceof Error ? error.message : String(error),
+          type: error instanceof Error ? error.constructor.name : typeof error,
+        })),
+        retryable: policy === ActivationRecoveryPolicy.IdempotentRetry ||
+          policy === ActivationRecoveryPolicy.DurableSteps,
+        externalOutcomeCertainty: 'UNKNOWN',
+        evidence,
+      });
+      throw error;
+    }
+    if (!terminal?.response) {
+      const error = new ActivationError(
+        ActivationErrorCode.UnknownOutcome,
+        'model stream ended without a terminal provider response',
+        decision.activationId,
+        decision.attempt,
+      );
+      const evidence = await modelStreamInterruptionEvidence({
+        attempt: decision.attempt,
+        partialChunks,
+        partialUtf8Bytes,
+        partialSha256: partialHash.digest('hex'),
+      });
+      await client.fail(activationRequest, decision, {
+        errorCode: 'MODEL_STREAM_INTERRUPTED',
+        errorData: new TextEncoder().encode(JSON.stringify({
+          message: error.message,
+          type: error.constructor.name,
+        })),
+        retryable: policy === ActivationRecoveryPolicy.IdempotentRetry ||
+          policy === ActivationRecoveryPolicy.DurableSteps,
+        externalOutcomeCertainty: 'UNKNOWN',
+        evidence,
+      });
+      throw error;
+    }
+    const response = terminal.response;
+    await client.complete(
+      activationRequest,
+      decision,
+      encodeDurableModelResponse(response),
+      {
+        tokensIn: response.usage?.promptTokens ?? 0,
+        tokensOut: response.usage?.completionTokens ?? 0,
+        latencyMs: Date.now() - started,
+        provider: this.providerName,
+        model,
+      },
+      await modelTerminalEvidence(response),
+    );
+    callback(terminal);
   }
 }
 

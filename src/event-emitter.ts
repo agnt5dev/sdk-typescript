@@ -2,12 +2,53 @@
  * EventEmitter routes events to the platform via NAPI Worker methods.
  *
  * Mirrors Python SDK's EventEmitter (events.py):
- * - Checkpoint events → nativeWorker.emitCheckpoint() → EE gRPC WriteCheckpoint
- * - SSE-only events → nativeWorker.queueEvent() → JournalEventQueue → flush task
+ * - Consecutive lifecycle checkpoints → one acknowledged AppendBatch
+ * - Terminal/correctness checkpoints → acknowledged append
+ * - SSE-only events → JournalEventQueue → flush task
  */
 
 import type { BaseEvent } from './events.js';
 import { isCheckpointEvent } from './events.js';
+
+const EXECUTION_AUTHORITY_METADATA_KEYS = [
+  'dispatch_mode',
+  'worker_id',
+  'worker_session_id',
+  'lease_id',
+  'lease_attempt',
+] as const;
+
+const TERMINAL_EVENT_TYPES = new Set([
+  'run.completed',
+  'run.failed',
+  'run.cancelled',
+  'workflow.completed',
+  'workflow.failed',
+  'workflow.paused',
+]);
+
+const IMMEDIATE_ACK_PREFIXES = [
+  'workflow.step.',
+  'workflow.state.',
+  'approval.',
+  'activation.',
+];
+
+function requiresImmediateAcknowledgement(eventType: string): boolean {
+  return (
+    TERMINAL_EVENT_TYPES.has(eventType) ||
+    IMMEDIATE_ACK_PREFIXES.some(prefix => eventType.startsWith(prefix))
+  );
+}
+
+interface PendingCheckpoint {
+  runId: string;
+  eventType: string;
+  eventData: string;
+  sequenceNumber: number;
+  metadata: Record<string, string>;
+  sourceTimestampNs: number;
+}
 
 /**
  * Convert camelCase key to snake_case.
@@ -41,6 +82,9 @@ export class EventEmitter {
   private sequence = 0;
   private lastTimestampNs = 0n;
   private nativeWorker: any = null;
+  private pendingCheckpoints: PendingCheckpoint[] = [];
+  private hasQueuedTransient = false;
+  private emissionChain: Promise<void> = Promise.resolve();
 
   constructor(runId: string, baseMetadata: Record<string, string> = {}) {
     this.runId = runId;
@@ -58,12 +102,39 @@ export class EventEmitter {
   /**
    * Emit an event to the platform.
    *
-   * Checkpoint events (lifecycle) are sent synchronously via gRPC WriteCheckpoint.
-   * SSE-only events (streaming) are queued for async batch flush.
+   * Consecutive lifecycle events are coalesced into one acknowledged batch.
+   * Before a transient frame is queued, that batch is persisted so lifecycle
+   * boundaries cannot be overtaken. A checkpoint following transient output
+   * remains an immediate ordering barrier.
    */
-  async emit(event: BaseEvent): Promise<void> {
+  emit(event: BaseEvent): Promise<void> {
+    const operation = this.emissionChain.then(() => this.emitOrdered(event));
+    // Keep later fire-and-forget log events ordered even if their caller does
+    // not observe a rejection. Awaited lifecycle calls still receive it.
+    this.emissionChain = operation.catch(() => undefined);
+    return operation;
+  }
+
+  /** Persist any trailing lifecycle batch before the worker returns a result. */
+  flush(): Promise<void> {
+    const operation = this.emissionChain.then(() => this.flushPendingCheckpoints());
+    this.emissionChain = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async emitOrdered(event: BaseEvent): Promise<void> {
     if (!this.nativeWorker) {
       return; // No worker — running locally or in tests
+    }
+
+    // Signal language-runtime admission before any checkpoint I/O or batching.
+    // SDK-core gates pull-slot ramp-up on this edge, so a blocked Node event
+    // loop cannot cause the worker to claim its entire concurrency budget.
+    if (
+      event.eventType === 'run.started' &&
+      typeof this.nativeWorker.markExecutionStarted === 'function'
+    ) {
+      this.nativeWorker.markExecutionStarted(this.runId);
     }
 
     this.sequence++;
@@ -85,6 +156,10 @@ export class EventEmitter {
         metadata[k] = v;
       }
     }
+    for (const key of EXECUTION_AUTHORITY_METADATA_KEYS) {
+      const value = this.baseMetadata[key];
+      if (value !== undefined) metadata[key] = value;
+    }
 
     const timestampNs = Number(event.timestampNs);
 
@@ -93,17 +168,34 @@ export class EventEmitter {
       metadata['cid'] = event.correlationId;
       metadata['pcid'] = event.parentCorrelationId || '';
 
-      await this.nativeWorker.emitCheckpoint(
-        this.runId,
-        event.eventType,
-        eventData,
-        this.sequence,
-        metadata,
-        timestampNs,
-        5000, // timeout_ms
-      );
+      if (
+        requiresImmediateAcknowledgement(event.eventType) ||
+        this.hasQueuedTransient ||
+        typeof this.nativeWorker.emitCheckpointBatch !== 'function'
+      ) {
+        await this.flushPendingCheckpoints();
+        await this.nativeWorker.emitCheckpoint(
+          this.runId,
+          event.eventType,
+          eventData,
+          this.sequence,
+          metadata,
+          timestampNs,
+          5000, // timeout_ms
+        );
+        this.hasQueuedTransient = false;
+      } else {
+        this.pendingCheckpoints.push({
+          runId: this.runId,
+          eventType: event.eventType,
+          eventData,
+          sequenceNumber: this.sequence,
+          metadata,
+          sourceTimestampNs: timestampNs,
+        });
+      }
     } else {
-      // SSE-only — push to journal queue (non-blocking)
+      await this.flushPendingCheckpoints();
       this.nativeWorker.queueEvent(
         this.runId,
         event.eventType,
@@ -114,6 +206,32 @@ export class EventEmitter {
         timestampNs,
         event.correlationId,
         event.parentCorrelationId || '',
+      );
+      this.hasQueuedTransient = true;
+    }
+  }
+
+  private async flushPendingCheckpoints(): Promise<void> {
+    if (this.pendingCheckpoints.length === 0) return;
+    const pending = this.pendingCheckpoints;
+    this.pendingCheckpoints = [];
+
+    if (typeof this.nativeWorker.emitCheckpointBatch === 'function') {
+      await this.nativeWorker.emitCheckpointBatch(pending);
+      return;
+    }
+
+    // Older native addons do not expose the batch method. Preserve correctness
+    // and compatibility by acknowledging each buffered checkpoint in order.
+    for (const event of pending) {
+      await this.nativeWorker.emitCheckpoint(
+        event.runId,
+        event.eventType,
+        event.eventData,
+        event.sequenceNumber,
+        event.metadata,
+        event.sourceTimestampNs,
+        5000,
       );
     }
   }

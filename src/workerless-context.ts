@@ -2,7 +2,7 @@ import { SuspensionRequestedError, WaitingForUserInputError } from './errors.js'
 import type { HITLInputType, HITLOption } from './errors.js';
 import { emptyRuntimeContext } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
-import type { Context, Logger } from './types.js';
+import type { Context, Logger, StepOptions } from './types.js';
 
 export interface WorkerlessContextOptions {
   checkpoints?: Record<string, unknown>;
@@ -72,8 +72,8 @@ export class WorkerlessContext implements Context {
     return this.state.delete(key);
   }
 
-  async step<T>(stepName: string, fn: () => T | Promise<T>): Promise<T> {
-    const checkpointKey = `step:${stepName}`;
+  async step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T> {
+    const checkpointKey = options?.key ? `step:${stepName}:${options.key}` : `step:${stepName}`;
     this.visitedStepCheckpointKeys.add(checkpointKey);
     const existingCheckpoint = this.checkpoints.get(checkpointKey);
     if (existingCheckpoint !== undefined) {

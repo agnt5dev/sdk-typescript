@@ -15,7 +15,7 @@ export { PlatformContext } from './platform-context.js';
 
 // Client exports
 export { Client, RunResponse, WorkflowProxy, SessionProxy } from './client.js';
-export type { ClientOptions, RunOptions, RunStatus, RunErrorDetail, OutputRef, SubmitResponse, ReceivedEvent, EventRecord, EventsResponse } from './client.js';
+export type { ClientOptions, InvocationOptions, RunOptions, RunStatus, RunErrorDetail, OutputRef, SubmitResponse, ReceivedEvent, EventRecord, EventsResponse } from './client.js';
 
 // Batch exports
 export { BatchResult, BatchStatusResult } from './batch.js';
@@ -29,6 +29,8 @@ export {
   RetryError,
   StateError,
   CheckpointError,
+  ActivationError,
+  ActivationErrorCode,
   RunError,
   WaitingForUserInputError,
   SuspensionRequestedError,
@@ -42,7 +44,39 @@ export {
   getErrorMessage,
   createErrorFromResponse,
 } from './errors.js';
-export type { HITLInputType, HITLOption } from './errors.js';
+export type { ActivationErrorCode as ActivationErrorCodeType, HITLInputType, HITLOption } from './errors.js';
+export {
+  ActivationClient,
+  ActivationKind,
+  NativeActivationTransport,
+  ActivationRecoveryPolicy,
+  ChildJoinPolicy,
+  DURABLE_ACTIVATION_V1,
+  Float64,
+  UInt64,
+  activationDefinitionDigest,
+  activationId,
+  childActivationRequestFromContext,
+  currentActivation,
+  canonicalActivationValue,
+  decodeSha256,
+  stableStepKey,
+  stepActivationRequest,
+} from './activation.js';
+export type {
+  ActivationCompletionReceipt,
+  ActivationDecision,
+  ActivationDecisionKind,
+  ActivationEvidence,
+  ActivationFailureReceipt,
+  ActivationExecution,
+  ActivationRunOptions,
+  ActivationTransport,
+  ActivationUsage,
+  BeginActivationRequest,
+  ChildActivationLinkage,
+  StepActivationRequestOptions,
+} from './activation.js';
 
 // Retry utilities exports
 export {
@@ -127,6 +161,7 @@ export type {
   WorkflowConfig,
   WorkflowOptions,
 } from './workflow.js';
+export type { StepOptions } from './types.js';
 export type {
   WorkerlessBackoffType,
   WorkerlessBatchPolicy,
@@ -514,6 +549,7 @@ export type {
   ToolHandler,
   ToolSchema,
   ToolOptions,
+  RecoveryPolicy,
   WorkflowHandler
 } from './types.js';
 

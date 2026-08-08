@@ -4,9 +4,23 @@
  * Tools wrap functions with structured interfaces for agent invocation.
  */
 
-import type { Context, ToolHandler, ToolOptions, ToolSchema, JSONSchema } from './types.js';
+import type {
+  Context,
+  ToolHandler,
+  ToolOptions,
+  ToolSchema,
+  JSONSchema,
+  RecoveryPolicy,
+} from './types.js';
 import type { ContextImpl } from './context.js';
-import { ConfigurationError } from './errors.js';
+import { ActivationError, ActivationErrorCode, ConfigurationError } from './errors.js';
+import {
+  ActivationKind,
+  ActivationRecoveryPolicy,
+  activationRequestFromContext,
+  runWithActivation,
+} from './activation.js';
+import type { ActivationDecision } from './activation.js';
 
 type EvalToolFaultSpec = {
   tool?: string;
@@ -20,6 +34,34 @@ type EvalToolFaultSpec = {
 };
 
 const evalToolFaultCounts = new WeakMap<object, Map<string, number>>();
+const activationToolCounts = new WeakMap<object, Map<string, number>>();
+
+function recoveryPolicy(value: RecoveryPolicy | undefined): ActivationRecoveryPolicy {
+  switch (value ?? 'unknown_outcome') {
+    case 'idempotent_retry': return ActivationRecoveryPolicy.IdempotentRetry;
+    case 'durable_steps': return ActivationRecoveryPolicy.DurableSteps;
+    case 'unknown_outcome': return ActivationRecoveryPolicy.UnknownOutcome;
+    case 'compensate': return ActivationRecoveryPolicy.Compensate;
+    case 'fail': return ActivationRecoveryPolicy.Fail;
+  }
+}
+
+function sequentialToolKey(ctx: Context, toolName: string): string {
+  const contextWithAllocator = ctx as Context & {
+    allocateActivationKey?: (kind: string, name: string) => string;
+  };
+  if (contextWithAllocator.allocateActivationKey) {
+    return contextWithAllocator.allocateActivationKey('tool', toolName);
+  }
+  let counts = activationToolCounts.get(ctx as object);
+  if (!counts) {
+    counts = new Map();
+    activationToolCounts.set(ctx as object, counts);
+  }
+  const ordinal = counts.get(toolName) ?? 0;
+  counts.set(toolName, ordinal + 1);
+  return `tool:${toolName}:${ordinal}`;
+}
 
 /**
  * Tool class representing a callable tool for agents
@@ -31,6 +73,8 @@ export class Tool<TInput = any, TOutput = any> {
   readonly inputSchema: JSONSchema;
   readonly confirmation: boolean;
   readonly outputSchema?: JSONSchema;
+  readonly recoveryPolicy: ActivationRecoveryPolicy;
+  readonly durable: boolean;
 
   constructor(
     name: string,
@@ -42,6 +86,8 @@ export class Tool<TInput = any, TOutput = any> {
     this.description = description;
     this.handler = handler;
     this.confirmation = options.confirmation || false;
+    this.recoveryPolicy = recoveryPolicy(options.recoveryPolicy);
+    this.durable = options.durable ?? true;
 
     // Use provided schema or create default
     this.inputSchema = options.inputSchema || {
@@ -54,7 +100,58 @@ export class Tool<TInput = any, TOutput = any> {
   /**
    * Invoke the tool with given arguments
    */
-  async invoke(ctx: Context, args: Record<string, any>): Promise<TOutput> {
+  async invoke(
+    ctx: Context,
+    args: Record<string, any>,
+    stableKey?: string,
+  ): Promise<TOutput> {
+    const metadata = ctx.metadata || {};
+    if (this.durable && metadata.durable_activation_v1 === 'true') {
+      const client = (ctx as ContextImpl).getActivationClient?.();
+      if (!client) {
+        throw new ActivationError(
+          ActivationErrorCode.DurabilityUnavailable,
+          'runtime negotiated durable_activation_v1 but no activation client is available',
+        );
+      }
+      const request = await activationRequestFromContext(ctx, {
+        kind: ActivationKind.Tool,
+        stableKey: stableKey ? `tool:${this.name}:${stableKey}` : sequentialToolKey(ctx, this.name),
+        input: { name: this.name, arguments: args },
+        recoveryPolicy: this.recoveryPolicy,
+      });
+      let decision: ActivationDecision | undefined;
+      const retryable = this.recoveryPolicy === ActivationRecoveryPolicy.IdempotentRetry ||
+        this.recoveryPolicy === ActivationRecoveryPolicy.DurableSteps;
+      const response = await client.run<TOutput>(request, () => {
+        if (!decision) {
+          throw new ActivationError(
+            ActivationErrorCode.UnknownOutcome,
+            'tool activation executed without admitted authority',
+          );
+        }
+        return runWithActivation(decision, () => this.invokeHandler(ctx, args));
+      }, {
+        encodeOutput: value => {
+          const encoded = JSON.stringify(value);
+          if (encoded === undefined) {
+            throw new ConfigurationError('durable tool output is not JSON serializable');
+          }
+          return new TextEncoder().encode(encoded);
+        },
+        decodeOutput: value => JSON.parse(new TextDecoder().decode(value)) as TOutput,
+        latencyMs: () => 0,
+        onAdmitted: admitted => { decision = admitted; },
+        failureErrorCode: 'TOOL_FAILED',
+        failureRetryable: retryable,
+        failureExternalOutcomeCertainty: 'UNKNOWN',
+      });
+      return response.result;
+    }
+    return this.invokeHandler(ctx, args);
+  }
+
+  private async invokeHandler(ctx: Context, args: Record<string, any>): Promise<TOutput> {
     if (this.confirmation) {
       ctx.logger.warn(
         `Tool '${this.name}' requires confirmation; no approval handler is configured`
@@ -284,6 +381,7 @@ export class AskUserTool extends Tool<{ question: string }, string | null> {
           },
           required: ['question'],
         },
+        durable: false,
       },
     );
   }
@@ -339,6 +437,7 @@ export class RequestApprovalTool extends Tool<{ action: string; details?: string
           },
           required: ['action'],
         },
+        durable: false,
       },
     );
   }

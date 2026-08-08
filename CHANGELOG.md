@@ -7,6 +7,27 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-08
+
+### Added
+
+- Add the durable activation V1 contract for fenced step, tool, model, and
+  delegated-agent execution.
+- Add durable workflow sleeps, invocation idempotency keys, replay-safe model
+  finals, and required-child recovery.
+
+### Changed
+
+- Build native and WASM bindings against `agnt5-sdk-core` 0.2.0 and enable
+  durable activation V1 in default native builds.
+- Batch nonterminal lifecycle records while preserving their durable order.
+
+### Fixed
+
+- Fail closed on direct step checkpoints, preserve activation authority and
+  stream evidence, avoid eager native loading, and wait for durably detached
+  runs to be accepted.
+
 ## [0.6.7] - 2026-08-04
 
 ### Fixed
@@ -72,7 +93,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Native package publishing now ignores unsupported empty platform directories.
 - Release builds no longer require their not-yet-published optional platform packages.
 
-[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.7...HEAD
+[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.7...v0.7.0
 [0.6.7]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.6...v0.6.7
 [0.6.6]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.4...v0.6.5

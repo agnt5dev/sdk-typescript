@@ -23,6 +23,17 @@ import type {
   ToolCall as LMToolCall,
 } from './lm.js';
 import { randomUUID } from 'node:crypto';
+import {
+  ActivationError,
+  ActivationErrorCode,
+} from './errors.js';
+import {
+  ChildJoinPolicy,
+  activationId,
+  childActivationRequestFromContext,
+  runWithActivation,
+} from './activation.js';
+import type { ActivationDecision } from './activation.js';
 import type { AgentEvent, LMStreamEvent } from './events.js';
 import {
   agentStarted,
@@ -220,6 +231,7 @@ export interface ToolCallbackContext {
   iteration: number;
   toolName: string;
   toolCallId: string;
+  providerToolCallId?: string;
   toolCall: ToolCall;
   args: Record<string, any>;
   tool?: Tool;
@@ -261,17 +273,20 @@ export class Handoff {
   readonly description: string;
   readonly toolName: string;
   readonly passFullHistory: boolean;
+  readonly joinPolicy: ChildJoinPolicy;
 
   constructor(
     agent: Agent,
     description?: string,
     toolName?: string,
     passFullHistory: boolean = true,
+    joinPolicy: ChildJoinPolicy = ChildJoinPolicy.Required,
   ) {
     this.agent = agent;
     this.description = description || agent.instructions || `Transfer to ${agent.name}`;
     this.toolName = toolName || `transfer_to_${agent.name}`;
     this.passFullHistory = passFullHistory;
+    this.joinPolicy = joinPolicy;
   }
 }
 
@@ -283,8 +298,9 @@ export function handoff(
   description?: string,
   toolName?: string,
   passFullHistory: boolean = true,
+  joinPolicy: ChildJoinPolicy = ChildJoinPolicy.Required,
 ): Handoff {
-  return new Handoff(agent, description, toolName, passFullHistory);
+  return new Handoff(agent, description, toolName, passFullHistory, joinPolicy);
 }
 
 /**
@@ -548,7 +564,12 @@ export class Agent {
         `Delegate a task to the ${subAgent.name} agent. Pass the task as the 'message' argument.`,
         async (ctx: Context, args: Record<string, any>) => {
           const message = args.message || args.prompt || JSON.stringify(args);
-          const result = await subAgent.run(message, ctx);
+          const result = await subAgent.runDelegatedChild(
+            ctx,
+            message,
+            undefined,
+            ChildJoinPolicy.Required,
+          );
           return result.output;
         },
         {
@@ -562,6 +583,8 @@ export class Agent {
             },
             required: ['message'],
           },
+          recoveryPolicy: 'durable_steps',
+          durable: false,
         },
       );
       this.tools.set(subAgent.name, wrapped);
@@ -587,10 +610,11 @@ export class Agent {
         const message = args.message || args.prompt || '';
 
         // Run target agent to completion
-        const result = await targetAgent.run(
-          message,
+        const result = await targetAgent.runDelegatedChild(
           ctx,
+          message,
           passHistory ? (ctx as any)._agentConversation : undefined,
+          h.joinPolicy,
         );
 
         // Return with handoff marker
@@ -609,8 +633,88 @@ export class Agent {
           },
           required: ['message'],
         },
+        recoveryPolicy: 'durable_steps',
+        durable: false,
       },
     );
+  }
+
+  private async runDelegatedChild(
+    ctx: Context,
+    message: string,
+    history: Message[] | undefined,
+    joinPolicy: ChildJoinPolicy,
+  ): Promise<{ output: string; toolCalls: AgentResult['toolCalls'] }> {
+    const metadata = ctx.metadata || {};
+    if (metadata.durable_activation_v1 !== 'true') {
+      const result = await this.run(message, ctx, history);
+      return { output: result.output, toolCalls: result.toolCalls };
+    }
+    const client = (ctx as ContextImpl).getActivationClient?.();
+    if (!client) {
+      throw new ActivationError(
+        ActivationErrorCode.DurabilityUnavailable,
+        'runtime negotiated durable_activation_v1 but no activation client is available',
+      );
+    }
+    const allocator = (ctx as Context & {
+      allocateActivationKey?: (kind: string, name: string) => string;
+    }).allocateActivationKey;
+    if (!allocator) {
+      throw new ActivationError(
+        ActivationErrorCode.DurabilityUnavailable,
+        'durable delegated agents require a deterministic activation-key allocator',
+      );
+    }
+    const stableKey = allocator.call(ctx, 'child', this.name);
+    const request = await childActivationRequestFromContext(ctx, {
+      childName: this.name,
+      stableKey,
+      input: {
+        agent: this.name,
+        message,
+        history: history ? JSON.parse(JSON.stringify(history)) : null,
+      },
+      joinPolicy,
+    });
+    let decision: ActivationDecision | undefined;
+    const response = await client.run(request, async () => {
+      if (!decision) {
+        throw new ActivationError(
+          ActivationErrorCode.UnknownOutcome,
+          'child activation executed without admitted authority',
+        );
+      }
+      return runWithActivation(decision, async () => {
+        const result = await this.run(message, ctx, history);
+        return { output: result.output, toolCalls: result.toolCalls };
+      });
+    }, {
+      encodeOutput: value => new TextEncoder().encode(JSON.stringify(value)),
+      decodeOutput: value => JSON.parse(new TextDecoder().decode(value)) as {
+        output: string;
+        toolCalls: AgentResult['toolCalls'];
+      },
+      latencyMs: () => 0,
+      onAdmitted: admitted => { decision = admitted; },
+      failureErrorCode: 'CHILD_FAILED',
+      failureRetryable: true,
+      failureExternalOutcomeCertainty: 'UNKNOWN',
+    });
+    const expectedId = await activationId(
+      request.projectId,
+      request.runId,
+      request.parentActivationId,
+      request.kind,
+      request.stableKey,
+    );
+    if (response.receipt.activationId !== expectedId) {
+      throw new ActivationError(
+        ActivationErrorCode.UnknownOutcome,
+        'runtime returned a child receipt for different activation identity',
+      );
+    }
+    return response.result;
   }
 
   /**
@@ -1278,7 +1382,11 @@ export class Agent {
       throw new Error(`Tool '${toolCtx.toolName}' not found`);
     }
 
-    let result = await toolCtx.tool.invoke(toolCtx.context, toolCtx.args);
+    let result = await toolCtx.tool.invoke(
+      toolCtx.context,
+      toolCtx.args,
+      toolCtx.providerToolCallId,
+    );
 
     if (this.callbacks.afterTool) {
       const raw = await this.callbacks.afterTool(toolCtx, toolCtx.toolCall, result);
@@ -1471,6 +1579,7 @@ export class Agent {
                 iteration: iteration + 1,
                 toolName,
                 toolCallId: tc.id || tcId,
+                providerToolCallId: tc.id || undefined,
                 toolCall: { ...tc, id: tc.id || tcId },
                 args: toolArgs,
                 tool,

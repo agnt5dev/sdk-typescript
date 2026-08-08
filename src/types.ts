@@ -1,6 +1,14 @@
 import type { RuntimeContext } from './runtime-context.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import type { WorkerlessFlowControlPolicy } from './flow-control.js';
+import type { ActivationExecution } from './activation.js';
+
+export type RecoveryPolicy =
+  | 'idempotent_retry'
+  | 'durable_steps'
+  | 'unknown_outcome'
+  | 'compensate'
+  | 'fail';
 
 /**
  * Retry policy configuration for functions
@@ -60,6 +68,11 @@ export type FunctionHandler<TInput = any, TOutput = any> = (
   ...args: TInput[]
 ) => Promise<TOutput> | TOutput;
 
+export interface StepOptions {
+  /** Stable identity required for reordered, repeated, or concurrent work. */
+  key?: string;
+}
+
 /**
  * Execution context provided to all AGNT5 components
  *
@@ -87,6 +100,8 @@ export interface Context {
    * calls (`fetch(url, { signal: ctx.signal })`) so in-flight work stops.
    */
   readonly signal: AbortSignal;
+  /** Current durable unit while model/tool/child user code is executing. */
+  readonly activation?: ActivationExecution;
 
   // State management (async for durable storage)
   /** Get value from state (async) */
@@ -98,7 +113,7 @@ export interface Context {
 
   // Checkpointing
   /** Execute and checkpoint a step */
-  step<T>(stepName: string, fn: () => T | Promise<T>): Promise<T>;
+  step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T>;
   /** Suspend when the runtime budget is close to expiring. */
   yieldIfNeeded(reason?: string): Promise<void>;
   /** Sleep until a future time, using durable suspension when supported. */
@@ -145,6 +160,11 @@ export interface Logger {
 export interface WorkerOptions {
   /** Runtime mode */
   runtime?: 'standalone' | 'managed';
+  /**
+   * Immutable deployed artifact SHA-256 used in durable activation identity.
+   * Managed runtimes normally inject this; local E2E workers may set it.
+   */
+  activationArtifactSha256?: string;
 }
 
 /**
@@ -196,6 +216,10 @@ export interface ToolOptions {
   autoSchema?: boolean;
   /** Require confirmation before execution */
   confirmation?: boolean;
+  /** Interrupted-work policy; ordinary effectful tools default to unknown_outcome. */
+  recoveryPolicy?: RecoveryPolicy;
+  /** Disable activation wrapping for suspension-native built-ins. */
+  durable?: boolean;
 }
 
 /**

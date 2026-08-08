@@ -1,42 +1,32 @@
-import type { Context, Logger } from './types.js';
+import type { Context, Logger, StepOptions } from './types.js';
 import type { EventEmitter } from './event-emitter.js';
 import { emptyRuntimeContext } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
-import { ConfigurationError, SuspensionRequestedError, WaitingForUserInputError } from './errors.js';
+import {
+  ActivationError,
+  ActivationErrorCode,
+  ConfigurationError,
+  SuspensionRequestedError,
+  WaitingForUserInputError,
+} from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import { existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { isLogLevelEnabled } from './logging.js';
-
-// Lazy-loaded native log function for OTLP export
-let _nativeLogFn: ((level: string, message: string, runId: string | null, traceId: string | null, spanId: string | null, attributes: Record<string, string> | null) => void) | null | undefined;
+import { getLoadedNativeBindings } from './native-loader.js';
+import {
+  ActivationClient,
+  currentActivation,
+  stepActivationRequest,
+} from './activation.js';
+import type { ActivationExecution } from './activation.js';
 
 function getNativeLogFn() {
-  if (_nativeLogFn !== undefined) return _nativeLogFn;
-  try {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const require = createRequire(import.meta.url);
-    const paths = [
-      join(__dirname, '../../native/agnt5-sdk-native.darwin-arm64.node'),
-      join(__dirname, '../native/agnt5-sdk-native.darwin-arm64.node'),
-      join(__dirname, '../../native/agnt5-sdk-native.linux-x64-gnu.node'),
-      join(__dirname, '../native/agnt5-sdk-native.linux-x64-gnu.node'),
-    ];
-    for (const p of paths) {
-      try {
-        const native = require(p);
-        if (native.logFromTypescript) {
-          _nativeLogFn = native.logFromTypescript;
-          return _nativeLogFn;
-        }
-      } catch { continue; }
-    }
-  } catch { /* native not available */ }
-  _nativeLogFn = null;
-  return null;
+  const native = getLoadedNativeBindings();
+  return typeof native?.logFromTypescript === 'function'
+    ? native.logFromTypescript
+    : null;
 }
 
 /**
@@ -189,6 +179,9 @@ export class ContextImpl implements Context {
   private _checkpointSnapshot = new Map<string, any>();
   private _workerlessDeadlineMs?: number;
   private _workerlessYieldBeforeMs: number;
+  private _activationClient?: ActivationClient;
+  private _activationStepCounter = 0;
+  private _activationSequences = new Map<string, number>();
   /** Cancellation signal (never aborted on this context path). */
   readonly signal: AbortSignal = new AbortController().signal;
 
@@ -205,6 +198,7 @@ export class ContextImpl implements Context {
       checkpoints?: Record<string, any>;
       workerlessDeadlineMs?: number;
       workerlessYieldBeforeMs?: number;
+      activationClient?: ActivationClient;
     }
   ) {
     this.runtime = options?.runtime ?? emptyRuntimeContext();
@@ -212,6 +206,7 @@ export class ContextImpl implements Context {
     this._checkpointSnapshot = new Map(Object.entries(options?.checkpoints || {}));
     this._workerlessDeadlineMs = options?.workerlessDeadlineMs;
     this._workerlessYieldBeforeMs = options?.workerlessYieldBeforeMs ?? 1000;
+    this._activationClient = options?.activationClient;
     const storageType = options?.storage || (process.env.AGNT5_STORAGE === 'sqlite' ? 'sqlite' : 'memory');
 
     if (storageType === 'sqlite') {
@@ -224,6 +219,25 @@ export class ContextImpl implements Context {
 
   readonly runtime: RuntimeContext;
   readonly metadata?: Record<string, string>;
+
+  get activation(): ActivationExecution | undefined {
+    return currentActivation();
+  }
+
+  allocateActivationKey(kind: string, name: string): string {
+    const namespace = `${kind}:${name}`;
+    const ordinal = this._activationSequences.get(namespace) ?? 0;
+    this._activationSequences.set(namespace, ordinal + 1);
+    return `${namespace}:${ordinal}`;
+  }
+
+  getActivationClient(): ActivationClient | undefined {
+    return this._activationClient;
+  }
+
+  setActivationClient(client: ActivationClient): void {
+    this._activationClient = client;
+  }
 
   async get<T>(key: string, defaultValue?: T): Promise<T | undefined> {
     const value = await this.storage.get(key);
@@ -238,8 +252,28 @@ export class ContextImpl implements Context {
     return await this.storage.delete(key);
   }
 
-  async step<T>(stepName: string, fn: () => T | Promise<T>): Promise<T> {
-    const checkpointKey = `step:${stepName}`;
+  async step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T> {
+    const ordinal = this._activationStepCounter++;
+    if (this._activationClient) {
+      const request = await stepActivationRequest({
+        metadata: this.metadata || {},
+        invocationId: this.invocationId,
+        runId: this.runId,
+        componentName: this.metadata?.component_name || this.serviceName,
+        stepName,
+        ordinal,
+        explicitKey: options?.key,
+      });
+      const { result } = await this._activationClient.run<T>(request, fn, {
+        encodeOutput: encodeJson,
+        decodeOutput: value => decodeJson<T>(value),
+        latencyMs: () => 0,
+      });
+      await this.storage.setCheckpoint(request.stableKey, result);
+      this._checkpointSnapshot.set(request.stableKey, result);
+      return result;
+    }
+    const checkpointKey = options?.key ? `step:${stepName}:${options.key}` : `step:${stepName}`;
 
     // Check if step already executed (checkpoint exists)
     const existingCheckpoint = await this.storage.getCheckpoint(checkpointKey);
@@ -379,4 +413,19 @@ export class ContextImpl implements Context {
       this.storage.close();
     }
   }
+}
+
+function encodeJson(value: unknown): Uint8Array {
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) {
+    throw new ActivationError(
+      ActivationErrorCode.InvalidArgument,
+      'activation output is not JSON serializable',
+    );
+  }
+  return new TextEncoder().encode(encoded);
+}
+
+function decodeJson<T>(value: Uint8Array): T {
+  return JSON.parse(new TextDecoder().decode(value)) as T;
 }

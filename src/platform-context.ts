@@ -2,7 +2,7 @@
  * Platform-backed Context implementation using native State and Span bindings.
  */
 
-import type { Context, Logger } from './types.js';
+import type { Context, Logger, StepOptions } from './types.js';
 import { StateError, CheckpointError, ConfigurationError } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import { loadNativeBindings, tryLoadNativeBindings } from './native-loader.js';
@@ -110,8 +110,10 @@ export class PlatformContext implements Context {
   /**
    * Execute a step with checkpointing
    */
-  async step<T>(stepName: string, fn: () => T | Promise<T>): Promise<T> {
-    const checkpointKey = `checkpoint:${stepName}`;
+  async step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T> {
+    const checkpointKey = options?.key
+      ? `checkpoint:${stepName}:${options.key}`
+      : `checkpoint:${stepName}`;
 
     try {
       // Check if step already executed (checkpoint exists)

@@ -5,10 +5,23 @@ use napi_derive::napi;
 use agnt5_sdk_core::pb::{
     dispatch_component_response, ComponentInfo, ComponentSchema, ComponentType as PbComponentType,
     DispatchComponentRequest, DispatchComponentResponse, RuntimeMessage, ServiceMessage,
-    TriggerSpec,
+    TriggerSpec, WorkerSuspension,
 };
 use agnt5_sdk_core::worker::{Worker as CoreWorker, WorkerConfig};
 use agnt5_sdk_core::{JournalEventMessage, JournalEventQueue};
+
+#[cfg(feature = "durable-activation-v1")]
+use agnt5_sdk_core::client::EngineClient;
+#[cfg(feature = "durable-activation-v1")]
+use agnt5_sdk_core::error::{ErrorCode as CoreErrorCode, SdkError};
+#[cfg(feature = "durable-activation-v1")]
+use agnt5_sdk_core::pb::{
+    activation_payload, ActivationEvidence, ActivationExternalOutcomeCertainty, ActivationPayload,
+    ActivationUsage, BeginActivationRequest, ChildActivationLinkage, CompleteActivationRequest,
+    FailActivationRequest,
+};
+#[cfg(feature = "durable-activation-v1")]
+use agnt5_sdk_core::runtime_adapter::{ActivationAdapter, ActivationDecision};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -26,9 +39,24 @@ struct JsInvocationResponse {
     error_code: Option<String>,
     event_type: Option<String>,
     metadata: Option<HashMap<String, String>>,
+    worker_suspension: Option<JsWorkerSuspension>,
 }
 
-fn pull_completion_response(
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JsWorkerSuspension {
+    activation_id: String,
+    attempt: u32,
+    fence_token: Vec<u8>,
+    timer_key: String,
+    ready_at_ms: i64,
+    input_digest: Vec<u8>,
+    definition_digest: Vec<u8>,
+    continuation: Vec<u8>,
+    delay_ms: i64,
+}
+
+fn component_response(
     worker_id: &str,
     request: &DispatchComponentRequest,
     response_json: &str,
@@ -64,14 +92,35 @@ fn pull_completion_response(
     if let Some(error_code) = response.error_code {
         metadata.insert("error_code".to_string(), error_code);
     }
-    let result = success.then(|| {
-        dispatch_component_response::Result::OutputData(
-            response
-                .output_json
-                .unwrap_or_else(|| "null".to_string())
-                .into_bytes(),
-        )
-    });
+    let result = if let Some(suspension) = response.worker_suspension {
+        if !success {
+            return Err(agnt5_sdk_core::error::SdkError::Internal(
+                "TypeScript handler returned a failed worker suspension".to_string(),
+            ));
+        }
+        Some(dispatch_component_response::Result::WorkerSuspension(
+            WorkerSuspension {
+                activation_id: suspension.activation_id,
+                attempt: suspension.attempt,
+                fence_token: suspension.fence_token,
+                timer_key: suspension.timer_key,
+                ready_at_ms: suspension.ready_at_ms,
+                input_digest: suspension.input_digest,
+                definition_digest: suspension.definition_digest,
+                continuation: suspension.continuation,
+                delay_ms: suspension.delay_ms,
+            },
+        ))
+    } else {
+        success.then(|| {
+            dispatch_component_response::Result::OutputData(
+                response
+                    .output_json
+                    .unwrap_or_else(|| "null".to_string())
+                    .into_bytes(),
+            )
+        })
+    };
 
     Ok(ServiceMessage {
         worker_id: worker_id.to_string(),
@@ -94,6 +143,20 @@ fn pull_completion_response(
             ),
         ),
     })
+}
+
+fn is_worker_suspension_message(message: &ServiceMessage) -> bool {
+    matches!(
+        &message.message_type,
+        Some(
+            agnt5_sdk_core::pb::service_message::MessageType::FunctionResponse(
+                DispatchComponentResponse {
+                    result: Some(dispatch_component_response::Result::WorkerSuspension(_)),
+                    ..
+                }
+            )
+        )
+    )
 }
 
 fn sdk_core_builtin_scorer_response(
@@ -167,6 +230,179 @@ pub struct WorkerOptions {
     /// and the coordinator's per-priority headroom denominator. Falls back to
     /// the AGNT5_MAX_CONCURRENCY env var, then 100.
     pub max_concurrency: Option<u32>,
+    /// Immutable deployed artifact SHA-256 used in durable activation identity.
+    pub activation_artifact_sha256: Option<String>,
+}
+
+/// One lifecycle checkpoint in an acknowledged append batch.
+#[napi(object)]
+pub struct CheckpointBatchEvent {
+    pub run_id: String,
+    pub event_type: String,
+    pub event_data: String,
+    pub sequence_number: i64,
+    pub metadata: HashMap<String, String>,
+    pub source_timestamp_ns: f64,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+const NATIVE_ACTIVATION_ERROR_PREFIX: &str = "AGNT5_ACTIVATION_ERROR:";
+
+#[cfg(feature = "durable-activation-v1")]
+fn native_activation_error_code(code: CoreErrorCode) -> &'static str {
+    match code {
+        CoreErrorCode::DurabilityUnavailable => "DURABILITY_UNAVAILABLE",
+        CoreErrorCode::NondeterministicReplay => "NON_DETERMINISTIC_REPLAY",
+        CoreErrorCode::StaleAuthority => "STALE_AUTHORITY",
+        CoreErrorCode::ActivationCancelled => "CANCELLED",
+        CoreErrorCode::ActivationContended => "CONTENDED",
+        CoreErrorCode::PayloadConflict => "PAYLOAD_CONFLICT",
+        CoreErrorCode::IllegalTransition => "ILLEGAL_TRANSITION",
+        CoreErrorCode::StateVersionConflict => "STATE_VERSION_CONFLICT",
+        CoreErrorCode::RequiredChildUnresolved => "REQUIRED_CHILD_UNRESOLVED",
+        CoreErrorCode::InvalidInput
+        | CoreErrorCode::InvalidMessage
+        | CoreErrorCode::InvalidState => "INVALID_ARGUMENT",
+        _ => "UNKNOWN_OUTCOME",
+    }
+}
+
+#[cfg(feature = "durable-activation-v1")]
+fn native_activation_bridge_error(
+    code: &str,
+    message: impl Into<String>,
+    activation_id: &str,
+    attempt: u32,
+) -> napi::Error {
+    let payload = serde_json::json!({
+        "code": code,
+        "message": message.into(),
+        "activationId": activation_id,
+        "attempt": attempt,
+    });
+    napi::Error::new(
+        napi::Status::GenericFailure,
+        format!("{NATIVE_ACTIVATION_ERROR_PREFIX}{payload}"),
+    )
+}
+
+#[cfg(feature = "durable-activation-v1")]
+fn native_activation_error(error: SdkError) -> napi::Error {
+    let code = native_activation_error_code(error.code());
+    let (message, activation_id, attempt) = match error {
+        SdkError::Activation {
+            message,
+            activation_id,
+            attempt,
+            ..
+        } => (
+            message,
+            activation_id.unwrap_or_default(),
+            attempt.unwrap_or_default(),
+        ),
+        other => (other.to_string(), String::new(), 0),
+    };
+    native_activation_bridge_error(code, message, &activation_id, attempt)
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeBeginActivationRequest {
+    pub project_id: String,
+    pub run_id: String,
+    pub parent_activation_id: String,
+    pub kind: i32,
+    pub stable_key: String,
+    pub input_digest: Buffer,
+    pub definition_digest: Buffer,
+    pub recovery_policy: i32,
+    pub worker_session_id: String,
+    pub run_authority: Buffer,
+    pub lease_authority: Buffer,
+    pub child: Option<NativeChildActivationLinkage>,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeChildActivationLinkage {
+    pub child_key: String,
+    pub child_run_id: String,
+    pub child_session_id: String,
+    pub child_definition_digest: Buffer,
+    pub join_policy: i32,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeActivationDecision {
+    pub kind: String,
+    pub activation_id: String,
+    pub attempt: u32,
+    pub accepted_journal_offset: String,
+    pub fence_token: Option<Buffer>,
+    pub replay_output: Option<Buffer>,
+    pub message: Option<String>,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeCompleteActivationRequest {
+    pub project_id: String,
+    pub run_id: String,
+    pub activation_id: String,
+    pub attempt: u32,
+    pub fence_token: Buffer,
+    pub output: Buffer,
+    pub output_digest: Buffer,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub cost_usd: f64,
+    pub latency_ms: i64,
+    pub provider: String,
+    pub model: String,
+    pub evidence: Vec<NativeActivationEvidence>,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeActivationEvidence {
+    pub evidence_type: String,
+    pub payload: Buffer,
+    pub sha256: Buffer,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeActivationCompletionReceipt {
+    pub activation_id: String,
+    pub attempt: u32,
+    pub accepted_journal_offset: String,
+    pub replayed: bool,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeFailActivationRequest {
+    pub project_id: String,
+    pub run_id: String,
+    pub activation_id: String,
+    pub attempt: u32,
+    pub fence_token: Buffer,
+    pub error_code: String,
+    pub error_data: Buffer,
+    pub retryable: bool,
+    pub external_outcome_certainty: String,
+    pub evidence: Vec<NativeActivationEvidence>,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi(object)]
+pub struct NativeActivationFailureReceipt {
+    pub activation_id: String,
+    pub attempt: u32,
+    pub accepted_journal_offset: String,
+    pub status: String,
+    pub replayed: bool,
 }
 
 /// Component type enum matching protobuf
@@ -388,6 +624,286 @@ pub struct Worker {
     /// Needed because run() holds core_worker's TokioMutex for its entire lifetime,
     /// which would deadlock if emit_checkpoint tried to acquire the same lock.
     emit_worker: Arc<StdMutex<Option<CoreWorker>>>,
+    #[cfg(feature = "durable-activation-v1")]
+    activation_adapter: Arc<TokioMutex<Option<ActivationAdapter>>>,
+}
+
+#[cfg(feature = "durable-activation-v1")]
+impl Worker {
+    async fn connected_activation_adapter(
+        &self,
+    ) -> napi::Result<tokio::sync::MutexGuard<'_, Option<ActivationAdapter>>> {
+        let mut adapter = self.activation_adapter.lock().await;
+        if adapter.is_none() {
+            let endpoint = self
+                .config
+                .engine_endpoint
+                .clone()
+                .unwrap_or_else(|| self.config.coordinator_endpoint.clone());
+            let client = EngineClient::connect(&endpoint)
+                .await
+                .map_err(native_activation_error)?;
+            *adapter = Some(ActivationAdapter::new(client));
+        }
+        Ok(adapter)
+    }
+}
+
+#[cfg(feature = "durable-activation-v1")]
+fn native_activation_evidence(entries: Vec<NativeActivationEvidence>) -> Vec<ActivationEvidence> {
+    entries
+        .into_iter()
+        .map(|entry| ActivationEvidence {
+            evidence_type: entry.evidence_type,
+            payload: Some(ActivationPayload {
+                value: Some(activation_payload::Value::InlineData(
+                    entry.payload.to_vec(),
+                )),
+            }),
+            sha256: entry.sha256.to_vec(),
+        })
+        .collect()
+}
+
+#[cfg(feature = "durable-activation-v1")]
+fn native_activation_decision(
+    decision: ActivationDecision,
+) -> napi::Result<NativeActivationDecision> {
+    match decision {
+        ActivationDecision::Execute(receipt) => Ok(NativeActivationDecision {
+            kind: "EXECUTE".to_string(),
+            activation_id: receipt.activation_id,
+            attempt: receipt.attempt,
+            accepted_journal_offset: receipt.accepted_journal_offset.to_string(),
+            fence_token: Some(receipt.fence_token.into()),
+            replay_output: None,
+            message: None,
+        }),
+        ActivationDecision::Replay(receipt) => {
+            let replay_output = match receipt.result.value {
+                Some(activation_payload::Value::InlineData(value)) => value,
+                Some(activation_payload::Value::Reference(_)) => {
+                    return Err(native_activation_bridge_error(
+                        "REFERENCE_REQUIRED",
+                        "TypeScript activation replay does not yet support referenced payloads",
+                        &receipt.activation_id,
+                        receipt.attempt,
+                    ));
+                }
+                None => {
+                    return Err(native_activation_bridge_error(
+                        "UNKNOWN_OUTCOME",
+                        "activation replay receipt has no canonical payload",
+                        &receipt.activation_id,
+                        receipt.attempt,
+                    ));
+                }
+            };
+            Ok(NativeActivationDecision {
+                kind: "REPLAY".to_string(),
+                activation_id: receipt.activation_id,
+                attempt: receipt.attempt,
+                accepted_journal_offset: receipt.accepted_journal_offset.to_string(),
+                fence_token: None,
+                replay_output: Some(replay_output.into()),
+                message: None,
+            })
+        }
+        ActivationDecision::Wait {
+            activation_id,
+            receipt,
+        } => Ok(NativeActivationDecision {
+            kind: "WAIT".to_string(),
+            activation_id,
+            attempt: receipt.attempt,
+            accepted_journal_offset: receipt.accepted_journal_offset.to_string(),
+            fence_token: None,
+            replay_output: None,
+            message: Some("activation attempt is owned by another worker session".to_string()),
+        }),
+        ActivationDecision::Conflict {
+            activation_id,
+            receipt,
+        } => Ok(NativeActivationDecision {
+            kind: "CONFLICT".to_string(),
+            activation_id,
+            attempt: 0,
+            accepted_journal_offset: "0".to_string(),
+            fence_token: None,
+            replay_output: None,
+            message: Some(receipt.message),
+        }),
+        ActivationDecision::Cancelled {
+            activation_id,
+            attempt,
+            accepted_journal_offset,
+        } => Ok(NativeActivationDecision {
+            kind: "CANCELLED".to_string(),
+            activation_id,
+            attempt,
+            accepted_journal_offset: accepted_journal_offset.to_string(),
+            fence_token: None,
+            replay_output: None,
+            message: Some("activation is cancelled".to_string()),
+        }),
+        ActivationDecision::UnknownOutcome {
+            activation_id,
+            receipt,
+        } => Ok(NativeActivationDecision {
+            kind: "UNKNOWN_OUTCOME".to_string(),
+            activation_id,
+            attempt: 0,
+            accepted_journal_offset: receipt.accepted_journal_offset.to_string(),
+            fence_token: None,
+            replay_output: None,
+            message: Some(receipt.error_code),
+        }),
+    }
+}
+
+#[cfg(feature = "durable-activation-v1")]
+fn native_activation_status(status: agnt5_sdk_core::pb::ActivationStatus) -> &'static str {
+    match status {
+        agnt5_sdk_core::pb::ActivationStatus::Active => "ACTIVE",
+        agnt5_sdk_core::pb::ActivationStatus::RetryReady => "RETRY_READY",
+        agnt5_sdk_core::pb::ActivationStatus::Completed => "COMPLETED",
+        agnt5_sdk_core::pb::ActivationStatus::Failed => "FAILED",
+        agnt5_sdk_core::pb::ActivationStatus::Suspended => "SUSPENDED",
+        agnt5_sdk_core::pb::ActivationStatus::Cancelled => "CANCELLED",
+        agnt5_sdk_core::pb::ActivationStatus::UnknownOutcome => "UNKNOWN_OUTCOME",
+        agnt5_sdk_core::pb::ActivationStatus::Unspecified => "UNSPECIFIED",
+    }
+}
+
+#[cfg(feature = "durable-activation-v1")]
+#[napi]
+impl Worker {
+    /// Begin one journal-authoritative durable activation.
+    #[napi]
+    pub async fn begin_activation(
+        &self,
+        request: NativeBeginActivationRequest,
+    ) -> Result<NativeActivationDecision> {
+        let request = BeginActivationRequest {
+            project_id: request.project_id,
+            run_id: request.run_id,
+            parent_activation_id: request.parent_activation_id,
+            kind: request.kind,
+            stable_key: request.stable_key,
+            input_digest: request.input_digest.to_vec(),
+            definition_digest: request.definition_digest.to_vec(),
+            recovery_policy: request.recovery_policy,
+            worker_session_id: request.worker_session_id,
+            run_authority: request.run_authority.to_vec(),
+            lease_authority: request.lease_authority.to_vec(),
+            child: request.child.map(|child| ChildActivationLinkage {
+                child_key: child.child_key,
+                child_run_id: child.child_run_id,
+                child_session_id: child.child_session_id,
+                child_definition_digest: child.child_definition_digest.to_vec(),
+                join_policy: child.join_policy,
+            }),
+        };
+        let mut adapter = self.connected_activation_adapter().await?;
+        let decision = adapter
+            .as_mut()
+            .expect("activation adapter initialized")
+            .begin(request)
+            .await
+            .map_err(native_activation_error)?;
+        native_activation_decision(decision)
+    }
+
+    /// Commit one accepted durable activation completion.
+    #[napi]
+    pub async fn complete_activation(
+        &self,
+        request: NativeCompleteActivationRequest,
+    ) -> Result<NativeActivationCompletionReceipt> {
+        let request = CompleteActivationRequest {
+            project_id: request.project_id,
+            run_id: request.run_id,
+            activation_id: request.activation_id,
+            attempt: request.attempt,
+            fence_token: request.fence_token.to_vec(),
+            output: Some(ActivationPayload {
+                value: Some(activation_payload::Value::InlineData(
+                    request.output.to_vec(),
+                )),
+            }),
+            output_digest: request.output_digest.to_vec(),
+            state_mutations: Vec::new(),
+            outbox_intents: Vec::new(),
+            usage: Some(ActivationUsage {
+                tokens_in: request.tokens_in,
+                tokens_out: request.tokens_out,
+                cost_usd: request.cost_usd,
+                latency_ms: request.latency_ms,
+                provider: request.provider,
+                model: request.model,
+            }),
+            evidence: native_activation_evidence(request.evidence),
+        };
+        let mut adapter = self.connected_activation_adapter().await?;
+        let receipt = adapter
+            .as_mut()
+            .expect("activation adapter initialized")
+            .complete(request)
+            .await
+            .map_err(native_activation_error)?;
+        Ok(NativeActivationCompletionReceipt {
+            activation_id: receipt.activation_id,
+            attempt: receipt.attempt,
+            accepted_journal_offset: receipt.accepted_journal_offset.to_string(),
+            replayed: receipt.replayed,
+        })
+    }
+
+    /// Commit one fenced durable activation failure.
+    #[napi]
+    pub async fn fail_activation(
+        &self,
+        request: NativeFailActivationRequest,
+    ) -> Result<NativeActivationFailureReceipt> {
+        if request.external_outcome_certainty != "UNKNOWN" {
+            return Err(native_activation_bridge_error(
+                "INVALID_ARGUMENT",
+                "TypeScript V1 failure bridge currently requires UNKNOWN external outcome certainty",
+                &request.activation_id,
+                request.attempt,
+            ));
+        }
+        let request = FailActivationRequest {
+            project_id: request.project_id,
+            run_id: request.run_id,
+            activation_id: request.activation_id,
+            attempt: request.attempt,
+            fence_token: request.fence_token.to_vec(),
+            error_code: request.error_code,
+            error_data: Some(ActivationPayload {
+                value: Some(activation_payload::Value::InlineData(
+                    request.error_data.to_vec(),
+                )),
+            }),
+            retryable: request.retryable,
+            external_outcome_certainty: ActivationExternalOutcomeCertainty::Unknown as i32,
+            evidence: native_activation_evidence(request.evidence),
+        };
+        let mut adapter = self.connected_activation_adapter().await?;
+        let receipt = adapter
+            .as_mut()
+            .expect("activation adapter initialized")
+            .fail(request)
+            .await
+            .map_err(native_activation_error)?;
+        Ok(NativeActivationFailureReceipt {
+            activation_id: receipt.activation_id,
+            attempt: receipt.attempt,
+            accepted_journal_offset: receipt.accepted_journal_offset.to_string(),
+            status: native_activation_status(receipt.status).to_string(),
+            replayed: receipt.replayed,
+        })
+    }
 }
 
 #[napi]
@@ -433,6 +949,9 @@ impl Worker {
         } else if let Ok(did) = std::env::var("AGNT5_DEPLOYMENT_ID") {
             metadata.insert("deployment_id".to_string(), did);
         }
+        if let Some(artifact_sha256) = options.activation_artifact_sha256 {
+            metadata.insert("activation_artifact_sha256".to_string(), artifact_sha256);
+        }
 
         // Create core worker with empty components initially
         let core_worker = CoreWorker::new(config.clone(), vec![], metadata);
@@ -453,6 +972,8 @@ impl Worker {
             response_map: Arc::new(StdMutex::new(HashMap::new())),
             journal_queue,
             emit_worker: Arc::new(StdMutex::new(Some(emit_worker))),
+            #[cfg(feature = "durable-activation-v1")]
+            activation_adapter: Arc::new(TokioMutex::new(None)),
         })
     }
 
@@ -544,8 +1065,26 @@ impl Worker {
         Ok(())
     }
 
-    /// Queue an SSE-only event (output.delta, log, progress, etc.) into the journal queue.
-    /// The background flush task (spawned by run()) drains this queue every 50ms.
+    /// Signal that a claimed pull job has entered the JavaScript runtime.
+    /// The core uses this edge to gate slot ramp-up and to split claimed
+    /// scheduler backlog from actively executing handlers.
+    #[napi]
+    pub fn mark_execution_started(&self, run_id: String) -> Result<()> {
+        let worker = {
+            let guard = self
+                .emit_worker
+                .lock()
+                .map_err(|e| Error::from_reason(format!("Failed to lock emit_worker: {}", e)))?;
+            guard
+                .clone()
+                .ok_or_else(|| Error::from_reason("emit_worker not available"))?
+        };
+        worker.mark_execution_started(&run_id);
+        Ok(())
+    }
+
+    /// Queue an event for batched delivery. SSE-only events are streamed;
+    /// lifecycle events are durably appended by the background flush task.
     #[napi]
     pub fn queue_event(
         &self,
@@ -619,6 +1158,41 @@ impl Worker {
             .await
             .map_err(|e| Error::from_reason(format!("Checkpoint emission failed: {}", e)))?;
         Ok(())
+    }
+
+    /// Emit consecutive lifecycle checkpoints in one acknowledged AppendBatch.
+    /// The core flushes earlier queued frames for these runs before the batch.
+    #[napi]
+    pub async fn emit_checkpoint_batch(&self, events: Vec<CheckpointBatchEvent>) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let worker = {
+            let guard = self
+                .emit_worker
+                .lock()
+                .map_err(|e| Error::from_reason(format!("Failed to lock emit_worker: {}", e)))?;
+            guard
+                .clone()
+                .ok_or_else(|| Error::from_reason("emit_worker not available"))?
+        };
+        let events = events
+            .into_iter()
+            .map(|event| {
+                (
+                    event.run_id,
+                    event.event_type,
+                    event.event_data.into_bytes(),
+                    event.sequence_number,
+                    event.metadata,
+                    event.source_timestamp_ns as i64,
+                )
+            })
+            .collect();
+        worker
+            .emit_checkpoint_batch(events)
+            .await
+            .map_err(|e| Error::from_reason(format!("Checkpoint batch emission failed: {}", e)))
     }
 
     /// Set components for registration
@@ -743,20 +1317,23 @@ impl Worker {
                                 ))
                             })?;
 
-                    // Push workers retain the legacy journal-terminal path. Pull
-                    // assignments must return their terminal response so sdk-core
-                    // can fence it through CompleteJob.
-                    if dispatch_request
+                    let response =
+                        component_response(&worker_id, &dispatch_request, &response_json)?;
+                    let is_suspension = is_worker_suspension_message(&response);
+
+                    // Push terminals retain the legacy journal path, but a
+                    // typed suspension must cross WorkerStream so the runtime
+                    // can atomically pause and release its execution lease.
+                    let is_pull = dispatch_request
                         .metadata
                         .get("dispatch_mode")
                         .map(String::as_str)
-                        != Some("pull")
-                    {
-                        return Ok(None);
+                        == Some("pull");
+                    if is_pull || is_suspension {
+                        Ok(Some(response))
+                    } else {
+                        Ok(None)
                     }
-
-                    pull_completion_response(&worker_id, &dispatch_request, &response_json)
-                        .map(Some)
                 }
             };
 
@@ -1256,6 +1833,28 @@ impl Span {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "durable-activation-v1")]
+    #[test]
+    fn wait_message_does_not_expose_worker_session_authority() {
+        let secret_session = "agnt5ws1.payload.signature";
+        let decision = ActivationDecision::Wait {
+            activation_id: "activation-1".to_string(),
+            receipt: agnt5_sdk_core::pb::ActivationWaitReceipt {
+                attempt: 2,
+                active_worker_session_id: secret_session.to_string(),
+                accepted_journal_offset: 7,
+            },
+        };
+
+        let converted = native_activation_decision(decision).expect("WAIT decision");
+
+        assert_eq!(
+            converted.message.as_deref(),
+            Some("activation attempt is owned by another worker session")
+        );
+        assert!(!converted.message.unwrap().contains(secret_session));
+    }
+
     fn pull_request() -> DispatchComponentRequest {
         DispatchComponentRequest {
             invocation_id: "run-1".to_string(),
@@ -1268,7 +1867,7 @@ mod tests {
 
     #[test]
     fn builds_successful_pull_completion_from_javascript_response() {
-        let message = pull_completion_response(
+        let message = component_response(
             "worker-1",
             &pull_request(),
             r#"{"invocationId":"run-1","outputJson":"{\"ok\":true}","eventType":"run.completed"}"#,
@@ -1295,7 +1894,7 @@ mod tests {
 
     #[test]
     fn builds_failed_pull_completion_from_javascript_response() {
-        let message = pull_completion_response(
+        let message = component_response(
             "worker-1",
             &pull_request(),
             r#"{"invocationId":"run-1","error":"boom","errorCode":"EXECUTION_ERROR","eventType":"run.failed"}"#,
@@ -1320,7 +1919,7 @@ mod tests {
 
     #[test]
     fn preserves_paused_pull_completion_metadata() {
-        let message = pull_completion_response(
+        let message = component_response(
             "worker-1",
             &pull_request(),
             r#"{"invocationId":"run-1","outputJson":"{\"_paused\":true}","eventType":"workflow.paused","metadata":{"pause_index":"2","step_events":"{\"0\":\"Ada\",\"1\":\"blue\"}","completed_steps":"{\"draft\":{\"ok\":true}}"}}"#,
@@ -1350,8 +1949,36 @@ mod tests {
     }
 
     #[test]
+    fn converts_javascript_sleep_into_typed_worker_suspension() {
+        let message = component_response(
+            "worker-1",
+            &pull_request(),
+            r#"{"invocationId":"run-1","eventType":"workflow.paused","workerSuspension":{"activationId":"activation-1","attempt":2,"fenceToken":[1,2],"timerKey":"sleep:backoff","readyAtMs":0,"inputDigest":[1,1],"definitionDigest":[2,2],"continuation":[3,3],"delayMs":5000}}"#,
+        )
+        .expect("typed suspension");
+        assert!(is_worker_suspension_message(&message));
+
+        let response = match message.message_type {
+            Some(agnt5_sdk_core::pb::service_message::MessageType::FunctionResponse(response)) => {
+                response
+            }
+            _ => panic!("expected function response"),
+        };
+        let Some(dispatch_component_response::Result::WorkerSuspension(suspension)) =
+            response.result
+        else {
+            panic!("expected worker suspension");
+        };
+        assert!(response.success);
+        assert_eq!(response.event_type, "workflow.paused");
+        assert_eq!(suspension.activation_id, "activation-1");
+        assert_eq!(suspension.timer_key, "sleep:backoff");
+        assert_eq!(suspension.delay_ms, 5_000);
+    }
+
+    #[test]
     fn marks_runtime_authored_pull_cancellation_explicitly() {
-        let message = pull_completion_response(
+        let message = component_response(
             "worker-1",
             &pull_request(),
             r#"{"invocationId":"run-1","outputJson":"{\"_cancelled\":true}","eventType":"run.cancelled"}"#,
@@ -1366,6 +1993,15 @@ mod tests {
         };
         assert!(response.success);
         assert_eq!(response.event_type, "run.cancelled");
+    }
+
+    #[cfg(feature = "durable-activation-v1")]
+    #[test]
+    fn preserves_required_child_activation_error_code() {
+        assert_eq!(
+            native_activation_error_code(CoreErrorCode::RequiredChildUnresolved),
+            "REQUIRED_CHILD_UNRESOLVED"
+        );
     }
 
     #[test]

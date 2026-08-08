@@ -42,7 +42,12 @@ export interface ClientOptions {
   retryDelayMs?: number;
 }
 
-export interface RunOptions {
+export interface InvocationOptions {
+  /** Stable caller key for safely retrying one invocation admission. */
+  idempotencyKey?: string;
+}
+
+export interface RunOptions extends InvocationOptions {
   /** Component type (default: "function") */
   componentType?: 'function' | 'workflow' | 'agent' | 'tool';
   /** Explicit deployment ID for this call. Ambient AGNT5_DEPLOYMENT_ID is not used for component execution. */
@@ -67,6 +72,7 @@ export interface RunOptions {
 /** Run execution status values */
 export type RunStatus =
   | 'enqueued'
+  | 'queued'
   | 'started'
   | 'running'
   | 'completed'
@@ -200,7 +206,7 @@ export class RunResponse<T = any> {
 
   /** True if the run is still in progress */
   get isPending(): boolean {
-    return ['enqueued', 'started', 'running', 'paused', 'awaiting_input'].includes(this.status);
+    return ['enqueued', 'queued', 'started', 'running', 'paused', 'awaiting_input'].includes(this.status);
   }
 
   /** True if the run failed, was cancelled, or timed out */
@@ -467,6 +473,9 @@ export class Client {
       if (options.userId) {
         extra['X-User-ID'] = options.userId;
       }
+      if (options.idempotencyKey !== undefined) {
+        extra['Idempotency-Key'] = options.idempotencyKey;
+      }
 
       const response = await fetch(url, {
         method: 'POST',
@@ -485,23 +494,67 @@ export class Client {
       }
 
       const data = (await response.json()) as RawRunResponse;
-      return new RunResponse<T>(data);
+      const result = new RunResponse<T>(data);
+      if (response.status === 202 && result.runId) {
+        return await this.waitForDetachedRun<T>(result.runId, this.timeout);
+      }
+      return result;
     }, options.maxRetries);
+  }
+
+  /** Wait for a durably detached /run receipt without retaining its gateway tail. */
+  private async waitForDetachedRun<T>(runId: string, timeoutMs: number): Promise<RunResponse<T>> {
+    const deadline = Date.now() + timeoutMs;
+    let pollIntervalMs = 100;
+    let terminalStatusObserved = false;
+
+    while (true) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new RunError(`Timeout waiting for run to complete after ${timeoutMs}ms`, runId);
+      }
+
+      if (!terminalStatusObserved) {
+        const status = await this.getStatus(runId);
+        terminalStatusObserved = ['completed', 'failed', 'cancelled', 'timeout'].includes(status.status);
+      }
+
+      if (terminalStatusObserved) {
+        try {
+          return await this.getResult<T>(runId);
+        } catch (error) {
+          // Terminal journal state can become visible just before the result
+          // projection. Keep waiting within the original run() deadline.
+          if (!(error instanceof RunError)) {
+            throw error;
+          }
+        }
+      }
+
+      await new Promise(resolve => setTimeout(resolve, Math.min(pollIntervalMs, remainingMs)));
+      pollIntervalMs = Math.min(Math.ceil(pollIntervalMs * 1.5), 2_000);
+    }
   }
 
   /**
    * Submit a component for async execution and return immediately.
    */
-  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId'> = {}): Promise<SubmitResponse> {
+  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId' | 'idempotencyKey'> = {}): Promise<SubmitResponse> {
     const componentType = options.componentType || 'function';
     const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/submit`;
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: this.buildHeaders(undefined, options.tenant, {
-        deploymentId: options.deploymentId,
-        includeAmbientDeploymentId: false,
-      }),
+      headers: this.buildHeaders(
+        options.idempotencyKey !== undefined
+          ? { 'Idempotency-Key': options.idempotencyKey }
+          : undefined,
+        options.tenant,
+        {
+          deploymentId: options.deploymentId,
+          includeAmbientDeploymentId: false,
+        },
+      ),
       body: JSON.stringify(inputData),
       signal: AbortSignal.timeout(this.timeout),
     });
@@ -648,7 +701,7 @@ export class Client {
    * Stream text chunks from a component using SSE.
    * For typed events, use events() instead.
    */
-  async *stream(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId'> = {}): AsyncGenerator<string, void, unknown> {
+  async *stream(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId' | 'idempotencyKey'> = {}): AsyncGenerator<string, void, unknown> {
     for await (const event of this.events(component, inputData, options)) {
       if (event.eventType === 'run.failed') {
         throw streamingRunError(event.data, { run_id: event.runId });
@@ -679,16 +732,22 @@ export class Client {
    * }
    * ```
    */
-  async *events(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId'> = {}): AsyncGenerator<ReceivedEvent, void, unknown> {
+  async *events(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId' | 'idempotencyKey'> = {}): AsyncGenerator<ReceivedEvent, void, unknown> {
     const componentType = options.componentType || 'function';
     const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/stream`;
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: this.buildHeaders(undefined, options.tenant, {
-        deploymentId: options.deploymentId,
-        includeAmbientDeploymentId: false,
-      }),
+      headers: this.buildHeaders(
+        options.idempotencyKey !== undefined
+          ? { 'Idempotency-Key': options.idempotencyKey }
+          : undefined,
+        options.tenant,
+        {
+          deploymentId: options.deploymentId,
+          includeAmbientDeploymentId: false,
+        },
+      ),
       body: JSON.stringify(inputData),
       signal: AbortSignal.timeout(300000), // 5 minute timeout for streaming
     });
@@ -866,7 +925,7 @@ export class Client {
   async batch(
     component: string,
     items: Array<Record<string, any> | BatchItemInput>,
-    options: BatchConfig & { componentType?: string; metadata?: Record<string, string>; deploymentId?: string } = {},
+    options: BatchConfig & InvocationOptions & { componentType?: string; metadata?: Record<string, string>; deploymentId?: string } = {},
   ): Promise<BatchResult> {
     const componentType = options.componentType || 'function';
     const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/batch`;
@@ -895,10 +954,16 @@ export class Client {
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: this.buildHeaders(undefined, undefined, {
-        deploymentId: options.deploymentId,
-        includeAmbientDeploymentId: false,
-      }),
+      headers: this.buildHeaders(
+        options.idempotencyKey !== undefined
+          ? { 'Idempotency-Key': options.idempotencyKey }
+          : undefined,
+        undefined,
+        {
+          deploymentId: options.deploymentId,
+          includeAmbientDeploymentId: false,
+        },
+      ),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(options.batchTimeoutMs || 3600000),
     });
@@ -1158,7 +1223,7 @@ export class WorkflowProxy {
   /** Execute the workflow synchronously */
   async run<T = any>(
     input?: Record<string, any>,
-    options?: { sessionId?: string; userId?: string; tenant?: string; deploymentId?: string },
+    options?: InvocationOptions & { sessionId?: string; userId?: string; tenant?: string; deploymentId?: string },
   ): Promise<RunResponse<T>> {
     return this.client.run<T>(this.workflowName, input, {
       componentType: 'workflow',
@@ -1166,6 +1231,7 @@ export class WorkflowProxy {
       userId: options?.userId,
       tenant: options?.tenant,
       deploymentId: options?.deploymentId,
+      idempotencyKey: options?.idempotencyKey,
     });
   }
 
@@ -1173,7 +1239,7 @@ export class WorkflowProxy {
   async chat<T = any>(
     message: string,
     sessionId?: string,
-    options?: { userId?: string; extra?: Record<string, any>; tenant?: string; deploymentId?: string },
+    options?: InvocationOptions & { userId?: string; extra?: Record<string, any>; tenant?: string; deploymentId?: string },
   ): Promise<RunResponse<T>> {
     const input = { message, ...(options?.extra || {}) };
     return this.client.run<T>(this.workflowName, input, {
@@ -1182,27 +1248,30 @@ export class WorkflowProxy {
       userId: options?.userId,
       tenant: options?.tenant,
       deploymentId: options?.deploymentId,
+      idempotencyKey: options?.idempotencyKey,
     });
   }
 
   /** Submit the workflow for async execution */
-  async submit(input?: Record<string, any>, options?: { tenant?: string; deploymentId?: string }): Promise<SubmitResponse> {
+  async submit(input?: Record<string, any>, options?: InvocationOptions & { tenant?: string; deploymentId?: string }): Promise<SubmitResponse> {
     return this.client.submit(this.workflowName, input, {
       componentType: 'workflow',
       tenant: options?.tenant,
       deploymentId: options?.deploymentId,
+      idempotencyKey: options?.idempotencyKey,
     });
   }
 
   /** Stream events from workflow execution */
   async *events(
     input?: Record<string, any>,
-    options?: { tenant?: string; deploymentId?: string },
+    options?: InvocationOptions & { tenant?: string; deploymentId?: string },
   ): AsyncGenerator<ReceivedEvent> {
     yield* this.client.events(this.workflowName, input, {
       componentType: 'workflow',
       tenant: options?.tenant,
       deploymentId: options?.deploymentId,
+      idempotencyKey: options?.idempotencyKey,
     });
   }
 }
