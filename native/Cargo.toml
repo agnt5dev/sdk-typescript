@@ -1,6 +1,6 @@
 [package]
 name = "agnt5-sdk-native"
-version = "0.6.7"
+version = "0.7.0"
 edition = "2021"
 publish = false
 
@@ -13,7 +13,7 @@ napi = { version = "2", features = ["async", "tokio_rt"] }
 napi-derive = "2"
 
 # Shared AGNT5 runtime foundation
-agnt5-sdk-core = "0.1.6"
+agnt5-sdk-core = "0.2.0"
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
@@ -45,10 +45,8 @@ hex = "0.4"
 futures-util = "0.3"
 
 [features]
-default = ["wasm-sandbox"]
+default = ["wasm-sandbox", "durable-activation-v1"]
 wasm-sandbox = ["agnt5-sdk-core/wasm-sandbox"]
-# Kept opt-in until an sdk-core release containing durable activation V1 is
-# published. Local E2E builds patch crates.io to the sibling sdk-core checkout.
 durable-activation-v1 = []
 
 [build-dependencies]
