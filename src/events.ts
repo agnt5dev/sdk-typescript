@@ -43,6 +43,8 @@ export interface BaseEvent {
   metadata: Record<string, any>;
 }
 
+export type CaptureMode = 'native' | 'observed';
+
 // ─── Agent lifecycle events ──────────────────────────────────────────
 
 export interface AgentStarted extends BaseEvent {
@@ -64,6 +66,7 @@ export interface AgentCompleted extends BaseEvent {
     output: string;
     tool_calls: any[];
   };
+  durationMs?: number;
 }
 
 export interface AgentFailed extends BaseEvent {
@@ -71,6 +74,7 @@ export interface AgentFailed extends BaseEvent {
   agentName: string;
   iterations: number;
   error: string;
+  durationMs?: number;
 }
 
 // ─── Agent iteration events ──────────────────────────────────────────
@@ -102,6 +106,7 @@ export interface ToolCallCompleted extends BaseEvent {
   toolName: string;
   toolCallId: string;
   outputData?: any;
+  durationMs?: number;
 }
 
 export interface ToolCallFailed extends BaseEvent {
@@ -109,6 +114,7 @@ export interface ToolCallFailed extends BaseEvent {
   toolName: string;
   toolCallId: string;
   error: string;
+  durationMs?: number;
 }
 
 export type LMStreamEventType =
@@ -173,13 +179,30 @@ function baseFields(
   };
 }
 
+function captureMetadata(source?: string, captureMode?: CaptureMode): Record<string, string> {
+  if (!source && !captureMode) return {};
+  return {
+    ...(source ? { source: String(source) } : {}),
+    capture_mode: String(captureMode ?? 'observed'),
+  };
+}
+
 export function agentStarted(
   agentName: string,
   correlationId: string,
-  opts: { agentModel: string; toolNames: string[]; maxIterations: number },
+  opts: {
+    agentModel: string;
+    toolNames: string[];
+    maxIterations: number;
+    parentCorrelationId?: string | null;
+    source?: string;
+    captureMode?: CaptureMode;
+  },
 ): AgentStarted {
   return {
-    ...baseFields(agentName, correlationId, null),
+    ...baseFields(agentName, correlationId, opts.parentCorrelationId ?? null, {
+      ...captureMetadata(opts.source, opts.captureMode),
+    }),
     eventType: 'agent.started',
     componentType: 'agent',
     agentName,
@@ -199,10 +222,17 @@ export function agentCompleted(
     outputLength: number;
     output: string;
     toolCalls: any[];
+    parentCorrelationId?: string | null;
+    source?: string;
+    captureMode?: CaptureMode;
+    durationMs?: number;
   },
 ): AgentCompleted {
   return {
-    ...baseFields(agentName, correlationId, null),
+    ...baseFields(agentName, correlationId, opts.parentCorrelationId ?? null, {
+      ...captureMetadata(opts.source, opts.captureMode),
+      ...(opts.durationMs !== undefined ? { duration_ms: String(opts.durationMs) } : {}),
+    }),
     eventType: 'agent.completed',
     componentType: 'agent',
     agentName,
@@ -214,21 +244,33 @@ export function agentCompleted(
       output: opts.output,
       tool_calls: opts.toolCalls,
     },
+    durationMs: opts.durationMs,
   };
 }
 
 export function agentFailed(
   agentName: string,
   correlationId: string,
-  opts: { iterations: number; error: string },
+  opts: {
+    iterations: number;
+    error: string;
+    parentCorrelationId?: string | null;
+    source?: string;
+    captureMode?: CaptureMode;
+    durationMs?: number;
+  },
 ): AgentFailed {
   return {
-    ...baseFields(agentName, correlationId, null),
+    ...baseFields(agentName, correlationId, opts.parentCorrelationId ?? null, {
+      ...captureMetadata(opts.source, opts.captureMode),
+      ...(opts.durationMs !== undefined ? { duration_ms: String(opts.durationMs) } : {}),
+    }),
     eventType: 'agent.failed',
     componentType: 'agent',
     agentName,
     iterations: opts.iterations,
     error: opts.error,
+    durationMs: opts.durationMs,
   };
 }
 
@@ -266,10 +308,18 @@ export function iterationCompleted(
 export function toolCallStarted(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { toolName: string; toolCallId: string; inputData?: any },
+  opts: {
+    toolName: string;
+    toolCallId: string;
+    inputData?: any;
+    source?: string;
+    captureMode?: CaptureMode;
+  },
 ): ToolCallStarted {
   return {
-    ...baseFields(opts.toolName, correlationId, parentCorrelationId),
+    ...baseFields(opts.toolName, correlationId, parentCorrelationId, {
+      ...captureMetadata(opts.source, opts.captureMode),
+    }),
     eventType: 'tool_call.started',
     componentType: 'agent',
     operation: 'tool_call',
@@ -282,32 +332,54 @@ export function toolCallStarted(
 export function toolCallCompleted(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { toolName: string; toolCallId: string; outputData?: any },
+  opts: {
+    toolName: string;
+    toolCallId: string;
+    outputData?: any;
+    source?: string;
+    captureMode?: CaptureMode;
+    durationMs?: number;
+  },
 ): ToolCallCompleted {
   return {
-    ...baseFields(opts.toolName, correlationId, parentCorrelationId),
+    ...baseFields(opts.toolName, correlationId, parentCorrelationId, {
+      ...captureMetadata(opts.source, opts.captureMode),
+      ...(opts.durationMs !== undefined ? { duration_ms: String(opts.durationMs) } : {}),
+    }),
     eventType: 'tool_call.completed',
     componentType: 'agent',
     operation: 'tool_call',
     toolName: opts.toolName,
     toolCallId: opts.toolCallId,
     outputData: opts.outputData,
+    durationMs: opts.durationMs,
   };
 }
 
 export function toolCallFailed(
   correlationId: string,
   parentCorrelationId: string,
-  opts: { toolName: string; toolCallId: string; error: string },
+  opts: {
+    toolName: string;
+    toolCallId: string;
+    error: string;
+    source?: string;
+    captureMode?: CaptureMode;
+    durationMs?: number;
+  },
 ): ToolCallFailed {
   return {
-    ...baseFields(opts.toolName, correlationId, parentCorrelationId),
+    ...baseFields(opts.toolName, correlationId, parentCorrelationId, {
+      ...captureMetadata(opts.source, opts.captureMode),
+      ...(opts.durationMs !== undefined ? { duration_ms: String(opts.durationMs) } : {}),
+    }),
     eventType: 'tool_call.failed',
     componentType: 'agent',
     operation: 'tool_call',
     toolName: opts.toolName,
     toolCallId: opts.toolCallId,
     error: opts.error,
+    durationMs: opts.durationMs,
   };
 }
 
@@ -520,6 +592,7 @@ export interface LMCompleted extends BaseEvent {
   eventType: 'lm.completed';
   outputData: { output: string; tool_calls?: any };
   durationMs: number;
+  finishReason?: string;
 }
 
 export interface LMFailed extends BaseEvent {
@@ -864,6 +937,8 @@ export function lmStarted(
     temperature?: number;
     maxTokens?: number | null;
     attempt?: number;
+    source?: string;
+    captureMode?: CaptureMode;
   },
 ): LMStarted {
   return {
@@ -871,6 +946,7 @@ export function lmStarted(
       name: opts.model,
       model: opts.model,
       provider: opts.provider,
+      ...captureMetadata(opts.source, opts.captureMode),
     }),
     eventType: 'lm.started',
     componentType: 'lm',
@@ -896,7 +972,11 @@ export function lmCompleted(
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
+    cachedTokens?: number;
     durationMs: number;
+    finishReason?: string;
+    source?: string;
+    captureMode?: CaptureMode;
   },
 ): LMCompleted {
   return {
@@ -907,7 +987,9 @@ export function lmCompleted(
       input_tokens: String(opts.inputTokens),
       output_tokens: String(opts.outputTokens),
       total_tokens: String(opts.totalTokens),
+      cached_tokens: String(opts.cachedTokens ?? 0),
       duration_ms: String(opts.durationMs),
+      ...captureMetadata(opts.source, opts.captureMode),
     }),
     eventType: 'lm.completed',
     componentType: 'lm',
@@ -916,6 +998,7 @@ export function lmCompleted(
       tool_calls: opts.toolCalls ?? null,
     },
     durationMs: opts.durationMs,
+    finishReason: opts.finishReason,
   };
 }
 
@@ -928,6 +1011,8 @@ export function lmFailed(
     errorCode: string;
     errorMessage: string;
     durationMs: number;
+    source?: string;
+    captureMode?: CaptureMode;
   },
 ): LMFailed {
   return {
@@ -935,6 +1020,8 @@ export function lmFailed(
       name: opts.model,
       model: opts.model,
       provider: opts.provider,
+      duration_ms: String(opts.durationMs),
+      ...captureMetadata(opts.source, opts.captureMode),
     }),
     eventType: 'lm.failed',
     componentType: 'lm',

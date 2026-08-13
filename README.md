@@ -63,6 +63,7 @@ reused.
 | Import | Purpose |
 | --- | --- |
 | `@agnt5/sdk` | Components, clients, workers, agents, tools, and workflows |
+| `@agnt5/sdk/integrations` | Third-party OpenAI, Agents SDK, Vercel AI SDK, and Google ADK capture |
 | `@agnt5/sdk/serverless` | Shared serverless adapters |
 | `@agnt5/sdk/serverless/node` | Node.js serverless adapter |
 | `@agnt5/sdk/serverless/cloudflare` | Cloudflare serverless adapter |
@@ -72,6 +73,45 @@ reused.
 The default worker uses the published native binding for its supported Node.js
 platform. Serverless and workerless entrypoints have separate runtime
 requirements; review the relevant example before deploying to an edge runtime.
+
+## Third-party capture
+
+Persistent workers automatically observe supported third-party libraries when
+they are installed by the application. The integrations are soft-loaded; the
+SDK does not install or bundle those libraries as runtime dependencies. Set
+`AGNT5_CAPTURE=off` to disable all capture, or use
+`AGNT5_CAPTURE_OPENAI`, `AGNT5_CAPTURE_OPENAI_AGENTS`,
+`AGNT5_CAPTURE_VERCEL_AI`, and `AGNT5_CAPTURE_GOOGLE_ADK` as per-library
+switches (`off`, `0`, `false`, and `no` disable a switch).
+
+Captured lifecycle events carry string provenance metadata: `source`
+identifies the integration (`openai`, `openai_agents`, `vercel_ai`, or
+`google_adk`) and `capture_mode=observed` distinguishes best-effort third-party
+observation from explicitly tagged native SDK events (`capture_mode=native`).
+Google ADK capture supports `@google/adk` 1.0.0 and newer; legacy 0.x releases
+are intentionally unsupported.
+
+Vercel AI SDK 7+ is captured through its public global telemetry registry.
+Applications on earlier AI SDK versions can either enable the library's
+`experimental_telemetry` option with an existing OpenTelemetry provider, or
+use the explicit wrapper:
+
+```typescript
+import * as ai from 'ai';
+import { wrapAISDK } from '@agnt5/sdk/integrations';
+
+const { generateText, streamText } = wrapAISDK(ai);
+```
+
+`JournalSpanProcessor` is also exported for applications that construct their
+own OpenTelemetry tracer provider. The processor and wrapper emit only when a
+call runs inside an AGNT5 component context, and capture failures never change
+the provider call's result.
+
+The workerless/serverless entrypoint invokes the same auto-enable hook for API
+parity, but it does not establish AsyncLocalStorage execution context today.
+Third-party capture therefore remains a no-op on that path until workerless
+context propagation is implemented.
 
 ## Examples and documentation
 

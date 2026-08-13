@@ -20,8 +20,6 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 [[package]]
 name = "agnt5-sdk-core"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "712aa072416b9f387ca3e14c64b00aa2e9f043e7550e5954850e59e2537652b8"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -79,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "agnt5-sdk-native"
-version = "0.7.0"
+version = "0.8.0-beta.0"
 dependencies = [
  "agnt5-sdk-core",
  "flume",
