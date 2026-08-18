@@ -153,7 +153,18 @@ export interface GenerateRequest {
   prompt?: Prompt;
   /** @deprecated Use prompt for managed AGNT5 prompts. */
   promptRef?: string | PromptRef;
-  variables?: Record<string, string | number | boolean | null>;
+  /**
+   * Prompt variables. Values may be any JSON-serialisable shape, including
+   * nested objects — /docs/build/prompts documents `customer: { name }` and
+   * the manifest renderer resolves dotted paths like `customer.name`.
+   *
+   * Previously typed `string | number | boolean | null`, which rejected the
+   * documented usage even though nothing at runtime does: variables are put
+   * on the request body verbatim and serialised as JSON. `prompt-executor`
+   * and `prompt-manifest` already type the same concept as
+   * `Record<string, unknown>`, so lm.ts was the outlier.
+   */
+  variables?: Record<string, unknown>;
   projectId?: string;
   environment?: string;
   environmentId?: string;
@@ -178,7 +189,8 @@ export interface Prompt {
   environmentRef?: string;
   platformUrl?: string;
   apiKey?: string;
-  variables?: Record<string, string | number | boolean | null>;
+  /** Prompt variables — see GenerateRequest.variables. */
+  variables?: Record<string, unknown>;
   model?: string;
   temperature?: number;
   maxOutputTokens?: number;
