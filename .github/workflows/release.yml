@@ -35,6 +35,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           SKIP_PUBLISH: ${{ inputs.skip-publish }}
         run: |
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
@@ -54,8 +55,8 @@ jobs:
           done
 
           if [ "$EVENT_NAME" = release ]; then
-            if ! printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-              echo "Release tag must be vX.Y.Z: $RELEASE_TAG" >&2
+            if ! printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$'; then
+              echo "Release tag must be a stable or SemVer prerelease version: $RELEASE_TAG" >&2
               exit 1
             fi
             RELEASE_VERSION=${RELEASE_TAG#v}
@@ -65,6 +66,15 @@ jobs:
             fi
             if ! grep -Fq "## [$RELEASE_VERSION]" CHANGELOG.md; then
               echo "CHANGELOG.md is missing ## [$RELEASE_VERSION]" >&2
+              exit 1
+            fi
+            if printf '%s\n' "$PACKAGE_VERSION" | grep -q -- '-'; then
+              if [ "$RELEASE_PRERELEASE" != true ]; then
+                echo "Prerelease package $PACKAGE_VERSION requires a GitHub prerelease" >&2
+                exit 1
+              fi
+            elif [ "$RELEASE_PRERELEASE" = true ]; then
+              echo "Stable package $PACKAGE_VERSION cannot be published from a GitHub prerelease" >&2
               exit 1
             fi
           elif [ "$EVENT_NAME" = workflow_dispatch ] && [ "$SKIP_PUBLISH" != true ]; then
@@ -321,28 +331,47 @@ jobs:
         run: |
           VERSION=${{ needs.validate-release.outputs.version }}
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          if printf '%s\n' "$VERSION" | grep -q -- '-'; then
+            echo "dist_tag=next" >> $GITHUB_OUTPUT
+          else
+            echo "dist_tag=latest" >> $GITHUB_OUTPUT
+          fi
 
       - name: Publish platform packages
         working-directory: .
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          DRY_RUN_FLAG: ${{ inputs.skip-publish && '--dry-run' || '' }}
+          DRY_RUN: ${{ inputs.skip-publish }}
+          NPM_DIST_TAG: ${{ steps.version.outputs.dist_tag }}
+          NPM_VERSION: ${{ steps.version.outputs.version }}
         run: |
+          publish_args=(--access public --tag "$NPM_DIST_TAG")
+          if [ "$DRY_RUN" = true ]; then
+            publish_args+=(--dry-run)
+          fi
           for manifest in npm/*/package.json; do
             dir=${manifest%/package.json}
             pkg_name=$(node -p "require('./${manifest}').name")
-            echo "Publishing ${pkg_name} ${DRY_RUN_FLAG}..."
-            cd "$dir"
-            npm publish --access public $DRY_RUN_FLAG || echo "Skipped ${pkg_name} (may already exist)"
-            cd ../..
+            if npm view "${pkg_name}@${NPM_VERSION}" version >/dev/null 2>&1; then
+              echo "Skipping ${pkg_name}@${NPM_VERSION}; it is already published."
+              continue
+            fi
+            echo "Publishing ${pkg_name}@${NPM_VERSION} with dist-tag ${NPM_DIST_TAG}..."
+            (cd "$dir" && npm publish "${publish_args[@]}")
           done
 
       - name: Publish main package
         working-directory: .
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          DRY_RUN_FLAG: ${{ inputs.skip-publish && '--dry-run' || '' }}
-        run: npm publish --access public $DRY_RUN_FLAG
+          DRY_RUN: ${{ inputs.skip-publish }}
+          NPM_DIST_TAG: ${{ steps.version.outputs.dist_tag }}
+        run: |
+          publish_args=(--access public --tag "$NPM_DIST_TAG")
+          if [ "$DRY_RUN" = true ]; then
+            publish_args+=(--dry-run)
+          fi
+          npm publish "${publish_args[@]}"
 
       - name: Create and push release tag
         if: github.event_name == 'workflow_dispatch' && inputs.skip-publish != true
@@ -364,6 +393,7 @@ jobs:
           echo "## Release Complete" >> $GITHUB_STEP_SUMMARY
           echo "**Package:** \`@agnt5/sdk\`" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**npm dist-tag:** \`${{ steps.version.outputs.dist_tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Dry run:** \`${{ inputs.skip-publish && 'yes' || 'no' }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

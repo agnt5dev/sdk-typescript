@@ -7,6 +7,24 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.0-beta.0] - 2026-08-12
+
+### Added
+
+- Capture installed OpenAI, OpenAI Agents SDK, Vercel AI SDK, and Google ADK
+  calls made inside AGNT5 components without application-level instrumentation.
+- Emit correlated `agent.*`, `lm.*`, and `tool_call.*` journal events with
+  provider, model, token, `source`, and `capture_mode=observed` metadata.
+- Export integration controls through the public `@agnt5/sdk/integrations`
+  package path.
+
+### Changed
+
+- Auto-enable available capture integrations at worker and workerless startup
+  while keeping missing or disabled third-party libraries as no-ops.
+- Preserve provider behavior when capture fails and suppress duplicate raw
+  OpenAI events inside OpenAI Agents SDK model spans.
+
 ## [0.7.0] - 2026-08-08
 
 ### Added
@@ -93,7 +111,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Native package publishing now ignores unsupported empty platform directories.
 - Release builds no longer require their not-yet-published optional platform packages.
 
-[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.0...HEAD
+[0.8.0-beta.0]: https://github.com/agnt5dev/sdk-typescript/compare/v0.7.0...v0.8.0-beta.0
 [0.7.0]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.7...v0.7.0
 [0.6.7]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.6...v0.6.7
 [0.6.6]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.5...v0.6.6

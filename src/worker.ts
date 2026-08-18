@@ -31,6 +31,7 @@ import {
 } from './events.js';
 import type { AgentEvent } from './events.js';
 import { loadNativeBindings, tryLoadNativeBindings } from './native-loader.js';
+import { autoEnable as autoEnableCapture } from './integrations/index.js';
 import { isLogLevelEnabled } from './logging.js';
 import {
   executePromptWorkerInput,
@@ -922,6 +923,8 @@ export class Worker {
         console.warn('SDK telemetry initialization:', (error as Error).message);
       }
     }
+
+    await autoEnableCapture();
 
     configurePullWorkerEnvironment(this.options);
 
