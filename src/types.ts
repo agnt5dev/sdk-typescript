@@ -1,4 +1,5 @@
 import type { RuntimeContext } from './runtime-context.js';
+import type { Sandbox } from './sandbox.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import type { WorkerlessFlowControlPolicy } from './flow-control.js';
 import type { ActivationExecution } from './activation.js';
@@ -93,7 +94,16 @@ export interface Context {
   /** Runtime dispatch metadata for this invocation. */
   readonly metadata?: Record<string, string>;
   /** Sandbox workspace attached by Agent when configured. */
-  readonly sandbox?: unknown;
+  /**
+   * Sandbox workspace attached by Agent when configured.
+   *
+   * Typed `unknown` until now, which made the documented
+   * `ctx.sandbox.readFile(...)` in /docs/build/sandboxes a compile error
+   * (TS2339) inside a custom tool — the one place the docs tell you to reach
+   * for it. Every other declaration of this concept already says `Sandbox`:
+   * `agent.ts`, `sandbox-tools.ts` and `skills.ts`.
+   */
+  readonly sandbox?: Sandbox;
   /**
    * Cancellation signal for this invocation. Aborted when the run is
    * cancelled (a CancelExecution arrives). Thread it into fetch/LLM SDK
