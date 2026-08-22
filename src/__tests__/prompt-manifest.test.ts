@@ -57,7 +57,7 @@ Reply to {{customer.name}} about {{topic}}.
       temperature: 0.6,
       maxOutputTokens: 33,
       topP: 0.5,
-      variables: { customer: { name: 'Ada' } as any, topic: 'shipping' },
+      variables: { customer: { name: 'Ada' }, topic: 'shipping' },
     };
 
     const resolved = resolvePromptFromManifest(request, prompt);
