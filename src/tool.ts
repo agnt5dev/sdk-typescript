@@ -288,6 +288,25 @@ export class ToolRegistry {
 }
 
 /**
+ * The callable wrapper returned by {@link tool}.
+ *
+ * Invoking it runs the tool. The underlying {@link Tool} instance is attached
+ * as `_tool`, which is what APIs that take a `Tool` — `MCPServer`, `addTool` —
+ * expect:
+ *
+ * ```typescript
+ * const greet = tool('greet', { ... }, handler);
+ * new MCPServer({ tools: { greet: greet._tool } });
+ * ```
+ */
+export type ToolFunction<TInput = any, TOutput = any> = ToolHandler<
+  TInput,
+  TOutput
+> & {
+  readonly _tool: Tool;
+};
+
+/**
  * Decorator to mark a function as a tool
  *
  * @example
@@ -313,7 +332,7 @@ export function tool<TInput = any, TOutput = any>(
   name: string,
   options: ToolOptions,
   handler: ToolHandler<TInput, TOutput>
-): ToolHandler<TInput, TOutput> {
+): ToolFunction<TInput, TOutput> {
   // Extract description
   const description = options.description || name;
 
@@ -337,7 +356,7 @@ export function tool<TInput = any, TOutput = any>(
   // Attach tool instance for inspection
   (toolWrapper as any)._tool = toolInstance;
 
-  return toolWrapper as ToolHandler<TInput, TOutput>;
+  return toolWrapper as ToolFunction<TInput, TOutput>;
 }
 
 // ─── Built-in Human-in-the-Loop Tools ────────────────────────────────
