@@ -141,7 +141,10 @@ jobs:
 
       - name: Install dependencies
         working-directory: .
-        run: npm install --package-lock=false --ignore-scripts --omit=optional --no-audit --no-fund
+        # The NAPI cross-toolchain itself uses platform-specific optional
+        # packages. Keep them installed; the unpublished SDK platform packages
+        # remain optional and are safely skipped until the publish step.
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build NAPI native module
         working-directory: .
@@ -149,6 +152,7 @@ jobs:
           npx napi build \
             --platform \
             --release \
+            --use-napi-cross \
             --manifest-path native/Cargo.toml \
             --output-dir . \
             --target ${{ matrix.target }}
@@ -160,6 +164,38 @@ jobs:
           path: ./*.node
           if-no-files-found: error
           retention-days: 7
+
+  verify-native-linux:
+    name: Linux compatibility (${{ matrix.node-arch }}, glibc 2.31)
+    needs: build-native-linux
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: node:20-bullseye-slim
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node-arch: x64
+            runner: ubuntu-latest
+            artifact: bindings-linux-x64
+            binding: agnt5-sdk-native.linux-x64-gnu.node
+          - node-arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: bindings-linux-arm64
+            binding: agnt5-sdk-native.linux-arm64-gnu.node
+    steps:
+      - name: Download native binding
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.artifact }}
+          path: ./binding
+
+      - name: Load native binding
+        env:
+          BINDING: ${{ matrix.binding }}
+        run: |
+          ldd --version | head -1
+          node -e 'require("./binding/" + process.env.BINDING)'
 
   build-native-macos:
     name: macOS Native (aarch64-apple-darwin)
@@ -207,7 +243,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: .
-        run: npm install --package-lock=false --ignore-scripts --omit=optional --no-audit --no-fund
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build NAPI native module
         working-directory: .
@@ -229,7 +265,7 @@ jobs:
 
   publish:
     name: Publish to npm
-    needs: [validate-release, build-native-linux, build-native-macos]
+    needs: [validate-release, build-native-linux, verify-native-linux, build-native-macos]
     runs-on: ubuntu-latest
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     outputs:
@@ -253,7 +289,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: .
-        run: npm install --package-lock=false --ignore-scripts --omit=optional --no-audit --no-fund
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8

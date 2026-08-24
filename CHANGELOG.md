@@ -7,6 +7,24 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.0-beta.1] - 2026-08-24
+
+### Changed
+
+- Build Linux native packages with NAPI-RS's glibc 2.17 cross-toolchain and
+  verify both architectures load on glibc 2.31 before publishing.
+- Update the native binding to `agnt5-sdk-core` 0.2.1 so workers prefer the
+  Engine checkpoint endpoint when it is available.
+- Document Vercel workerless routes as Node.js functions and require Webpack or
+  externalized native packages for Next.js 16 builds.
+
+### Fixed
+
+- Restore Vercel Serverless compatibility after the 0.8.0 beta Linux binaries
+  accidentally required glibc 2.39.
+- Export the concrete `Sandbox` type for `Context.sandbox` so documented
+  sandbox calls compile without casts.
+
 ## [0.8.0-beta.0] - 2026-08-12
 
 ### Added
@@ -111,7 +129,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Native package publishing now ignores unsupported empty platform directories.
 - Release builds no longer require their not-yet-published optional platform packages.
 
-[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.0...HEAD
+[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.1...HEAD
+[0.8.0-beta.1]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.0...v0.8.0-beta.1
 [0.8.0-beta.0]: https://github.com/agnt5dev/sdk-typescript/compare/v0.7.0...v0.8.0-beta.0
 [0.7.0]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.7...v0.7.0
 [0.6.7]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.6...v0.6.7
