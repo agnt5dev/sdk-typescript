@@ -6,6 +6,23 @@ Next.js route handlers. It exposes the two AGNT5 workerless protocol paths:
 - `GET /.well-known/agnt5`
 - `POST /agnt5/invoke`
 
+Both routes must use the Node.js runtime. `@agnt5/sdk` loads a native Node-API
+binding and cannot run in Vercel's Edge runtime.
+
+Next.js 16 uses Turbopack by default. Build this integration with
+`next build --webpack`, or keep the native packages external in
+`next.config.ts`:
+
+```typescript
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  serverExternalPackages: ['@agnt5/sdk', 'better-sqlite3'],
+};
+
+export default nextConfig;
+```
+
 Generate one signing secret locally, keep the file private, and store the same
 value in the Vercel project environment before syncing or registering the
 deployment with AGNT5.
