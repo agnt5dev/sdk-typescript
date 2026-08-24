@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.0-beta.2] - 2026-08-24
+
+### Fixed
+
+- Preserve `better-sqlite3` alongside the NAPI platform packages in the
+  published `optionalDependencies` metadata.
+- Fail release packaging before npm publication if a required non-platform
+  optional dependency is removed from the generated package manifest.
+
 ## [0.8.0-beta.1] - 2026-08-24
 
 ### Changed
@@ -129,7 +138,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Native package publishing now ignores unsupported empty platform directories.
 - Release builds no longer require their not-yet-published optional platform packages.
 
-[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.1...HEAD
+[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.2...HEAD
+[0.8.0-beta.2]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.1...v0.8.0-beta.2
 [0.8.0-beta.1]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.0...v0.8.0-beta.1
 [0.8.0-beta.0]: https://github.com/agnt5dev/sdk-typescript/compare/v0.7.0...v0.8.0-beta.0
 [0.7.0]: https://github.com/agnt5dev/sdk-typescript/compare/v0.6.7...v0.7.0
