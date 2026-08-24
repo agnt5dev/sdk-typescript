@@ -83,6 +83,36 @@ jobs:
 
           echo "version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
 
+  verify-publish-manifest:
+    name: Verify published package manifest
+    needs: [validate-release, build-native-linux, build-native-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bindings-*
+          merge-multiple: true
+          path: ./
+
+      - name: Move artifacts to platform packages
+        run: npx napi artifacts -d .
+
+      - name: Exercise NAPI publish manifest generation
+        run: |
+          npx napi prepublish -t npm --no-gh-release --skip-optional-publish
+          npm run verify:publish-manifest
+
   build-native-linux:
     name: Linux Native (${{ matrix.target }})
     needs: validate-release
@@ -265,7 +295,7 @@ jobs:
 
   publish:
     name: Publish to npm
-    needs: [validate-release, build-native-linux, verify-native-linux, build-native-macos]
+    needs: [validate-release, verify-publish-manifest, build-native-linux, verify-native-linux, build-native-macos]
     runs-on: ubuntu-latest
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     outputs:
