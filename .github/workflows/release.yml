@@ -141,7 +141,10 @@ jobs:
 
       - name: Install dependencies
         working-directory: .
-        run: npm install --package-lock=false --ignore-scripts --omit=optional --no-audit --no-fund
+        # The NAPI cross-toolchain itself uses platform-specific optional
+        # packages. Keep them installed; the unpublished SDK platform packages
+        # remain optional and are safely skipped until the publish step.
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build NAPI native module
         working-directory: .
@@ -240,7 +243,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: .
-        run: npm install --package-lock=false --ignore-scripts --omit=optional --no-audit --no-fund
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build NAPI native module
         working-directory: .
@@ -286,7 +289,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: .
-        run: npm install --package-lock=false --ignore-scripts --omit=optional --no-audit --no-fund
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
