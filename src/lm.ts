@@ -39,7 +39,12 @@ import type {
   ActivationDecision,
   ActivationEvidence,
 } from './activation.js';
-import { loadNativeBindings } from './native-loader.js';
+import { tryLoadNativeBindings } from './native-loader.js';
+import {
+  createEdgeLanguageModel,
+  type EdgeProviderConfig,
+  type EdgeProviderName,
+} from './providers/edge.js';
 import { resolvePromptFromManifest } from './prompt-manifest.js';
 import type { LLMRuntimeOptions } from './runtime-context.js';
 
@@ -571,6 +576,19 @@ export class LM {
     this.providerName = providerName;
   }
 
+  private static provider(providerName: EdgeProviderName, config: EdgeProviderConfig): LM {
+    const bindings = tryLoadNativeBindings();
+    if (!bindings) {
+      return new LM(createEdgeLanguageModel(providerName, config), providerName);
+    }
+    const nativeFactoryName = providerName === 'openai_chat' ? 'openaiChat' : providerName;
+    const nativeFactory = bindings.LanguageModel?.[nativeFactoryName];
+    if (typeof nativeFactory !== 'function') {
+      throw new ConfigurationError(`Native LM provider '${providerName}' is unavailable`);
+    }
+    return new LM(nativeFactory.call(bindings.LanguageModel, config), providerName);
+  }
+
   /**
    * Create OpenAI provider
    *
@@ -584,8 +602,7 @@ export class LM {
    * ```
    */
   static openai(config?: OpenAIConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.openai(config), 'openai');
+    return LM.provider('openai', config);
   }
 
   /**
@@ -601,8 +618,7 @@ export class LM {
    * ```
    */
   static anthropic(config?: AnthropicConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.anthropic(config), 'anthropic');
+    return LM.provider('anthropic', config);
   }
 
   /**
@@ -617,14 +633,12 @@ export class LM {
    * ```
    */
   static azure(config: AzureOpenAIConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.azure(config), 'azure');
+    return LM.provider('azure', config);
   }
 
   /** Create Baseten provider */
   static baseten(config?: BasetenConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.baseten(config), 'baseten');
+    return LM.provider('baseten', config);
   }
 
   /**
@@ -640,8 +654,7 @@ export class LM {
    * ```
    */
   static bedrock(config: BedrockConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.bedrock(config), 'bedrock');
+    return LM.provider('bedrock', config);
   }
 
   /**
@@ -657,14 +670,12 @@ export class LM {
    * ```
    */
   static groq(config?: GroqConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.groq(config), 'groq');
+    return LM.provider('groq', config);
   }
 
   /** Create Fireworks AI provider */
   static fireworks(config?: FireworksConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.fireworks(config), 'fireworks');
+    return LM.provider('fireworks', config);
   }
 
   /**
@@ -680,68 +691,57 @@ export class LM {
    * ```
    */
   static openrouter(config?: OpenRouterConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.openrouter(config), 'openrouter');
+    return LM.provider('openrouter', config);
   }
 
   /** Create DeepSeek provider */
   static deepseek(config?: DeepSeekConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.deepseek(config), 'deepseek');
+    return LM.provider('deepseek', config);
   }
 
   /** Create Google (Gemini) provider */
   static google(config?: GoogleConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.google(config), 'google');
+    return LM.provider('google', config);
   }
 
   /** Create Mistral provider */
   static mistral(config?: MistralConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.mistral(config), 'mistral');
+    return LM.provider('mistral', config);
   }
 
   /** Create Lepton provider */
   static lepton(config?: LeptonConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.lepton(config), 'lepton');
+    return LM.provider('lepton', config);
   }
 
   /** Create Ollama provider (local LLM) */
   static ollama(config?: OllamaConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.ollama(config), 'ollama');
+    return LM.provider('ollama', config);
   }
 
   /** Create Together AI provider */
   static together(config?: TogetherConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.together(config), 'together');
+    return LM.provider('together', config);
   }
 
   /** Create xAI (Grok) provider */
   static xai(config?: XaiConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.xai(config), 'xai');
+    return LM.provider('xai', config);
   }
 
   /** Create Moonshot AI (Kimi) provider */
   static moonshot(config?: MoonshotConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.moonshot(config), 'moonshot');
+    return LM.provider('moonshot', config);
   }
 
   /** Create HuggingFace provider */
   static huggingface(config?: HuggingFaceConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.huggingface(config), 'huggingface');
+    return LM.provider('huggingface', config);
   }
 
   /** Create OpenAI Chat-compatible provider (for custom OpenAI-compatible APIs) */
   static openaiChat(config?: OpenAiChatConfig): LM {
-    const bindings = loadNativeBindings();
-    return new LM(bindings.LanguageModel.openaiChat(config), 'openai_chat');
+    return LM.provider('openai_chat', config);
   }
 
   /**

@@ -7,6 +7,7 @@ import {
   debugLog,
   elapsedMs,
   integer,
+  importOptionalModule,
   jsonString,
   libraryCaptureEnabled,
   masterCaptureEnabled,
@@ -58,11 +59,11 @@ export async function enableOpenAICapture(): Promise<boolean> {
   if (enabled) return true;
   if (!masterCaptureEnabled() || !libraryCaptureEnabled('AGNT5_CAPTURE_OPENAI')) return false;
   try {
-    await import('openai');
+    await importOptionalModule('openai');
     const [chat, responses, embeddings] = await Promise.all([
-      import('openai/resources/chat/completions'),
-      import('openai/resources/responses/responses'),
-      import('openai/resources/embeddings'),
+      importOptionalModule('openai/resources/chat/completions'),
+      importOptionalModule('openai/resources/responses/responses'),
+      importOptionalModule('openai/resources/embeddings'),
     ]);
     patchCreate(chat.Completions?.prototype, CHAT);
     patchCreate(responses.Responses?.prototype, RESPONSES);

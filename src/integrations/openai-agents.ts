@@ -16,6 +16,7 @@ import {
   elapsedMs,
   errorMessage,
   integer,
+  importOptionalModule,
   jsonString,
   libraryCaptureEnabled,
   masterCaptureEnabled,
@@ -53,7 +54,7 @@ export async function enableOpenAIAgentsCapture(): Promise<boolean> {
     return false;
   }
   try {
-    const agents = await import('@openai/agents') as AgentsModule;
+    const agents = await importOptionalModule('@openai/agents') as AgentsModule;
     if (typeof agents.addTraceProcessor !== 'function') return false;
     processor ??= new CaptureProcessor();
     agents.setTracingDisabled?.(false);

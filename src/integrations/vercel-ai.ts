@@ -13,6 +13,7 @@ import {
   elapsedMs,
   errorMessage,
   integer,
+  importOptionalModule,
   jsonString,
   libraryCaptureEnabled,
   masterCaptureEnabled,
@@ -56,7 +57,7 @@ export async function enableVercelAICapture(): Promise<boolean> {
   if (!captureAllowed()) return false;
   enabled = true;
   try {
-    const ai = await import('ai') as any;
+    const ai = await importOptionalModule('ai');
     if (!registered && typeof ai.registerTelemetry === 'function') {
       ai.registerTelemetry(journalTelemetry);
       registered = true;
@@ -299,7 +300,7 @@ export class JournalSpanProcessor {
 async function attachOpenTelemetryProcessor(): Promise<void> {
   if (otelAttached) return;
   try {
-    const otel = await import('@opentelemetry/api') as any;
+    const otel = await importOptionalModule('@opentelemetry/api');
     const proxy = otel.trace?.getTracerProvider?.();
     const provider = typeof proxy?.getDelegate === 'function' ? proxy.getDelegate() : proxy;
     if (typeof provider?.addSpanProcessor === 'function') {

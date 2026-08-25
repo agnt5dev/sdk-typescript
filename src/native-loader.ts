@@ -24,8 +24,14 @@ export function loadNativeBindings(): any {
   if (cached) return cached;
   loadAttempted = true;
 
-  const require = createRequire(import.meta.url);
-  const { platform, arch } = process;
+  const moduleUrl = import.meta.url;
+  const nodeProcess = (globalThis as any).process as NodeJS.Process | undefined;
+  if (!moduleUrl || !nodeProcess?.versions?.node) {
+    throw new Error('Native bindings are unavailable in this JavaScript runtime');
+  }
+
+  const require = createRequire(moduleUrl);
+  const { platform, arch } = nodeProcess;
 
   let pkgName: string | null = null;
   switch (platform) {
@@ -42,7 +48,7 @@ export function loadNativeBindings(): any {
     throw new Error(`Unsupported platform ${platform}-${arch}`);
   }
 
-  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const __dirname = dirname(fileURLToPath(moduleUrl));
   for (const suffix of [`${platform}-${arch}`, `${platform}-${arch}-gnu`]) {
     // Published/file dependencies include native/*.node, while a source-tree
     // build also places the binary at the package root.
