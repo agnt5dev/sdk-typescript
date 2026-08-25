@@ -11,15 +11,19 @@ const generate = vi.fn(async (request: any) => ({
   text: 'ok',
 }));
 
-vi.mock('../native-loader.js', () => ({
-  getLoadedNativeBindings: () => null,
-  loadNativeBindings: () => ({
+vi.mock('../native-loader.js', () => {
+  const bindings = {
     LanguageModel: {
       openai: vi.fn(() => ({ generate })),
       anthropic: vi.fn(() => ({ generate })),
     },
-  }),
-}));
+  };
+  return {
+    getLoadedNativeBindings: () => null,
+    tryLoadNativeBindings: () => bindings,
+    loadNativeBindings: () => bindings,
+  };
+});
 
 describe('LM runtime context overrides', () => {
   it('applies runtime LLM overrides to generation requests', async () => {

@@ -35,14 +35,18 @@ const stream = vi.fn(async (request: any, callback: (chunk: any) => void) => {
   });
 });
 
-vi.mock('../native-loader.js', () => ({
-  getLoadedNativeBindings: () => null,
-  loadNativeBindings: () => ({
+vi.mock('../native-loader.js', () => {
+  const bindings = {
     LanguageModel: {
       openai: vi.fn(() => ({ generate, stream })),
     },
-  }),
-}));
+  };
+  return {
+    getLoadedNativeBindings: () => null,
+    tryLoadNativeBindings: () => bindings,
+    loadNativeBindings: () => bindings,
+  };
+});
 
 class ModelActivationTransport {
   readonly beginRequests: BeginActivationRequest[] = [];

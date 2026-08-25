@@ -187,11 +187,6 @@ type ComponentEntry = {
 export function serve<Env = unknown, RuntimeContext = unknown>(
   options: WorkerlessServeOptions<Env, RuntimeContext> = {},
 ): WorkerlessHandler<Env, RuntimeContext> {
-  // Workerless does not establish AsyncLocalStorage execution context yet, so
-  // enabled integrations intentionally remain passthrough during invocations.
-  void import('./integrations/index.js')
-    .then(({ autoEnable }) => autoEnable())
-    .catch(() => undefined);
   const components = collectWorkerlessComponents(options);
   const manifest = buildWorkerlessManifest(options, components);
 

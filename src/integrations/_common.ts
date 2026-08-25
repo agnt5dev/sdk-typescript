@@ -205,3 +205,13 @@ export function jsonString(value: unknown): string {
     return String(value);
   }
 }
+
+/**
+ * Load an optional integration without making it a bundle-time dependency.
+ * Keeping the specifier dynamic lets edge bundlers include the core SDK when
+ * the third-party library is not installed; Node resolves it normally when
+ * capture is explicitly enabled.
+ */
+export async function importOptionalModule(specifier: string): Promise<any> {
+  return import(/* @vite-ignore */ specifier);
+}

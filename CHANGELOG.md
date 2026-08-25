@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Add fetch-based edge-runtime LM providers for OpenAI, Anthropic, Gemini,
+  Azure OpenAI, Bedrock, and OpenAI-compatible APIs.
+
+### Fixed
+
+- Fall back from unavailable native bindings so Cloudflare Workers can
+  construct and invoke module-scope agents, including streaming tool calls.
+- Keep optional capture libraries out of the bundle-time dependency graph so
+  packed SDK consumers do not need provider libraries they do not use.
+
 ## [0.8.0-beta.2] - 2026-08-24
 
 ### Fixed

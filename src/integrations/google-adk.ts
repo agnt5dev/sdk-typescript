@@ -16,6 +16,7 @@ import {
   elapsedMs,
   errorMessage,
   integer,
+  importOptionalModule,
   jsonString,
   libraryCaptureEnabled,
   masterCaptureEnabled,
@@ -55,7 +56,7 @@ export async function enableGoogleADKCapture(): Promise<boolean> {
   if (enabled) return true;
   if (!captureAllowed()) return false;
   try {
-    const adk = await import('@google/adk') as any;
+    const adk = await importOptionalModule('@google/adk');
     const version = String(adk.version ?? '');
     if (!supportedVersion(version)) {
       debugLog(`@google/adk ${version || 'unknown'} is unsupported; capture disabled`);
@@ -83,7 +84,7 @@ export function disableGoogleADKCapture(): void {
 export async function createGoogleADKCapturePlugin(): Promise<any | undefined> {
   if (!captureAllowed()) return undefined;
   try {
-    const adk = await import('@google/adk') as any;
+    const adk = await importOptionalModule('@google/adk');
     if (!supportedVersion(String(adk.version ?? '')) || typeof adk.BasePlugin !== 'function') {
       return undefined;
     }
