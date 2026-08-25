@@ -20,10 +20,63 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
+  validate-pr:
+    name: Validate pull request
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Setup Rust toolchain
+        run: |
+          if ! command -v rustup &> /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+            source "$HOME/.cargo/env"
+          else
+            rustup default stable
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Setup shared compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.16.0"
+
+      - name: Configure build parallelism
+        run: echo "CARGO_BUILD_JOBS=$(nproc 2>/dev/null || echo 4)" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify release workflow
+        run: npm run verify:release-workflow
+
+      - name: Verify publish manifest
+        run: npm run verify:publish-manifest
+
+      - name: Build TypeScript
+        run: npm run build:ts
+
+      - name: Check native Rust module
+        run: cargo check --manifest-path native/Cargo.toml --locked
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats
+
   validate-release:
     name: Validate release metadata
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -117,6 +170,8 @@ jobs:
     name: Linux Native (${{ matrix.target }})
     needs: validate-release
     runs-on: ${{ matrix.runner }}
+    env:
+      RUSTC_WRAPPER: sccache
     strategy:
       fail-fast: false
       matrix:
@@ -124,11 +179,9 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             node-arch: x64
             runner: ubuntu-latest
-            sccache-target: x86_64-unknown-linux-musl
           - target: aarch64-unknown-linux-gnu
             node-arch: arm64
             runner: ubuntu-24.04-arm
-            sccache-target: aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v7
         with:
@@ -148,26 +201,13 @@ jobs:
           rustup target add ${{ matrix.target }}
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-      - name: Install sccache
-        run: |
-          if ! command -v sccache &> /dev/null; then
-            SCCACHE_VERSION="0.8.2"
-            curl -L "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-${{ matrix.sccache-target }}.tar.gz" -o /tmp/sccache.tar.gz
-            tar xzf /tmp/sccache.tar.gz -C /tmp
-            mkdir -p "$HOME/.local/bin"
-            mv "/tmp/sccache-v${SCCACHE_VERSION}-${{ matrix.sccache-target }}/sccache" "$HOME/.local/bin/"
-            rm -rf /tmp/sccache*
-            echo "$HOME/.local/bin" >> $GITHUB_PATH
-          fi
+      - name: Setup shared compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.16.0"
 
-      - name: Configure build caches
-        run: |
-          CACHE_BASE="${HOME}/.cache/agnt5-build"
-          mkdir -p "${CACHE_BASE}/cargo" "${CACHE_BASE}/sccache"
-          echo "CARGO_HOME=${CACHE_BASE}/cargo" >> $GITHUB_ENV
-          echo "SCCACHE_DIR=${CACHE_BASE}/sccache" >> $GITHUB_ENV
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "CARGO_BUILD_JOBS=$(nproc 2>/dev/null || echo 4)" >> $GITHUB_ENV
+      - name: Configure build parallelism
+        run: echo "CARGO_BUILD_JOBS=$(nproc 2>/dev/null || echo 4)" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         working-directory: .
@@ -186,6 +226,9 @@ jobs:
             --manifest-path native/Cargo.toml \
             --output-dir . \
             --target ${{ matrix.target }}
+
+      - name: Show sccache stats
+        run: sccache --show-stats
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -231,6 +274,8 @@ jobs:
     name: macOS Native (aarch64-apple-darwin)
     needs: validate-release
     runs-on: macos-latest
+    env:
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v7
         with:
@@ -250,26 +295,13 @@ jobs:
           rustup target add aarch64-apple-darwin
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-      - name: Install sccache
-        run: |
-          if ! command -v sccache &> /dev/null; then
-            SCCACHE_VERSION="0.8.2"
-            curl -L "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-aarch64-apple-darwin.tar.gz" -o /tmp/sccache.tar.gz
-            tar xzf /tmp/sccache.tar.gz -C /tmp
-            mkdir -p "$HOME/.local/bin"
-            mv "/tmp/sccache-v${SCCACHE_VERSION}-aarch64-apple-darwin/sccache" "$HOME/.local/bin/"
-            rm -rf /tmp/sccache*
-            echo "$HOME/.local/bin" >> $GITHUB_PATH
-          fi
+      - name: Setup shared compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.16.0"
 
-      - name: Configure build caches
-        run: |
-          CACHE_BASE="${HOME}/.cache/agnt5-build"
-          mkdir -p "${CACHE_BASE}/cargo" "${CACHE_BASE}/sccache"
-          echo "CARGO_HOME=${CACHE_BASE}/cargo" >> $GITHUB_ENV
-          echo "SCCACHE_DIR=${CACHE_BASE}/sccache" >> $GITHUB_ENV
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "CARGO_BUILD_JOBS=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)" >> $GITHUB_ENV
+      - name: Configure build parallelism
+        run: echo "CARGO_BUILD_JOBS=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         working-directory: .
@@ -284,6 +316,9 @@ jobs:
             --manifest-path native/Cargo.toml \
             --output-dir . \
             --target aarch64-apple-darwin
+
+      - name: Show sccache stats
+        run: sccache --show-stats
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
