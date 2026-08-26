@@ -7,10 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.0-beta.3] - 2026-08-26
+
 ### Added
 
 - Add fetch-based edge-runtime LM providers for OpenAI, Anthropic, Gemini,
   Azure OpenAI, Bedrock, and OpenAI-compatible APIs.
+
+### Changed
+
+- Update the native binding to `agnt5-sdk-core` 0.2.2 so customer-hosted
+  workers preserve discovered project authority across reconnects and honor a
+  configured `SSL_CERT_FILE` CA bundle without weakening TLS verification.
+- Resolve native prerelease packages from the checked-in `npm/` directories
+  until publish time, removing the dependency on packages not yet in npm.
 
 ### Fixed
 
@@ -150,7 +160,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Native package publishing now ignores unsupported empty platform directories.
 - Release builds no longer require their not-yet-published optional platform packages.
 
-[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.2...HEAD
+[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.3...HEAD
+[0.8.0-beta.3]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.2...v0.8.0-beta.3
 [0.8.0-beta.2]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.1...v0.8.0-beta.2
 [0.8.0-beta.1]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.0...v0.8.0-beta.1
 [0.8.0-beta.0]: https://github.com/agnt5dev/sdk-typescript/compare/v0.7.0...v0.8.0-beta.0

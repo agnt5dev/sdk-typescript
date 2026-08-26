@@ -212,8 +212,8 @@ jobs:
       - name: Install dependencies
         working-directory: .
         # The NAPI cross-toolchain itself uses platform-specific optional
-        # packages. Keep them installed; the unpublished SDK platform packages
-        # remain optional and are safely skipped until the publish step.
+        # packages. Keep them installed; the SDK platform packages resolve from
+        # local optional file dependencies until NAPI rewrites them for publish.
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build NAPI native module
