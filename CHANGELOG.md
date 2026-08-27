@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.0-beta.4] - 2026-08-26
+
+### Fixed
+
+- Update the native binding to `agnt5-sdk-core` 0.2.3 so token-auth
+  customer-hosted workers configure verified TLS for discovered HTTPS runtime
+  endpoints, including coordinator reconnects and engine connections.
+
 ## [0.8.0-beta.3] - 2026-08-26
 
 ### Added
@@ -160,7 +168,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Native package publishing now ignores unsupported empty platform directories.
 - Release builds no longer require their not-yet-published optional platform packages.
 
-[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.3...HEAD
+[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.4...HEAD
+[0.8.0-beta.4]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.3...v0.8.0-beta.4
 [0.8.0-beta.3]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.2...v0.8.0-beta.3
 [0.8.0-beta.2]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.1...v0.8.0-beta.2
 [0.8.0-beta.1]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.0...v0.8.0-beta.1
