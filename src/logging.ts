@@ -9,6 +9,7 @@ import type { Logger } from './types.js';
 import { getCurrentContext } from './async-context.js';
 import { logEvent } from './events.js';
 import { getLoadedNativeBindings } from './native-loader.js';
+import { getCurrentSpanInfo } from './tracing.js';
 
 // ─── Log level management ────────────────────────────────────────────
 
@@ -52,6 +53,34 @@ function getNativeLogFn() {
   return typeof native?.logFromTypescript === 'function'
     ? native.logFromTypescript
     : null;
+}
+
+// ─── Trace correlation ───────────────────────────────────────────────
+
+/**
+ * Trace and span ids to stamp on a log record, resolved from the ambient run.
+ *
+ * Every TypeScript log record used to go out with both fields null, so logs
+ * could not be correlated to their trace even though the run had one
+ * (AGNT5-1073). Two sources, in order:
+ *
+ *  - an active in-process span, which carries both ids;
+ *  - the `trace_id` the runtime stamps on dispatch metadata (sdk-core
+ *    `worker.rs` inserts it), which is the id the control plane joins runs and
+ *    traces on. No span id is available from this source.
+ *
+ * Returns nulls outside a run — worker startup logs belong to no trace.
+ */
+export function currentTraceCorrelation(): {
+  traceId: string | null;
+  spanId: string | null;
+} {
+  const span = getCurrentSpanInfo();
+  if (span) {
+    return { traceId: span.traceId, spanId: span.spanId };
+  }
+  const traceId = getCurrentContext()?.metadata?.trace_id;
+  return { traceId: typeof traceId === 'string' && traceId ? traceId : null, spanId: null };
 }
 
 // ─── Console formatting ──────────────────────────────────────────────
@@ -131,7 +160,17 @@ export class ContextLogger implements Logger {
     // Try NAPI first
     const nativeLog = getNativeLogFn();
     if (nativeLog) {
-      nativeLog(level, `${this._name}: ${message}`, this._runId, this._traceId, this._spanId, attrOrNull);
+      // An explicitly supplied id wins; otherwise inherit the run's trace so
+      // the record is correlatable (AGNT5-1073).
+      const ambient = currentTraceCorrelation();
+      nativeLog(
+        level,
+        `${this._name}: ${message}`,
+        this._runId,
+        this._traceId ?? ambient.traceId,
+        this._spanId ?? ambient.spanId,
+        attrOrNull,
+      );
     }
 
     // Emit a log.* journal event tied to the active run so the Studio Logs

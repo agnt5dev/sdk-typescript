@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { WorkerOptions, Context, StepOptions } from './types.js';
+import type { WorkerOptions, Context, Logger, StepOptions } from './types.js';
 import { FunctionRegistry } from './function.js';
 import { WorkflowRegistry } from './workflow.js';
 import type { TriggerSpec } from './workflow.js';
@@ -32,7 +32,8 @@ import {
 import type { AgentEvent } from './events.js';
 import { loadNativeBindings, tryLoadNativeBindings } from './native-loader.js';
 import { autoEnable as autoEnableCapture } from './integrations/index.js';
-import { isLogLevelEnabled } from './logging.js';
+import { ContextLogger, currentTraceCorrelation, isLogLevelEnabled } from './logging.js';
+import type { LogLevel } from './logging.js';
 import {
   executePromptWorkerInput,
   isPromptExecutorComponent,
@@ -564,30 +565,42 @@ class SimpleContext implements Context {
 
   get logger() {
     const runId = this.runId;
+    // Correlation is resolved per call rather than per getter: a handler may
+    // open a span after taking its logger, and the record should carry it.
+    // Both ids used to go out hardcoded null, leaving every record
+    // uncorrelated from its trace (AGNT5-1073).
+    const emit = (level: LogLevel, message: string, meta?: Record<string, any>) => {
+      const { traceId, spanId } = currentTraceCorrelation();
+      tryLoadNativeBindings()?.logFromTypescript(
+        level,
+        message,
+        runId,
+        traceId,
+        spanId,
+        meta ?? null,
+      );
+      this._emitLog(level, message, meta);
+    };
     return {
       info: (message: string, meta?: Record<string, any>) => {
         if (!isLogLevelEnabled('INFO')) return;
         console.log(`[INFO] ${message}`, meta || {});
-        tryLoadNativeBindings()?.logFromTypescript('INFO', message, runId, null, null, meta ?? null);
-        this._emitLog('INFO', message, meta);
+        emit('INFO', message, meta);
       },
       error: (message: string, meta?: Record<string, any>) => {
         if (!isLogLevelEnabled('ERROR')) return;
         console.error(`[ERROR] ${message}`, meta || {});
-        tryLoadNativeBindings()?.logFromTypescript('ERROR', message, runId, null, null, meta ?? null);
-        this._emitLog('ERROR', message, meta);
+        emit('ERROR', message, meta);
       },
       warn: (message: string, meta?: Record<string, any>) => {
         if (!isLogLevelEnabled('WARN')) return;
         console.warn(`[WARN] ${message}`, meta || {});
-        tryLoadNativeBindings()?.logFromTypescript('WARN', message, runId, null, null, meta ?? null);
-        this._emitLog('WARN', message, meta);
+        emit('WARN', message, meta);
       },
       debug: (message: string, meta?: Record<string, any>) => {
         if (!isLogLevelEnabled('DEBUG')) return;
         console.debug(`[DEBUG] ${message}`, meta || {});
-        tryLoadNativeBindings()?.logFromTypescript('DEBUG', message, runId, null, null, meta ?? null);
-        this._emitLog('DEBUG', message, meta);
+        emit('DEBUG', message, meta);
       },
     };
   }
@@ -1101,6 +1114,13 @@ export class Worker {
         const attempt = parseInt(message.metadata?.attempt || '0', 10);
         const maxAttempts = parseInt(message.metadata?.max_attempts || '1', 10);
 
+        // Hoisted so the catch below can log through the run's own logger.
+        // ctx is scoped to the try, which is why the failure path used to fall
+        // back to console.error — and console.* never reaches OTLP, so the
+        // error never landed in the run's logs at all (AGNT5-1073).
+        const dispatchedAtNs = BigInt(Date.now()) * 1_000_000n;
+        let runLogger: Logger | undefined;
+
         try {
           if (isLogLevelEnabled('DEBUG')) {
             console.debug(`[DEBUG] Received ${message.componentType} execution: ${message.componentName}`);
@@ -1153,6 +1173,7 @@ export class Worker {
           // user_response/pause_index from request.metadata on resume.
           ctx.loadReplayState(contextMetadata);
 
+          runLogger = ctx.logger;
           ctx.logger.info(
             `run.started | ${message.componentType} ${message.componentName} | run_id=${runId}`,
           );
@@ -1552,6 +1573,21 @@ export class Worker {
               eventType: 'run.cancelled',
             });
           }
+
+          // Mirrors the run.completed line above. Must go through the run
+          // logger rather than console.error, which is not bridged to OTLP,
+          // and must sit outside the isPullDispatch guard so pull-mode
+          // dispatches log their failures too (AGNT5-1073). Falls back to a
+          // run-scoped logger when the throw beat context creation (e.g. a
+          // malformed inputJson), so those failures are attributable as well.
+          const durationMs = Number(
+            (BigInt(Date.now()) * 1_000_000n - dispatchedAtNs) / 1_000_000n,
+          );
+          (runLogger ?? new ContextLogger(this.serviceName, { runId })).error(
+            `run.failed | ${message.componentType} ${message.componentName} | ` +
+              `run_id=${runId} duration_ms=${durationMs} ` +
+              `error=${(error as Error).message}`,
+          );
 
           if (!isPullDispatch) {
             try {

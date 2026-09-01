@@ -13,7 +13,8 @@ import type { HITLInputType, HITLOption } from './errors.js';
 import { existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { isLogLevelEnabled } from './logging.js';
+import { currentTraceCorrelation, isLogLevelEnabled } from './logging.js';
+import type { LogLevel } from './logging.js';
 import { getLoadedNativeBindings } from './native-loader.js';
 import {
   ActivationClient,
@@ -321,26 +322,34 @@ export class ContextImpl implements Context {
   get logger(): Logger {
     const runId = this.runId;
     const logFn = getNativeLogFn();
+    // Correlation is resolved per call rather than per getter: a handler may
+    // open a span after taking its logger, and the record should carry it.
+    // Both ids used to go out hardcoded null, leaving every record
+    // uncorrelated from its trace (AGNT5-1073).
+    const emit = (level: LogLevel, message: string, meta?: Record<string, any>) => {
+      const { traceId, spanId } = currentTraceCorrelation();
+      logFn?.(level, message, runId, traceId, spanId, (meta as Record<string, string>) ?? null);
+    };
     return {
       info: (message: string, meta?: Record<string, any>) => {
         if (!isLogLevelEnabled('INFO')) return;
         console.log(`[INFO] ${message}`, meta || '');
-        logFn?.('INFO', message, runId, null, null, meta as Record<string, string> ?? null);
+        emit('INFO', message, meta);
       },
       error: (message: string, meta?: Record<string, any>) => {
         if (!isLogLevelEnabled('ERROR')) return;
         console.error(`[ERROR] ${message}`, meta || '');
-        logFn?.('ERROR', message, runId, null, null, meta as Record<string, string> ?? null);
+        emit('ERROR', message, meta);
       },
       warn: (message: string, meta?: Record<string, any>) => {
         if (!isLogLevelEnabled('WARN')) return;
         console.warn(`[WARN] ${message}`, meta || '');
-        logFn?.('WARN', message, runId, null, null, meta as Record<string, string> ?? null);
+        emit('WARN', message, meta);
       },
       debug: (message: string, meta?: Record<string, any>) => {
         if (!isLogLevelEnabled('DEBUG')) return;
         console.debug(`[DEBUG] ${message}`, meta || '');
-        logFn?.('DEBUG', message, runId, null, null, meta as Record<string, string> ?? null);
+        emit('DEBUG', message, meta);
       },
     };
   }
