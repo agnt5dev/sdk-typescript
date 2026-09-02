@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.0-beta.6] - 2026-09-02
+
+### Fixed
+
+- Preserve the runtime-authored assignment commit offset on lifecycle records
+  so append-time lease fencing can bridge projection lag immediately after a
+  pull claim.
+
 ## [0.8.0-beta.5] - 2026-09-02
 
 ### Changed

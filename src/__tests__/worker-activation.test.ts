@@ -264,6 +264,7 @@ describe('managed worker durable activations', () => {
       dispatch_mode: 'pull',
       worker_id: 'worker-1',
       lease_attempt: '7',
+      assignment_commit_offset: '42',
       workerless_signing_secret: 'must-not-leak',
     };
 
@@ -275,6 +276,7 @@ describe('managed worker durable activations', () => {
       worker_session_id: 'session-1',
       lease_id: 'lease-1',
       lease_attempt: '7',
+      assignment_commit_offset: '42',
       run_authority: 'run-authority-1',
       lease_authority: 'lease-authority-1',
     };
