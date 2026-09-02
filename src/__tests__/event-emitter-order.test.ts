@@ -80,6 +80,7 @@ describe('EventEmitter ordering', () => {
       worker_session_id: 'session-1',
       lease_id: 'lease-1',
       lease_attempt: '1',
+      assignment_commit_offset: '42',
     });
     emitter.setWorker(nativeWorker);
 
@@ -94,6 +95,7 @@ describe('EventEmitter ordering', () => {
       metadata: {
         lease_id: 'forged-lease',
         worker_id: 'forged-worker',
+        assignment_commit_offset: '999',
         custom: 'preserved',
       },
     } as any);
@@ -101,6 +103,7 @@ describe('EventEmitter ordering', () => {
     expect(metadata[0]).toMatchObject({
       lease_id: 'lease-1',
       worker_id: 'worker-1',
+      assignment_commit_offset: '42',
       custom: 'preserved',
     });
   });
