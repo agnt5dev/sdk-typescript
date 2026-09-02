@@ -320,6 +320,8 @@ pub struct NativeBeginActivationRequest {
     pub run_authority: Buffer,
     pub lease_authority: Buffer,
     pub child: Option<NativeChildActivationLinkage>,
+    pub display_name: String,
+    pub input_data: Option<Buffer>,
 }
 
 #[cfg(feature = "durable-activation-v1")]
@@ -360,6 +362,7 @@ pub struct NativeCompleteActivationRequest {
     pub latency_ms: i64,
     pub provider: String,
     pub model: String,
+    pub cached_tokens: i64,
     pub evidence: Vec<NativeActivationEvidence>,
 }
 
@@ -393,6 +396,7 @@ pub struct NativeFailActivationRequest {
     pub retryable: bool,
     pub external_outcome_certainty: String,
     pub evidence: Vec<NativeActivationEvidence>,
+    pub latency_ms: i64,
 }
 
 #[cfg(feature = "durable-activation-v1")]
@@ -630,6 +634,21 @@ pub struct Worker {
 
 #[cfg(feature = "durable-activation-v1")]
 impl Worker {
+    async fn flush_activation_boundary(&self, run_id: &str) -> napi::Result<()> {
+        let worker = {
+            let guard = self.emit_worker.lock().map_err(|error| {
+                Error::from_reason(format!("Failed to lock emit_worker: {error}"))
+            })?;
+            guard
+                .clone()
+                .ok_or_else(|| Error::from_reason("emit_worker not available"))?
+        };
+        worker
+            .flush_run_events_before_durable_write(run_id)
+            .await
+            .map_err(native_activation_error)
+    }
+
     async fn connected_activation_adapter(
         &self,
     ) -> napi::Result<tokio::sync::MutexGuard<'_, Option<ActivationAdapter>>> {
@@ -784,6 +803,7 @@ impl Worker {
         &self,
         request: NativeBeginActivationRequest,
     ) -> Result<NativeActivationDecision> {
+        self.flush_activation_boundary(&request.run_id).await?;
         let request = BeginActivationRequest {
             project_id: request.project_id,
             run_id: request.run_id,
@@ -803,6 +823,11 @@ impl Worker {
                 child_definition_digest: child.child_definition_digest.to_vec(),
                 join_policy: child.join_policy,
             }),
+            display_name: request.display_name,
+            input_data: request
+                .input_data
+                .map(|data| data.to_vec())
+                .unwrap_or_default(),
         };
         let mut adapter = self.connected_activation_adapter().await?;
         let decision = adapter
@@ -820,6 +845,7 @@ impl Worker {
         &self,
         request: NativeCompleteActivationRequest,
     ) -> Result<NativeActivationCompletionReceipt> {
+        self.flush_activation_boundary(&request.run_id).await?;
         let request = CompleteActivationRequest {
             project_id: request.project_id,
             run_id: request.run_id,
@@ -841,6 +867,7 @@ impl Worker {
                 latency_ms: request.latency_ms,
                 provider: request.provider,
                 model: request.model,
+                cached_tokens: request.cached_tokens,
             }),
             evidence: native_activation_evidence(request.evidence),
         };
@@ -865,6 +892,7 @@ impl Worker {
         &self,
         request: NativeFailActivationRequest,
     ) -> Result<NativeActivationFailureReceipt> {
+        self.flush_activation_boundary(&request.run_id).await?;
         if request.external_outcome_certainty != "UNKNOWN" {
             return Err(native_activation_bridge_error(
                 "INVALID_ARGUMENT",
@@ -888,6 +916,7 @@ impl Worker {
             retryable: request.retryable,
             external_outcome_certainty: ActivationExternalOutcomeCertainty::Unknown as i32,
             evidence: native_activation_evidence(request.evidence),
+            latency_ms: request.latency_ms,
         };
         let mut adapter = self.connected_activation_adapter().await?;
         let receipt = adapter

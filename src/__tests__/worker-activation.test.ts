@@ -5,6 +5,11 @@ import { Worker } from '../worker.js';
 import { WorkflowRegistry, workflow } from '../workflow.js';
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+function stepCheckpoints(native: ReturnType<typeof activationNative>) {
+  return native.emitCheckpoint.mock.calls.filter(call => call[1].startsWith('workflow.step.'));
+}
 
 function activationMetadata(): Record<string, string> {
   return {
@@ -82,8 +87,13 @@ describe('managed worker durable activations', () => {
 
   it('uses activation admission and completion for ctx.step with an explicit key', async () => {
     let executions = 0;
+    let observed: { activationId?: string; correlationId?: string } = {};
     workflow('durable-workflow', async ctx => ctx.step('charge', async () => {
       executions += 1;
+      observed = {
+        activationId: ctx.activation?.activationId,
+        correlationId: (ctx as any).getCurrentCorrelationId(),
+      };
       return 'charged';
     }, { key: 'order-42' }));
     const native = activationNative();
@@ -95,19 +105,43 @@ describe('managed worker durable activations', () => {
     expect(response.eventType).toBe('run.completed');
     expect(executions).toBe(1);
     expect(native.beginActivation).toHaveBeenCalledOnce();
-    expect(native.beginActivation.mock.calls[0][0].stableKey).toBe('step:charge:order-42');
-    expect(native.completeActivation).toHaveBeenCalledOnce();
-    const lifecycle = native.emitCheckpoint.mock.calls.filter(
-      call => call[1].startsWith('workflow.step.'),
-    );
-    expect(lifecycle.map(call => call[1])).toEqual([
-      'workflow.step.started',
-      'workflow.step.completed',
-    ]);
-    expect(lifecycle[1][4]).toMatchObject({
-      activation_attempt: '1',
-      accepted_journal_offset: '12',
+    const begin = native.beginActivation.mock.calls[0][0];
+    expect(begin.stableKey).toBe('step:charge:order-42');
+    expect(begin.displayName).toBe('charge');
+    expect(JSON.parse(decoder.decode(begin.inputData))).toEqual({
+      step_name: 'charge',
+      step_key: 'step:charge:order-42',
+      input: null,
     });
+    expect(native.completeActivation).toHaveBeenCalledOnce();
+    expect(native.completeActivation.mock.calls[0][0].latencyMs).toBeGreaterThanOrEqual(0);
+    // The runtime journals the step boundary from the activation RPCs; the
+    // SDK emits no decorative workflow.step.* checkpoint of its own.
+    expect(stepCheckpoints(native)).toHaveLength(0);
+    // The step body sees the activation as the ambient correlation id so
+    // nested function.* events and logs parent to the journal record.
+    expect(observed.activationId).toMatch(/^actv1_/);
+    expect(observed.correlationId).toBe(observed.activationId);
+  });
+
+  it('records a failed step through the activation RPC without a checkpoint', async () => {
+    workflow('durable-workflow', async ctx => ctx.step('charge', async () => {
+      throw new Error('card declined');
+    }));
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    const response = await dispatch(worker);
+
+    expect(response.eventType).toBe('run.failed');
+    expect(native.failActivation).toHaveBeenCalledOnce();
+    expect(native.failActivation.mock.calls[0][0]).toMatchObject({
+      errorCode: 'STEP_FAILED',
+      latencyMs: expect.any(Number),
+    });
+    expect(native.completeActivation).not.toHaveBeenCalled();
+    expect(stepCheckpoints(native)).toHaveLength(0);
   });
 
   it('yields durable sleep authority without holding a local timer', async () => {
@@ -251,13 +285,9 @@ describe('managed worker durable activations', () => {
       call => call[1] === 'run.started',
     );
     const startedMetadata = batchedStarted?.metadata ?? directStarted?.[4];
-    const stepStarted = native.emitCheckpoint.mock.calls.find(
-      call => call[1] === 'workflow.step.started',
-    );
     expect(startedMetadata).toMatchObject(expectedAuthority);
-    expect(stepStarted?.[4]).toMatchObject(expectedAuthority);
     expect(startedMetadata).not.toHaveProperty('workerless_signing_secret');
-    expect(stepStarted?.[4]).not.toHaveProperty('workerless_signing_secret');
+    expect(stepCheckpoints(native)).toHaveLength(0);
   });
 
   it('replays accepted output without executing user code', async () => {
@@ -286,12 +316,11 @@ describe('managed worker durable activations', () => {
     const response = await dispatch(worker);
 
     expect(response.eventType).toBe('run.completed');
+    expect(JSON.parse(response.outputJson)).toBe('charged');
     expect(executions).toBe(0);
     expect(native.completeActivation).not.toHaveBeenCalled();
-    const completed = native.emitCheckpoint.mock.calls.find(
-      call => call[1] === 'workflow.step.completed',
-    );
-    expect(completed?.[4]).toMatchObject({ cache_hit: 'true' });
+    // A REPLAY begin appends nothing to the journal and the SDK adds nothing.
+    expect(stepCheckpoints(native)).toHaveLength(0);
   });
 
   it('does not complete the run when completion acknowledgement is lost', async () => {

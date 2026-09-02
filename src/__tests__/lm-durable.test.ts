@@ -142,6 +142,15 @@ describe('LM durable activation', () => {
     expect(transport.beginRequests[0].stableKey).toBe('model:openai/gpt-4o-mini:0');
     expect(transport.beginRequests[0].recoveryPolicy)
       .toBe(ActivationRecoveryPolicy.UnknownOutcome);
+    expect(transport.beginRequests[0].displayName).toBe('openai/gpt-4o-mini');
+    expect(JSON.parse(new TextDecoder().decode(transport.beginRequests[0].inputData)))
+      .toMatchObject({
+        model: 'openai/gpt-4o-mini',
+        provider: 'openai',
+        tools_count: 0,
+        max_tokens: null,
+        messages: [{ role: 'user', content: 'hello' }],
+      });
     expect(transport.completeRequests).toHaveLength(1);
     expect(transport.completeRequests[0].usage).toMatchObject({
       tokensIn: 3,

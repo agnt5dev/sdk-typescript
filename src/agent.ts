@@ -31,6 +31,7 @@ import {
   ChildJoinPolicy,
   activationId,
   childActivationRequestFromContext,
+  currentActivation,
   runWithActivation,
 } from './activation.js';
 import type { ActivationDecision } from './activation.js';
@@ -639,6 +640,14 @@ export class Agent {
     );
   }
 
+  /**
+   * Activation id of the durable CHILD record currently managing this
+   * agent's `stream()`. While set, the runtime journals `agent.*` for the
+   * delegated run and the stream uses it as the agent correlation id so
+   * iterations parent to that record.
+   */
+  private _activationManaged?: string;
+
   private async runDelegatedChild(
     ctx: Context,
     message: string,
@@ -676,8 +685,10 @@ export class Agent {
         history: history ? JSON.parse(JSON.stringify(history)) : null,
       },
       joinPolicy,
+      displayName: this.name,
     });
     let decision: ActivationDecision | undefined;
+    const startMs = Date.now();
     const response = await client.run(request, async () => {
       if (!decision) {
         throw new ActivationError(
@@ -685,9 +696,15 @@ export class Agent {
           'child activation executed without admitted authority',
         );
       }
-      return runWithActivation(decision, async () => {
-        const result = await this.run(message, ctx, history);
-        return { output: result.output, toolCalls: result.toolCalls };
+      const admitted = decision;
+      return runWithActivation(admitted, async () => {
+        this._activationManaged = admitted.activationId;
+        try {
+          const result = await this.run(message, ctx, history);
+          return { output: result.output, toolCalls: result.toolCalls };
+        } finally {
+          this._activationManaged = undefined;
+        }
       });
     }, {
       encodeOutput: value => new TextEncoder().encode(JSON.stringify(value)),
@@ -695,7 +712,7 @@ export class Agent {
         output: string;
         toolCalls: AgentResult['toolCalls'];
       },
-      latencyMs: () => 0,
+      latencyMs: () => Date.now() - startMs,
       onAdmitted: admitted => { decision = admitted; },
       failureErrorCode: 'CHILD_FAILED',
       failureRetryable: true,
@@ -886,6 +903,7 @@ export class Agent {
 
   private async *streamWithNewLM(
     request: LMGenerateRequest,
+    onActivation?: (activationId: string) => void,
   ): AsyncIterableIterator<string | LanguageModelStreamChunk> {
     const chunks: LMCallbackChunk[] = [];
     let finished = false;
@@ -899,6 +917,10 @@ export class Agent {
     };
 
     const streamPromise = (this.model as LM).stream(request, chunk => {
+      // The provider callback runs inside the durable model activation scope;
+      // the consuming generator does not, so capture the id here.
+      const activation = currentActivation();
+      if (activation) onActivation?.(activation.activationId);
       chunks.push(chunk);
       notify();
     }).then(
@@ -960,8 +982,14 @@ export class Agent {
     const lmCid = generateCid();
     const startMs = Date.now();
     const requestConfig = request.config;
+    // Under durable activations the runtime journals the `lm.*` boundary
+    // from the model activation; only stream deltas flow from here, keyed by
+    // the activation id so they parent to that record.
+    const durable = context.metadata?.durable_activation_v1 === 'true';
+    let activationCid: string | undefined;
+    const streamCid = () => activationCid ?? lmCid;
 
-    try {
+    if (!durable) try {
       await context.emit(
         lmStarted(lmCid, parentCorrelationId, {
           model: this.modelName,
@@ -987,7 +1015,7 @@ export class Agent {
 
     try {
       const stream = this.isNewLM
-        ? this.streamWithNewLM(request as LMGenerateRequest)
+        ? this.streamWithNewLM(request as LMGenerateRequest, id => { activationCid = id; })
         : (this.model as LanguageModel).stream!(request as GenerateRequest);
       for await (const chunk of stream) {
         if (typeof chunk === 'string') {
@@ -997,7 +1025,7 @@ export class Agent {
               kind: 'event',
               event: lmStreamEvent(
                 'lm.message.start',
-                lmCid,
+                streamCid(),
                 parentCorrelationId,
                 { index: 0 },
               ),
@@ -1028,7 +1056,7 @@ export class Agent {
               kind: 'event',
               event: lmStreamEvent(
                 'lm.message.start',
-                lmCid,
+                streamCid(),
                 parentCorrelationId,
                 { index },
               ),
@@ -1040,7 +1068,7 @@ export class Agent {
               kind: 'event',
               event: lmStreamEvent(
                 'lm.message.delta',
-                lmCid,
+                streamCid(),
                 parentCorrelationId,
                 { index, content: chunk.content },
               ),
@@ -1052,7 +1080,7 @@ export class Agent {
               kind: 'event',
               event: lmStreamEvent(
                 'lm.message.stop',
-                lmCid,
+                streamCid(),
                 parentCorrelationId,
                 { index },
               ),
@@ -1063,7 +1091,7 @@ export class Agent {
               kind: 'event',
               event: lmStreamEvent(
                 'lm.thinking.start',
-                lmCid,
+                streamCid(),
                 parentCorrelationId,
                 { index },
               ),
@@ -1074,7 +1102,7 @@ export class Agent {
               kind: 'event',
               event: lmStreamEvent(
                 'lm.thinking.delta',
-                lmCid,
+                streamCid(),
                 parentCorrelationId,
                 { index, content: chunk.content },
               ),
@@ -1085,7 +1113,7 @@ export class Agent {
               kind: 'event',
               event: lmStreamEvent(
                 'lm.thinking.stop',
-                lmCid,
+                streamCid(),
                 parentCorrelationId,
                 { index },
               ),
@@ -1096,7 +1124,7 @@ export class Agent {
               kind: 'event',
               event: lmStreamEvent(
                 'lm.tool_call.start',
-                lmCid,
+                streamCid(),
                 parentCorrelationId,
                 {
                   index,
@@ -1111,7 +1139,7 @@ export class Agent {
               kind: 'event',
               event: lmStreamEvent(
                 'lm.tool_call.delta',
-                lmCid,
+                streamCid(),
                 parentCorrelationId,
                 { index, inputDelta: chunk.inputDelta },
               ),
@@ -1122,7 +1150,7 @@ export class Agent {
               kind: 'event',
               event: lmStreamEvent(
                 'lm.tool_call.stop',
-                lmCid,
+                streamCid(),
                 parentCorrelationId,
                 {
                   index,
@@ -1141,7 +1169,7 @@ export class Agent {
           kind: 'event',
           event: lmStreamEvent(
             'lm.message.stop',
-            lmCid,
+            streamCid(),
             parentCorrelationId,
             { index: 0 },
           ),
@@ -1153,7 +1181,7 @@ export class Agent {
         response = { ...response, text };
       }
 
-      try {
+      if (!durable) try {
         const usage = response.usage;
         await context.emit(
           lmCompleted(lmCid, parentCorrelationId, {
@@ -1172,7 +1200,7 @@ export class Agent {
       }
       yield { kind: 'response', response };
     } catch (error) {
-      try {
+      if (!durable) try {
         await context.emit(
           lmFailed(lmCid, parentCorrelationId, {
             model: this.modelName,
@@ -1231,8 +1259,12 @@ export class Agent {
     const startMs = Date.now();
     const reqAny = request as any;
     const ctx = callbackContext.context;
+    // Under durable activations the runtime journals the `lm.*` boundary
+    // from the model activation, so no decorative lifecycle is emitted here.
+    const emitLifecycle = Boolean(parentCid) &&
+      ctx.metadata?.durable_activation_v1 !== 'true';
 
-    if (parentCid) {
+    if (emitLifecycle) {
       try {
         await ctx.emit(
           lmStarted(lmCid, parentCid, {
@@ -1272,7 +1304,7 @@ export class Agent {
         }
       }
     } catch (err) {
-      if (parentCid) {
+      if (emitLifecycle) {
         try {
           await ctx.emit(
             lmFailed(lmCid, parentCid, {
@@ -1290,7 +1322,7 @@ export class Agent {
       throw err;
     }
 
-    if (parentCid) {
+    if (emitLifecycle) {
       const durationMs = Date.now() - startMs;
       const usage = response.usage;
       try {
@@ -1386,6 +1418,7 @@ export class Agent {
       toolCtx.context,
       toolCtx.args,
       toolCtx.providerToolCallId,
+      { toolCallId: toolCtx.toolCallId, iteration: toolCtx.iteration },
     );
 
     if (this.callbacks.afterTool) {
@@ -1416,7 +1449,11 @@ export class Agent {
     context?: Context,
     history?: Message[],
   ): AsyncGenerator<AgentEvent | AgentResult, void, undefined> {
-    const agentCorrelationId = randomUUID();
+    // When a durable CHILD activation manages this run, the runtime journals
+    // the `agent.*` boundary itself: skip the decorative lifecycle and parent
+    // iterations to the activation record.
+    const managed = this._activationManaged;
+    const agentCorrelationId = managed ?? randomUUID();
 
     // Create context if not provided
     const ctx = context || new ContextImpl(
@@ -1438,7 +1475,7 @@ export class Agent {
     const allToolCalls: AgentResult['toolCalls'] = [];
 
     // ── AgentStarted ──
-    yield agentStarted(this.name, agentCorrelationId, {
+    if (!managed) yield agentStarted(this.name, agentCorrelationId, {
       agentModel: this.modelName,
       toolNames,
       maxIterations: this.maxIterations,
@@ -1449,7 +1486,7 @@ export class Agent {
     try {
       const beforeAgentResult = await this.runBeforeAgentCallback(ctx, userMessage, history);
       if (beforeAgentResult) {
-        yield agentCompleted(this.name, agentCorrelationId, {
+        if (!managed) yield agentCompleted(this.name, agentCorrelationId, {
           iterations: 0,
           toolCallsCount: beforeAgentResult.toolCalls.length,
           handoffTo: beforeAgentResult.handoffTo,
@@ -1552,8 +1589,13 @@ export class Agent {
               id: tc.id,
             });
 
+            // A durable tool activation is journaled by the runtime as the
+            // `tool_call.*` record; only non-durable tools get SDK lifecycle.
+            const tool = this.tools.get(toolName);
+            const journaled = tool?.usesDurableActivation(ctx) ?? false;
+
             // ── ToolCallStarted ──
-            yield toolCallStarted(tcId, iterCorrelationId, {
+            if (!journaled) yield toolCallStarted(tcId, iterCorrelationId, {
               toolName,
               toolCallId: tcId,
               inputData: { arguments: toolArgsStr },
@@ -1562,7 +1604,6 @@ export class Agent {
 
             try {
               const toolArgs = JSON.parse(toolArgsStr);
-              const tool = this.tools.get(toolName);
               if (!tool) {
                 yield toolCallFailed(tcId, iterCorrelationId, {
                   toolName,
@@ -1587,7 +1628,7 @@ export class Agent {
 
               // ── Handoff detection ──
               if (result && typeof result === 'object' && (result as any)._handoff) {
-                yield toolCallCompleted(tcId, iterCorrelationId, {
+                if (!journaled) yield toolCallCompleted(tcId, iterCorrelationId, {
                   toolName,
                   toolCallId: tcId,
                   outputData: { result: (result as any).output ?? null, handoff: true },
@@ -1604,7 +1645,7 @@ export class Agent {
                 handoffResult = await this.runAfterAgentCallback(ctx, userMessage, history, handoffResult);
 
                 // ── AgentCompleted (with handoff) ──
-                yield agentCompleted(this.name, agentCorrelationId, {
+                if (!managed) yield agentCompleted(this.name, agentCorrelationId, {
                   iterations: completedIterations,
                   toolCallsCount: allToolCalls.length,
                   handoffTo: handoffResult.handoffTo,
@@ -1618,7 +1659,7 @@ export class Agent {
               }
 
               const resultText = JSON.stringify(result);
-              yield toolCallCompleted(tcId, iterCorrelationId, {
+              if (!journaled) yield toolCallCompleted(tcId, iterCorrelationId, {
                 toolName,
                 toolCallId: tcId,
                 outputData: { result: resultText },
@@ -1632,7 +1673,7 @@ export class Agent {
               if ((error as any)?.name === 'WaitingForUserInputError') {
                 throw error;
               }
-              yield toolCallFailed(tcId, iterCorrelationId, {
+              if (!journaled) yield toolCallFailed(tcId, iterCorrelationId, {
                 toolName,
                 toolCallId: tcId,
                 error: String(error),
@@ -1675,7 +1716,7 @@ export class Agent {
           };
           agentResult = await this.runAfterAgentCallback(ctx, userMessage, history, agentResult);
           // ── AgentCompleted ──
-          yield agentCompleted(this.name, agentCorrelationId, {
+          if (!managed) yield agentCompleted(this.name, agentCorrelationId, {
             iterations: completedIterations,
             toolCallsCount: agentResult.toolCalls.length,
             handoffTo: agentResult.handoffTo,
@@ -1701,7 +1742,7 @@ export class Agent {
       };
       agentResult = await this.runAfterAgentCallback(ctx, userMessage, history, agentResult);
 
-      yield agentCompleted(this.name, agentCorrelationId, {
+      if (!managed) yield agentCompleted(this.name, agentCorrelationId, {
         iterations: completedIterations,
         toolCallsCount: agentResult.toolCalls.length,
         handoffTo: agentResult.handoffTo,
@@ -1712,7 +1753,7 @@ export class Agent {
 
       yield agentResult;
     } catch (error) {
-      yield agentFailed(this.name, agentCorrelationId, {
+      if (!managed) yield agentFailed(this.name, agentCorrelationId, {
         iterations: completedIterations,
         error: String(error),
       });

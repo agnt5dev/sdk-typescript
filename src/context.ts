@@ -19,9 +19,10 @@ import { getLoadedNativeBindings } from './native-loader.js';
 import {
   ActivationClient,
   currentActivation,
+  runWithActivation,
   stepActivationRequest,
 } from './activation.js';
-import type { ActivationExecution } from './activation.js';
+import type { ActivationDecision, ActivationExecution } from './activation.js';
 
 function getNativeLogFn() {
   const native = getLoadedNativeBindings();
@@ -265,10 +266,21 @@ export class ContextImpl implements Context {
         ordinal,
         explicitKey: options?.key,
       });
-      const { result } = await this._activationClient.run<T>(request, fn, {
+      const startMs = Date.now();
+      let decision: ActivationDecision | undefined;
+      const { result } = await this._activationClient.run<T>(request, () => {
+        if (!decision) {
+          throw new ActivationError(
+            ActivationErrorCode.UnknownOutcome,
+            'step activation executed without admitted authority',
+          );
+        }
+        return runWithActivation(decision, fn);
+      }, {
         encodeOutput: encodeJson,
         decodeOutput: value => decodeJson<T>(value),
-        latencyMs: () => 0,
+        latencyMs: () => Date.now() - startMs,
+        onAdmitted: admitted => { decision = admitted; },
       });
       await this.storage.setCheckpoint(request.stableKey, result);
       this._checkpointSnapshot.set(request.stableKey, result);

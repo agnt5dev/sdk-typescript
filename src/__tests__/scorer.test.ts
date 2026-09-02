@@ -881,8 +881,8 @@ describe('Trace helpers', () => {
     const request: ScorerRequest = {
       output: 'test',
       trace: [
-        { eventType: 'lm.call.completed', eventId: '1', correlationId: 'c1', timestampNs: 0, data: { total_tokens: 100 } },
-        { eventType: 'lm.call.completed', eventId: '2', correlationId: 'c2', timestampNs: 0, data: { total_tokens: 50 } },
+        { eventType: 'lm.completed', eventId: '1', correlationId: 'c1', timestampNs: 0, data: { total_tokens: 100 } },
+        { eventType: 'lm.completed', eventId: '2', correlationId: 'c2', timestampNs: 0, data: { total_tokens: 50 } },
         { eventType: 'other.event', eventId: '3', correlationId: 'c3', timestampNs: 0, data: { total_tokens: 999 } },
       ],
     };
@@ -969,7 +969,7 @@ describe('Trace helpers', () => {
           data: { tool_name: 'search', tool_call_id: 'call-1', duration_ms: 5 },
         },
         {
-          eventType: 'lm.call.completed',
+          eventType: 'lm.completed',
           eventId: 'evt-3',
           correlationId: 'span-lm',
           timestampNs: 3000,
