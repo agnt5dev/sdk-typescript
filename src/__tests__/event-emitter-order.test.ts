@@ -138,6 +138,47 @@ describe('EventEmitter ordering', () => {
     ]);
   });
 
+  it('queues non-terminal lifecycle checkpoints for the CompleteJob bundle when deferred', async () => {
+    const nativeWorker = {
+      queueEvent: vi.fn(),
+      emitCheckpoint: vi.fn(),
+      emitCheckpointBatch: vi.fn(),
+      markExecutionStarted: vi.fn(),
+    };
+    const emitter = new EventEmitter('run-1', {}, { deferLifecycle: true });
+    emitter.setWorker(nativeWorker);
+    const event = (eventType: string) =>
+      ({
+        eventType,
+        eventId: eventType,
+        name: 'workflow',
+        componentType: 'workflow',
+        correlationId: eventType,
+        parentCorrelationId: 'run-1',
+        timestampNs: 100n,
+        metadata: {},
+      }) as any;
+
+    await emitter.emit(event('run.started'));
+    await emitter.emit(event('workflow.started'));
+    await emitter.emit(event('workflow.step.completed'));
+    await emitter.emit(event('workflow.completed'));
+
+    expect(emitter.defersLifecycle).toBe(true);
+    // The ramp-up admission edge still fires before anything is queued.
+    expect(nativeWorker.markExecutionStarted).toHaveBeenCalledWith('run-1');
+    expect(nativeWorker.queueEvent.mock.calls.map(call => call[1])).toEqual([
+      'run.started',
+      'workflow.started',
+    ]);
+    expect(nativeWorker.emitCheckpointBatch).not.toHaveBeenCalled();
+    // Immediate-acknowledgement events keep their own RPC.
+    expect(nativeWorker.emitCheckpoint.mock.calls.map(call => call[1])).toEqual([
+      'workflow.step.completed',
+      'workflow.completed',
+    ]);
+  });
+
   it('persists lifecycle batches before streaming and acknowledges the next boundary', async () => {
     const nativeWorker = {
       queueEvent: vi.fn(),

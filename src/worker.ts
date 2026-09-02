@@ -1092,7 +1092,12 @@ export class Worker {
       },
       async () => {
         // Create EventEmitter wired to NAPI worker for event emission
-        const emitter = new EventEmitter(runId, durableEventMetadata(message.metadata || {}));
+        // sdk-core stamps pull_completion_lifecycle_v1 only on non-streaming
+        // pull assignments whose session negotiated the capability.
+        const emitter = new EventEmitter(runId, durableEventMetadata(message.metadata || {}), {
+          deferLifecycle:
+            isPullDispatch && message.metadata?.pull_completion_lifecycle_v1 === 'true',
+        });
         emitter.setWorker(this.nativeWorker);
 
         // Correlation IDs: run CID from run_id[:8], component CID random

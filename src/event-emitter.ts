@@ -76,6 +76,18 @@ function serializeEvent(event: BaseEvent): string {
   return JSON.stringify(payload);
 }
 
+export interface EventEmitterOptions {
+  /**
+   * The runtime negotiated `pull_completion_lifecycle_v1` for this pull run:
+   * non-terminal lifecycle checkpoints are queued for sdk-core to hold and
+   * carry inside CompleteJob instead of being acknowledged one RPC at a time.
+   * Immediate-acknowledgement events (terminals, steps, activations,
+   * approvals, entity state) keep their own RPC; sdk-core flushes held
+   * events before each of them, so journal order still follows execution.
+   */
+  deferLifecycle?: boolean;
+}
+
 export class EventEmitter {
   private runId: string;
   private baseMetadata: Record<string, string>;
@@ -85,10 +97,21 @@ export class EventEmitter {
   private pendingCheckpoints: PendingCheckpoint[] = [];
   private hasQueuedTransient = false;
   private emissionChain: Promise<void> = Promise.resolve();
+  private readonly deferLifecycle: boolean;
 
-  constructor(runId: string, baseMetadata: Record<string, string> = {}) {
+  constructor(
+    runId: string,
+    baseMetadata: Record<string, string> = {},
+    options: EventEmitterOptions = {},
+  ) {
     this.runId = runId;
     this.baseMetadata = baseMetadata;
+    this.deferLifecycle = options.deferLifecycle === true;
+  }
+
+  /** Whether non-terminal lifecycle checkpoints ride in CompleteJob. */
+  get defersLifecycle(): boolean {
+    return this.deferLifecycle;
   }
 
   /**
@@ -167,6 +190,27 @@ export class EventEmitter {
       // Add correlation IDs to metadata (matches Python EventEmitter convention)
       metadata['cid'] = event.correlationId;
       metadata['pcid'] = event.parentCorrelationId || '';
+
+      if (
+        this.deferLifecycle &&
+        !requiresImmediateAcknowledgement(event.eventType) &&
+        typeof this.nativeWorker.queueEvent === 'function'
+      ) {
+        // Held by sdk-core for the CompleteJob lifecycle bundle. Nothing is
+        // pending locally because every deferred checkpoint takes this path.
+        this.nativeWorker.queueEvent(
+          this.runId,
+          event.eventType,
+          eventData,
+          0, // contentIndex
+          this.sequence,
+          metadata,
+          timestampNs,
+          event.correlationId,
+          event.parentCorrelationId || '',
+        );
+        return;
+      }
 
       if (
         requiresImmediateAcknowledgement(event.eventType) ||
