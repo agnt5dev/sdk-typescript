@@ -83,6 +83,22 @@ export function currentTraceCorrelation(): {
   return { traceId: typeof traceId === 'string' && traceId ? traceId : null, spanId: null };
 }
 
+/**
+ * The run id of the invocation currently executing, or null outside a run.
+ *
+ * A logger built with an explicit run id keeps it; every other logger --
+ * `getLogger('my-module')` at module scope, anything the SDK itself logs
+ * through -- had no run id to send, so those records reached the control plane
+ * unattributed and `get_run_logs` could not find them (AGNT5-1070). The worker
+ * already binds `runId` on the propagated context for the duration of a
+ * dispatch, so reading it here attributes those lines without every log site
+ * having to thread the id through.
+ */
+export function currentRunId(): string | null {
+  const runId = getCurrentContext()?.runId;
+  return typeof runId === 'string' && runId ? runId : null;
+}
+
 // ─── Console formatting ──────────────────────────────────────────────
 
 function formatConsole(level: LogLevel, name: string, message: string, attrs?: Record<string, string>): string {
@@ -160,13 +176,14 @@ export class ContextLogger implements Logger {
     // Try NAPI first
     const nativeLog = getNativeLogFn();
     if (nativeLog) {
-      // An explicitly supplied id wins; otherwise inherit the run's trace so
-      // the record is correlatable (AGNT5-1073).
+      // An explicitly supplied id wins; otherwise inherit the ambient run's
+      // trace so the record is correlatable (AGNT5-1073) and its run id so the
+      // record is attributable to that run (AGNT5-1070).
       const ambient = currentTraceCorrelation();
       nativeLog(
         level,
         `${this._name}: ${message}`,
-        this._runId,
+        this._runId ?? currentRunId(),
         this._traceId ?? ambient.traceId,
         this._spanId ?? ambient.spanId,
         attrOrNull,

@@ -1442,11 +1442,18 @@ pub fn log_from_typescript(
         None
     };
 
+    // The run id goes out under two names on purpose (AGNT5-1070):
+    // `agnt5.run.id` is the canonical attribute, matching what
+    // create_component_span puts on the trace span and what the control plane
+    // prefers; `run_id` is the legacy flat field older control planes and saved
+    // queries still match on. Drop `run_id` once no supported control plane
+    // relies on it.
     match level.to_uppercase().as_str() {
         "DEBUG" => tracing::debug!(
             target: "agnt5_sdk_typescript",
             log_source = "application",
             run_id = run_id.as_deref(),
+            agnt5.run.id = run_id.as_deref(),
             tenant_id = effective_tenant_id.as_deref(),
             deployment_id = effective_deployment_id.as_deref(),
             log_attributes = attrs_json.as_deref(),
@@ -1457,6 +1464,7 @@ pub fn log_from_typescript(
             target: "agnt5_sdk_typescript",
             log_source = "application",
             run_id = run_id.as_deref(),
+            agnt5.run.id = run_id.as_deref(),
             tenant_id = effective_tenant_id.as_deref(),
             deployment_id = effective_deployment_id.as_deref(),
             log_attributes = attrs_json.as_deref(),
@@ -1467,6 +1475,7 @@ pub fn log_from_typescript(
             target: "agnt5_sdk_typescript",
             log_source = "application",
             run_id = run_id.as_deref(),
+            agnt5.run.id = run_id.as_deref(),
             tenant_id = effective_tenant_id.as_deref(),
             deployment_id = effective_deployment_id.as_deref(),
             log_attributes = attrs_json.as_deref(),
@@ -1477,6 +1486,7 @@ pub fn log_from_typescript(
             target: "agnt5_sdk_typescript",
             log_source = "application",
             run_id = run_id.as_deref(),
+            agnt5.run.id = run_id.as_deref(),
             tenant_id = effective_tenant_id.as_deref(),
             deployment_id = effective_deployment_id.as_deref(),
             log_attributes = attrs_json.as_deref(),
@@ -1487,6 +1497,7 @@ pub fn log_from_typescript(
             target: "agnt5_sdk_typescript",
             log_source = "application",
             run_id = run_id.as_deref(),
+            agnt5.run.id = run_id.as_deref(),
             tenant_id = effective_tenant_id.as_deref(),
             deployment_id = effective_deployment_id.as_deref(),
             log_attributes = attrs_json.as_deref(),
