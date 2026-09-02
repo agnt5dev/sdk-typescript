@@ -634,6 +634,21 @@ pub struct Worker {
 
 #[cfg(feature = "durable-activation-v1")]
 impl Worker {
+    async fn flush_activation_boundary(&self, run_id: &str) -> napi::Result<()> {
+        let worker = {
+            let guard = self.emit_worker.lock().map_err(|error| {
+                Error::from_reason(format!("Failed to lock emit_worker: {error}"))
+            })?;
+            guard
+                .clone()
+                .ok_or_else(|| Error::from_reason("emit_worker not available"))?
+        };
+        worker
+            .flush_run_events_before_durable_write(run_id)
+            .await
+            .map_err(native_activation_error)
+    }
+
     async fn connected_activation_adapter(
         &self,
     ) -> napi::Result<tokio::sync::MutexGuard<'_, Option<ActivationAdapter>>> {
@@ -788,6 +803,7 @@ impl Worker {
         &self,
         request: NativeBeginActivationRequest,
     ) -> Result<NativeActivationDecision> {
+        self.flush_activation_boundary(&request.run_id).await?;
         let request = BeginActivationRequest {
             project_id: request.project_id,
             run_id: request.run_id,
@@ -829,6 +845,7 @@ impl Worker {
         &self,
         request: NativeCompleteActivationRequest,
     ) -> Result<NativeActivationCompletionReceipt> {
+        self.flush_activation_boundary(&request.run_id).await?;
         let request = CompleteActivationRequest {
             project_id: request.project_id,
             run_id: request.run_id,
@@ -875,6 +892,7 @@ impl Worker {
         &self,
         request: NativeFailActivationRequest,
     ) -> Result<NativeActivationFailureReceipt> {
+        self.flush_activation_boundary(&request.run_id).await?;
         if request.external_outcome_certainty != "UNKNOWN" {
             return Err(native_activation_bridge_error(
                 "INVALID_ARGUMENT",
