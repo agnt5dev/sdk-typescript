@@ -9,6 +9,7 @@ import type { Logger } from './types.js';
 import { getCurrentContext } from './async-context.js';
 import { logEvent } from './events.js';
 import { getLoadedNativeBindings } from './native-loader.js';
+import { getCurrentSpanInfo } from './tracing.js';
 
 // ─── Log level management ────────────────────────────────────────────
 
@@ -52,6 +53,50 @@ function getNativeLogFn() {
   return typeof native?.logFromTypescript === 'function'
     ? native.logFromTypescript
     : null;
+}
+
+// ─── Trace correlation ───────────────────────────────────────────────
+
+/**
+ * Trace and span ids to stamp on a log record, resolved from the ambient run.
+ *
+ * Every TypeScript log record used to go out with both fields null, so logs
+ * could not be correlated to their trace even though the run had one
+ * (AGNT5-1073). Two sources, in order:
+ *
+ *  - an active in-process span, which carries both ids;
+ *  - the `trace_id` the runtime stamps on dispatch metadata (sdk-core
+ *    `worker.rs` inserts it), which is the id the control plane joins runs and
+ *    traces on. No span id is available from this source.
+ *
+ * Returns nulls outside a run — worker startup logs belong to no trace.
+ */
+export function currentTraceCorrelation(): {
+  traceId: string | null;
+  spanId: string | null;
+} {
+  const span = getCurrentSpanInfo();
+  if (span) {
+    return { traceId: span.traceId, spanId: span.spanId };
+  }
+  const traceId = getCurrentContext()?.metadata?.trace_id;
+  return { traceId: typeof traceId === 'string' && traceId ? traceId : null, spanId: null };
+}
+
+/**
+ * The run id of the invocation currently executing, or null outside a run.
+ *
+ * A logger built with an explicit run id keeps it; every other logger --
+ * `getLogger('my-module')` at module scope, anything the SDK itself logs
+ * through -- had no run id to send, so those records reached the control plane
+ * unattributed and `get_run_logs` could not find them (AGNT5-1070). The worker
+ * already binds `runId` on the propagated context for the duration of a
+ * dispatch, so reading it here attributes those lines without every log site
+ * having to thread the id through.
+ */
+export function currentRunId(): string | null {
+  const runId = getCurrentContext()?.runId;
+  return typeof runId === 'string' && runId ? runId : null;
 }
 
 // ─── Console formatting ──────────────────────────────────────────────
@@ -131,7 +176,18 @@ export class ContextLogger implements Logger {
     // Try NAPI first
     const nativeLog = getNativeLogFn();
     if (nativeLog) {
-      nativeLog(level, `${this._name}: ${message}`, this._runId, this._traceId, this._spanId, attrOrNull);
+      // An explicitly supplied id wins; otherwise inherit the ambient run's
+      // trace so the record is correlatable (AGNT5-1073) and its run id so the
+      // record is attributable to that run (AGNT5-1070).
+      const ambient = currentTraceCorrelation();
+      nativeLog(
+        level,
+        `${this._name}: ${message}`,
+        this._runId ?? currentRunId(),
+        this._traceId ?? ambient.traceId,
+        this._spanId ?? ambient.spanId,
+        attrOrNull,
+      );
     }
 
     // Emit a log.* journal event tied to the active run so the Studio Logs
