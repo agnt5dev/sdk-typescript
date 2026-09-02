@@ -9,6 +9,8 @@ const CHILD_DEFINITION_DOMAIN = utf8('agnt5.activation.child-definition.v1\0');
 const I64_MIN = -(2n ** 63n);
 const I64_MAX = 2n ** 63n - 1n;
 const U64_MAX = 2n ** 64n - 1n;
+/** Upper bound for plaintext `input_data` rendered on a journal record. */
+export const MAX_ACTIVATION_INPUT_DATA_BYTES = 64 * 1024;
 const NATIVE_ACTIVATION_ERROR_PREFIX = 'AGNT5_ACTIVATION_ERROR:';
 
 function nativeActivationError(error: unknown): ActivationError {
@@ -119,6 +121,10 @@ export interface BeginActivationRequest {
   runAuthority: Uint8Array;
   leaseAuthority: Uint8Array;
   child?: ChildActivationLinkage;
+  /** Human-readable record name (step name, tool name, model id). */
+  displayName: string;
+  /** Optional plaintext JSON input rendered on the journal record. */
+  inputData?: Uint8Array;
 }
 
 export interface ActivationDecision {
@@ -159,6 +165,7 @@ export interface ActivationUsage {
   latencyMs?: number;
   provider?: string;
   model?: string;
+  cachedTokens?: number;
 }
 
 export interface ActivationEvidence {
@@ -208,6 +215,7 @@ export interface ActivationTransport {
     retryable: boolean;
     externalOutcomeCertainty: 'UNKNOWN';
     evidence: ActivationEvidence[];
+    latencyMs: number;
   }): Promise<ActivationFailureReceipt>;
 }
 
@@ -253,6 +261,7 @@ export class NativeActivationTransport implements ActivationTransport {
         latencyMs: usage.latencyMs ?? 0,
         provider: usage.provider ?? '',
         model: usage.model ?? '',
+        cachedTokens: usage.cachedTokens ?? 0,
         evidence,
       });
     } catch (error) {
@@ -322,12 +331,13 @@ export async function stepActivationRequest(
   const canonicalConfig = utf8(
     metadata.activation_definition_config || '["object",[]]',
   );
+  const stableKey = stableStepKey(options.stepName, options.ordinal, options.explicitKey);
   return {
     projectId,
     runId: options.runId,
     parentActivationId: currentActivation()?.activationId || metadata.parent_activation_id || '',
     kind: ActivationKind.Step,
-    stableKey: stableStepKey(options.stepName, options.ordinal, options.explicitKey),
+    stableKey,
     inputDigest: await sha256(canonicalActivationValue(options.input ?? null)),
     definitionDigest: await activationDefinitionDigest(
       decodeSha256(metadata.activation_artifact_sha256 || ''),
@@ -339,6 +349,12 @@ export async function stepActivationRequest(
     workerSessionId,
     runAuthority: utf8(runAuthority),
     leaseAuthority: utf8(leaseAuthority),
+    displayName: options.stepName,
+    inputData: boundedInputData({
+      step_name: options.stepName,
+      step_key: stableKey,
+      input: options.input ?? null,
+    }),
   };
 }
 
@@ -381,7 +397,31 @@ export async function timerActivationRequest(
     workerSessionId,
     runAuthority: utf8(runAuthority),
     leaseAuthority: utf8(leaseAuthority),
+    displayName: options.timerKey,
+    inputData: boundedInputData({
+      delay_ms: options.delayMs,
+      timer_key: options.timerKey,
+    }),
   };
+}
+
+/**
+ * Encode a plaintext JSON rendering of an activation input for the journal
+ * record, capped at 64 KiB. Oversized inputs are replaced by a truncation
+ * marker so the record never carries an unbounded payload.
+ */
+export function boundedInputData(value: unknown): Uint8Array | undefined {
+  let encoded: string | undefined;
+  try {
+    encoded = JSON.stringify(value, (_key, item) =>
+      typeof item === 'bigint' ? item.toString() : item);
+  } catch {
+    return undefined;
+  }
+  if (encoded === undefined) return undefined;
+  const bytes = utf8(encoded);
+  if (bytes.byteLength <= MAX_ACTIVATION_INPUT_DATA_BYTES) return bytes;
+  return utf8(JSON.stringify({ truncated: true, bytes: bytes.byteLength }));
 }
 
 export interface ActivationRunOptions<T> {
@@ -470,6 +510,7 @@ export class ActivationClient {
       retryable: boolean;
       externalOutcomeCertainty?: 'UNKNOWN';
       evidence?: ActivationEvidence[];
+      latencyMs?: number;
     },
   ): Promise<ActivationFailureReceipt> {
     const receipt = await this.transport.fail({
@@ -483,6 +524,7 @@ export class ActivationClient {
       retryable: options.retryable,
       externalOutcomeCertainty: options.externalOutcomeCertainty ?? 'UNKNOWN',
       evidence: options.evidence ?? [],
+      latencyMs: options.latencyMs ?? 0,
     });
     validateReceiptAuthority(decision, receipt, 'failure');
     return receipt;
@@ -527,6 +569,7 @@ export class ActivationClient {
         retryable: options.failureRetryable ?? false,
         externalOutcomeCertainty: options.failureExternalOutcomeCertainty ?? 'UNKNOWN',
         evidence: await options.failureEvidence?.(error) ?? [],
+        latencyMs: options.latencyMs(),
       });
       await options.onFailed?.(decision, receipt, error);
       throw error;
@@ -562,6 +605,10 @@ export async function activationRequestFromContext(
     recoveryPolicy: ActivationRecoveryPolicy;
     definitionDigest?: Uint8Array;
     child?: ChildActivationLinkage;
+    /** Record name; defaults to the stable key. */
+    displayName?: string;
+    /** Plaintext record input; defaults to `input`. */
+    inputData?: unknown;
   },
 ): Promise<BeginActivationRequest> {
   const metadata = context.metadata || {};
@@ -596,6 +643,10 @@ export async function activationRequestFromContext(
     runAuthority: utf8(runAuthority),
     leaseAuthority: utf8(leaseAuthority),
     child: options.child,
+    displayName: options.displayName ?? options.stableKey,
+    inputData: boundedInputData(
+      options.inputData !== undefined ? options.inputData : options.input,
+    ),
   };
 }
 
@@ -611,6 +662,8 @@ export async function childActivationRequestFromContext(
     stableKey: string;
     input: unknown;
     joinPolicy?: ChildJoinPolicy;
+    displayName?: string;
+    inputData?: unknown;
   },
 ): Promise<BeginActivationRequest> {
   if (!options.childName.trim() || !options.stableKey.trim()) {
@@ -624,6 +677,8 @@ export async function childActivationRequestFromContext(
     stableKey: options.stableKey,
     input: options.input,
     recoveryPolicy: ActivationRecoveryPolicy.DurableSteps,
+    displayName: options.displayName ?? options.childName,
+    inputData: options.inputData,
   });
   const childDefinitionDigest = await sha256(concatBytes(
     CHILD_DEFINITION_DOMAIN,

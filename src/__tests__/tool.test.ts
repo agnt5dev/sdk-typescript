@@ -200,11 +200,22 @@ describe('Tool', () => {
     });
     ctx.setActivationClient(client as unknown as ActivationClient);
 
-    await expect(registered.invoke(ctx, { amount: 42 }, 'provider-call-7')).resolves.toEqual({
+    await expect(registered.invoke(ctx, { amount: 42 }, 'provider-call-7', {
+      toolCallId: 'provider-call-7',
+      iteration: 2,
+    })).resolves.toEqual({
       amount: 42,
     });
     expect(capturedRequest?.kind).toBe(ActivationKind.Tool);
     expect(capturedRequest?.stableKey).toBe('tool:charge:provider-call-7');
+    expect(capturedRequest?.displayName).toBe('charge');
+    expect(JSON.parse(new TextDecoder().decode(capturedRequest?.inputData))).toEqual({
+      name: 'charge',
+      arguments: { amount: 42 },
+      tool_call_id: 'provider-call-7',
+      iteration: 2,
+    });
+    expect(registered.usesDurableActivation(ctx)).toBe(true);
     expect(capturedRequest?.recoveryPolicy).toBe(ActivationRecoveryPolicy.IdempotentRetry);
     expect(capturedOptions.failureErrorCode).toBe('TOOL_FAILED');
     expect(capturedOptions.failureRetryable).toBe(true);

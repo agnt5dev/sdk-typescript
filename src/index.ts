@@ -113,6 +113,7 @@ export type { SchemaFormat, SchemaConversionOptions } from './schema-utils.js';
 
 // Tool exports
 export { Tool, ToolRegistry, tool, AskUserTool, RequestApprovalTool } from './tool.js';
+export type { ToolInvokeOptions } from './tool.js';
 export type { ToolFunction } from './tool.js';
 export { MCPServer, MCPServerError, Prompt, Resource } from './mcp-server.js';
 

@@ -40,13 +40,13 @@ describe('EvalContext', () => {
       input: {},
       output: 'ok',
       events: [
-        { eventType: 'lm.call.completed', eventId: '1', correlationId: 'c1', timestampNs: 0, data: { total_tokens: 100 } },
+        { eventType: 'lm.completed', eventId: '1', correlationId: 'c1', timestampNs: 0, data: { total_tokens: 100 } },
         { eventType: 'run.started', eventId: '2', correlationId: 'c2', timestampNs: 0, data: {} },
-        { eventType: 'lm.call.completed', eventId: '3', correlationId: 'c3', timestampNs: 0, data: { total_tokens: 50 } },
+        { eventType: 'lm.completed', eventId: '3', correlationId: 'c3', timestampNs: 0, data: { total_tokens: 50 } },
       ],
     });
 
-    expect(ctx.getEventsByType('lm.call.completed')).toHaveLength(2);
+    expect(ctx.getEventsByType('lm.completed')).toHaveLength(2);
     expect(ctx.getLmCalls()).toHaveLength(2);
     expect(ctx.getTotalTokens()).toBe(150);
   });
@@ -79,7 +79,7 @@ describe('EvalContext', () => {
           data: { tool_name: 'search', tool_call_id: 'call-1' },
         },
         {
-          eventType: 'lm.call.completed',
+          eventType: 'lm.completed',
           eventId: '2',
           correlationId: 'span-2',
           timestampNs: 2000,

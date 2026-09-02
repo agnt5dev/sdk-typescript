@@ -12,10 +12,13 @@ import {
   UInt64,
   activationDefinitionDigest,
   activationId,
+  boundedInputData,
   canonicalActivationValue,
   childActivationRequestFromContext,
   sha256,
   stableStepKey,
+  stepActivationRequest,
+  timerActivationRequest,
 } from '../activation.js';
 import { ContextImpl } from '../context.js';
 import { ActivationError, ActivationErrorCode } from '../errors.js';
@@ -44,7 +47,12 @@ function request(): BeginActivationRequest {
     workerSessionId: 'session-1',
     runAuthority: encoder.encode('run-authority'),
     leaseAuthority: encoder.encode('lease-authority'),
+    displayName: 'load',
   };
+}
+
+function decodeInput(value: Uint8Array | undefined): unknown {
+  return value ? JSON.parse(decoder.decode(value)) : undefined;
 }
 
 class RecordingTransport implements ActivationTransport {
@@ -120,6 +128,54 @@ describe('durable activation V1 contract', () => {
     expect(child.child?.childRunId).toMatch(/^child_/);
     expect(child.child?.childSessionId).toMatch(/^session_/);
     expect(child.child?.joinPolicy).toBe(ChildJoinPolicy.Required);
+    expect(child.displayName).toBe('researcher');
+    expect(decodeInput(child.inputData)).toEqual({ message: 'investigate' });
+  });
+
+  it('names step and timer records and renders their bounded input', async () => {
+    const metadata = {
+      project_id: 'project-1',
+      worker_session_id: 'worker-1',
+      run_authority: 'run-authority',
+      lease_authority: 'lease-authority',
+      activation_definition_version: 'v1',
+      activation_artifact_sha256: '00'.repeat(32),
+      activation_definition_config: '["object",[]]',
+    };
+    const step = await stepActivationRequest({
+      metadata,
+      invocationId: 'inv-1',
+      runId: 'run-1',
+      componentName: 'workflow',
+      stepName: 'load',
+      ordinal: 3,
+      input: { page: 2 },
+    });
+    expect(step.displayName).toBe('load');
+    expect(decodeInput(step.inputData)).toEqual({
+      step_name: 'load',
+      step_key: 'step:load:3',
+      input: { page: 2 },
+    });
+
+    const timer = await timerActivationRequest({
+      metadata,
+      invocationId: 'inv-1',
+      runId: 'run-1',
+      componentName: 'workflow',
+      timerKey: 'sleep:backoff',
+      delayMs: 2_500,
+    });
+    expect(timer.displayName).toBe('sleep:backoff');
+    expect(decodeInput(timer.inputData)).toEqual({ delay_ms: 2_500, timer_key: 'sleep:backoff' });
+  });
+
+  it('caps record input at 64 KiB with a truncation marker', () => {
+    expect(decodeInput(boundedInputData({ ok: true }))).toEqual({ ok: true });
+    expect(boundedInputData(undefined)).toBeUndefined();
+    const oversized = boundedInputData({ blob: 'x'.repeat(64 * 1024) })!;
+    expect(oversized.byteLength).toBeLessThan(128);
+    expect(decodeInput(oversized)).toMatchObject({ truncated: true });
   });
 
   it('maps structured native failures to typed activation errors', async () => {

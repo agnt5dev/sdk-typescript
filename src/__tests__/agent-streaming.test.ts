@@ -355,14 +355,136 @@ describe('Agent Handoffs', () => {
       },
     });
     context.setActivationClient(client as unknown as ActivationClient);
+    const emitted: any[] = [];
+    context.emit = async (event: any) => { emitted.push(event); };
 
-    const result = await source.run('route this', context);
+    const events: AgentEvent[] = [];
+    let result: AgentResult | undefined;
+    for await (const event of source.stream('route this', context)) {
+      if ('eventType' in event) events.push(event);
+      else result = event;
+    }
 
-    expect(result.output).toBe('handled');
+    expect(result?.output).toBe('handled');
     const childRequest = requests.find(request => request.kind === ActivationKind.Child)!;
     expect(requests.every(request => request.kind !== ActivationKind.Tool)).toBe(true);
     expect(childRequest.parentActivationId).toBe('');
     expect(childRequest.child?.joinPolicy).toBe(ChildJoinPolicy.Required);
+    expect(childRequest.displayName).toBe('target');
+    expect(JSON.parse(new TextDecoder().decode(childRequest.inputData))).toMatchObject({
+      agent: 'target',
+      message: 'take this',
+    });
+
+    // The delegated child's agent.* boundary is the CHILD journal record: the
+    // source agent still announces itself, the target does not.
+    const agentLifecycle = events.filter(
+      e => ['agent.started', 'agent.completed', 'agent.failed'].includes(e.eventType),
+    );
+    expect(agentLifecycle.map(e => (e as any).agentName)).toEqual(['source', 'source']);
+    // Child iterations parent to the activation record.
+    const childActivationId = await activationId(
+      childRequest.projectId,
+      childRequest.runId,
+      childRequest.parentActivationId,
+      childRequest.kind,
+      childRequest.stableKey,
+    );
+    // The child's own events are forwarded through context.emit by run().
+    const childIterations = emitted.filter(
+      e => e.eventType === 'agent.iteration.started' &&
+        e.parentCorrelationId === childActivationId,
+    );
+    expect(childIterations).toHaveLength(1);
+    expect(emitted.filter(
+      e => ['agent.started', 'agent.completed', 'agent.failed'].includes(e.eventType),
+    )).toHaveLength(0);
+    // Under durable activations the runtime journals lm.*; nothing is emitted here.
+    expect(emitted.filter(e => String(e.eventType).startsWith('lm.'))).toHaveLength(0);
+  });
+
+  it('does not yield tool_call lifecycle for durable tool activations', async () => {
+    const requests: BeginActivationRequest[] = [];
+    const client = {
+      async run<T>(
+        request: BeginActivationRequest,
+        execute: () => Promise<T>,
+        options: { onAdmitted?: (decision: ActivationDecision) => void | Promise<void> },
+      ) {
+        requests.push(request);
+        const decision: ActivationDecision = {
+          kind: 'EXECUTE',
+          activationId: await activationId(
+            request.projectId,
+            request.runId,
+            request.parentActivationId,
+            request.kind,
+            request.stableKey,
+          ),
+          attempt: 1,
+          acceptedJournalOffset: BigInt(requests.length),
+          fenceToken: new Uint8Array([1]),
+        };
+        await options.onAdmitted?.(decision);
+        return { result: await execute(), receipt: decision };
+      },
+    };
+    tool('lookup', { description: 'Look something up' }, async (_ctx, args: { q: string }) => ({
+      hit: args.q,
+    }));
+    const agent = new Agent({
+      name: 'searcher',
+      model: new MockLanguageModel([
+        {
+          text: 'looking',
+          toolCalls: [{
+            id: 'provider-call-9',
+            name: 'lookup',
+            arguments: JSON.stringify({ q: 'durable' }),
+          }],
+        },
+        { text: 'found', finishReason: 'stop' },
+      ]),
+      instructions: 'Search',
+      tools: [ToolRegistry.get('lookup')!],
+    });
+    const context = new ContextImpl('inv-1', 'run-1', 0, 'searcher', {
+      metadata: {
+        durable_activation_v1: 'true',
+        project_id: 'project-1',
+        component_name: 'searcher',
+        worker_session_id: 'worker-1',
+        run_authority: 'run-authority',
+        lease_authority: 'lease-authority',
+        activation_definition_version: 'v1',
+        activation_artifact_sha256: '00'.repeat(32),
+        activation_definition_config: '["object",[]]',
+      },
+    });
+    context.setActivationClient(client as unknown as ActivationClient);
+
+    const events: AgentEvent[] = [];
+    for await (const event of agent.stream('find it', context)) {
+      if ('eventType' in event) events.push(event);
+    }
+
+    const toolRequest = requests.find(request => request.kind === ActivationKind.Tool)!;
+    expect(toolRequest.displayName).toBe('lookup');
+    expect(JSON.parse(new TextDecoder().decode(toolRequest.inputData))).toEqual({
+      name: 'lookup',
+      arguments: { q: 'durable' },
+      tool_call_id: 'provider-call-9',
+      iteration: 1,
+    });
+    expect(events.filter(e => e.eventType.startsWith('tool_call.'))).toHaveLength(0);
+    expect(events.map(e => e.eventType)).toEqual([
+      'agent.started',
+      'agent.iteration.started',
+      'agent.iteration.completed',
+      'agent.iteration.started',
+      'agent.iteration.completed',
+      'agent.completed',
+    ]);
   });
 
   it('should auto-generate transfer tools from handoffs', () => {

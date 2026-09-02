@@ -499,6 +499,22 @@ function withoutUndefined(value: unknown): unknown {
   return value;
 }
 
+/** Plaintext record input for a model activation (bounded by the request builder). */
+function durableModelRecordInput(request: GenerateRequest, provider: string): unknown {
+  const config = request.config as
+    | { temperature?: number; maxTokens?: number; max_tokens?: number }
+    | undefined;
+  return withoutUndefined({
+    model: request.model,
+    provider,
+    messages: request.messages ?? [],
+    system_prompt: request.systemPrompt,
+    tools_count: request.tools?.length ?? 0,
+    temperature: config?.temperature,
+    max_tokens: config?.maxTokens ?? config?.max_tokens ?? null,
+  });
+}
+
 function durableModelInput(request: GenerateRequest): unknown {
   return withoutUndefined({
     model: request.model,
@@ -806,6 +822,8 @@ export class LM {
       stableKey: context.allocateActivationKey('model', model),
       input: durableModelInput({ ...request, model }),
       recoveryPolicy: policy,
+      displayName: model,
+      inputData: durableModelRecordInput({ ...request, model }, this.providerName),
     });
     let decision: ActivationDecision | undefined;
     const started = Date.now();
@@ -829,6 +847,7 @@ export class LM {
       completionUsage: result => ({
         tokensIn: result.usage?.promptTokens ?? 0,
         tokensOut: result.usage?.completionTokens ?? 0,
+        cachedTokens: result.usage?.cachedTokens,
         provider: this.providerName,
         model,
       }),
@@ -938,6 +957,8 @@ export class LM {
       stableKey: context.allocateActivationKey('model', model),
       input: durableModelInput({ ...request, model }),
       recoveryPolicy: policy,
+      displayName: model,
+      inputData: durableModelRecordInput({ ...request, model }, this.providerName),
     });
     const decision = await client.begin(activationRequest);
     if (decision.kind === 'REPLAY') {
@@ -997,6 +1018,7 @@ export class LM {
           policy === ActivationRecoveryPolicy.DurableSteps,
         externalOutcomeCertainty: 'UNKNOWN',
         evidence,
+        latencyMs: Date.now() - started,
       });
       throw error;
     }
@@ -1023,6 +1045,7 @@ export class LM {
           policy === ActivationRecoveryPolicy.DurableSteps,
         externalOutcomeCertainty: 'UNKNOWN',
         evidence,
+        latencyMs: Date.now() - started,
       });
       throw error;
     }
@@ -1034,6 +1057,7 @@ export class LM {
       {
         tokensIn: response.usage?.promptTokens ?? 0,
         tokensOut: response.usage?.completionTokens ?? 0,
+        cachedTokens: response.usage?.cachedTokens,
         latencyMs: Date.now() - started,
         provider: this.providerName,
         model,

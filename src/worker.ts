@@ -45,10 +45,9 @@ import {
   activationDecisionError,
   activationId,
   ActivationDecision,
-  ActivationCompletionReceipt,
-  ActivationFailureReceipt,
   currentActivation,
   NativeActivationTransport,
+  runWithActivation,
   stableStepKey,
   stepActivationRequest,
   timerActivationRequest,
@@ -723,7 +722,14 @@ class SimpleContext implements Context {
   /**
    * Execute a durable step with checkpointing.
    *
-   * On first execution: runs fn(), caches result, emits checkpoint.
+   * Under `durable_activation_v1` the runtime journals the step boundary
+   * itself from the activation RPCs (`workflow.step.started/completed/...`
+   * keyed by the activation id), so the SDK emits no lifecycle checkpoint of
+   * its own. The step body runs with the activation id as the ambient
+   * correlation id so nested `function.*`, logs, and stream deltas parent to
+   * that record.
+   *
+   * On the legacy path: runs fn(), caches result, emits checkpoints.
    * On replay: returns cached result without re-executing.
    */
   async step<T>(
@@ -745,39 +751,22 @@ class SimpleContext implements Context {
         explicitKey: options?.key,
       });
       const startMs = Date.now();
-      const { result } = await this._activationClient.run<T>(request, fn, {
+      let decision: ActivationDecision | undefined;
+      const { result } = await this._activationClient.run<T>(request, () => {
+        if (!decision) {
+          throw new ActivationError(
+            ActivationErrorCode.UnknownOutcome,
+            'step activation executed without admitted authority',
+          );
+        }
+        const admitted = decision;
+        return runWithActivation(admitted, () =>
+          this.runWithCorrelation(admitted.activationId, fn));
+      }, {
         encodeOutput: encodeActivationJson,
         decodeOutput: value => decodeActivationJson<T>(value),
         latencyMs: () => Date.now() - startMs,
-        onAdmitted: async decision => {
-          await this.emitActivationCheckpoint(
-            'workflow.step.started',
-            stepName,
-            stepKey,
-            decision,
-          );
-        },
-        onCompleted: async (decision, receipt, output) => {
-          await this.emitActivationCheckpoint(
-            'workflow.step.completed',
-            stepName,
-            stepKey,
-            decision,
-            receipt,
-            output,
-          );
-        },
-        onFailed: async (decision, receipt, error) => {
-          await this.emitActivationCheckpoint(
-            'workflow.step.failed',
-            stepName,
-            stepKey,
-            decision,
-            receipt,
-            undefined,
-            error,
-          );
-        },
+        onAdmitted: admitted => { decision = admitted; },
       });
       this._stepCache.set(stepKey, result);
       return result;
@@ -853,37 +842,6 @@ class SimpleContext implements Context {
     return result;
   }
 
-  private async emitActivationCheckpoint(
-    eventType: string,
-    stepName: string,
-    stepKey: string,
-    decision: ActivationDecision,
-    receipt: ActivationDecision | ActivationCompletionReceipt | ActivationFailureReceipt = decision,
-    output?: unknown,
-    error?: unknown,
-  ): Promise<void> {
-    if (!this._nativeWorker?.emitCheckpoint) return;
-    await this._nativeWorker.emitCheckpoint(
-      this.runId,
-      eventType,
-      JSON.stringify({
-        step_key: stepKey,
-        step_name: stepName,
-        output,
-        error: error instanceof Error ? error.message : error === undefined ? undefined : String(error),
-        duration_ms: 0,
-      }),
-      this._stepCounter,
-      {
-        ...durableEventMetadata(this.metadata),
-        cache_hit: String(decision.kind === 'REPLAY'),
-        activation_id: decision.activationId,
-        activation_attempt: String(decision.attempt),
-        accepted_journal_offset: receipt.acceptedJournalOffset.toString(),
-      },
-      Date.now() * 1_000_000,
-    );
-  }
 }
 
 /**

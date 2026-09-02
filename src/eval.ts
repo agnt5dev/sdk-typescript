@@ -50,7 +50,7 @@ export class EvalContext {
 
   /** Get LM call events */
   getLmCalls(): TraceEvent[] {
-    return this.events.filter(e => e.eventType === 'lm.call.completed');
+    return this.events.filter(e => e.eventType === 'lm.completed');
   }
 
   /** Get total tokens across all LM calls */
@@ -668,7 +668,7 @@ export class TraceAssertion {
   static maxTokens(max: number): TraceAssertion {
     return new TraceAssertion((trace) => {
       const total = trace
-        .filter(e => e.eventType === 'lm.call.completed')
+        .filter(e => e.eventType === 'lm.completed')
         .reduce((sum, e) => sum + (e.data.total_tokens ?? 0), 0);
       return {
         name: `max_tokens(${max})`,
@@ -681,7 +681,7 @@ export class TraceAssertion {
   /** Assert number of LLM calls is at most `max`. */
   static maxLmCalls(max: number): TraceAssertion {
     return new TraceAssertion((trace) => {
-      const count = trace.filter(e => e.eventType === 'lm.call.completed').length;
+      const count = trace.filter(e => e.eventType === 'lm.completed').length;
       return {
         name: `max_lm_calls(${max})`,
         passed: count <= max,
@@ -715,7 +715,7 @@ export class TraceAssertion {
     return new TraceAssertion((trace) => {
       const memoized = trace
         .filter(e => e.eventType === 'workflow.step.completed' && e.name === stepName)
-        .some(e => e.data.is_memoized === true);
+        .some(e => e.data.is_memoized === true || e.data.decision === 'replay');
       return {
         name: `step_memoized(${stepName})`,
         passed: memoized,
@@ -728,7 +728,7 @@ export class TraceAssertion {
 
   /** Assert no error events occurred. */
   static noErrors(): TraceAssertion {
-    const errorTypes = ['run.failed', 'workflow.step.failed', 'agent.failed', 'lm.call.failed', 'function.failed'];
+    const errorTypes = ['run.failed', 'workflow.step.failed', 'agent.failed', 'lm.failed', 'function.failed'];
     return new TraceAssertion((trace) => {
       const errors = trace.filter(e => errorTypes.includes(e.eventType));
       return {

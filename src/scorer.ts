@@ -1413,7 +1413,7 @@ export function getTraceEvents(request: ScorerRequest, eventType: string): Trace
 /** Get total tokens from trace events */
 export function getTotalTokens(request: ScorerRequest): number {
   return (request.trace || [])
-    .filter(e => e.eventType === 'lm.call.completed')
+    .filter(e => e.eventType === 'lm.completed')
     .reduce((sum, e) => sum + (e.data.total_tokens || 0), 0);
 }
 

@@ -7,6 +7,30 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.0-beta.5] - 2026-09-02
+
+### Changed
+
+- Durable activations are now the journal's step boundary records. Under
+  `durable_activation_v1` the runtime journals `workflow.step.*`, `lm.*`,
+  `tool_call.*`, and `agent.*` from the activation RPCs, so the SDK no longer
+  emits its own lifecycle checkpoints or events for durable steps, timers,
+  model calls, tools, and delegated child agents. A REPLAY appends nothing.
+- `BeginActivationRequest` carries `displayName` and a bounded (64 KiB)
+  plaintext `inputData` for the record; failure requests carry the measured
+  `latencyMs`; completion usage carries `cachedTokens`. The native binding is
+  built against `agnt5-sdk-core` 0.2.4.
+- Durable step bodies run with the activation id as the ambient correlation
+  id, so nested `function.*` events, logs, and model stream deltas parent to
+  the journal record. Delegated child agents use the CHILD activation id as
+  their agent correlation id.
+- `Tool.invoke` accepts `{ toolCallId, iteration }` record context and exposes
+  `usesDurableActivation(ctx)`.
+- Eval and scorer helpers read `lm.completed` / `lm.failed` (formerly
+  `lm.call.*`); `stepMemoized` also accepts `data.decision === 'replay'`.
+- `activation.` was dropped from the immediate-acknowledgement event prefixes
+  (never SDK-emitted); the legacy `workflow.step.` path is unchanged.
+
 ## [0.8.0-beta.4] - 2026-08-26
 
 ### Fixed

@@ -27,11 +27,12 @@ const TERMINAL_EVENT_TYPES = new Set([
   'workflow.paused',
 ]);
 
+// `workflow.step.` stays for the legacy (non-durable) step path; durable
+// activations are journaled by the runtime and never emitted by the SDK.
 const IMMEDIATE_ACK_PREFIXES = [
   'workflow.step.',
   'workflow.state.',
   'approval.',
-  'activation.',
 ];
 
 function requiresImmediateAcknowledgement(eventType: string): boolean {

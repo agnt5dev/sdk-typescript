@@ -46,6 +46,14 @@ function recoveryPolicy(value: RecoveryPolicy | undefined): ActivationRecoveryPo
   }
 }
 
+/** Optional record context for a tool invocation driven by an agent loop. */
+export interface ToolInvokeOptions {
+  /** Provider or SDK tool-call id shown on the journal record. */
+  toolCallId?: string;
+  /** Agent iteration (1-based) that issued the call. */
+  iteration?: number;
+}
+
 function sequentialToolKey(ctx: Context, toolName: string): string {
   const contextWithAllocator = ctx as Context & {
     allocateActivationKey?: (kind: string, name: string) => string;
@@ -98,15 +106,24 @@ export class Tool<TInput = any, TOutput = any> {
   }
 
   /**
+   * Whether an invocation on `ctx` takes the durable activation path. When it
+   * does, the runtime journals the `tool_call.*` boundary from the activation
+   * RPCs and callers must not emit their own lifecycle events.
+   */
+  usesDurableActivation(ctx: Context): boolean {
+    return this.durable && (ctx.metadata || {}).durable_activation_v1 === 'true';
+  }
+
+  /**
    * Invoke the tool with given arguments
    */
   async invoke(
     ctx: Context,
     args: Record<string, any>,
     stableKey?: string,
+    options?: ToolInvokeOptions,
   ): Promise<TOutput> {
-    const metadata = ctx.metadata || {};
-    if (this.durable && metadata.durable_activation_v1 === 'true') {
+    if (this.usesDurableActivation(ctx)) {
       const client = (ctx as ContextImpl).getActivationClient?.();
       if (!client) {
         throw new ActivationError(
@@ -119,7 +136,15 @@ export class Tool<TInput = any, TOutput = any> {
         stableKey: stableKey ? `tool:${this.name}:${stableKey}` : sequentialToolKey(ctx, this.name),
         input: { name: this.name, arguments: args },
         recoveryPolicy: this.recoveryPolicy,
+        displayName: this.name,
+        inputData: {
+          name: this.name,
+          arguments: args,
+          tool_call_id: options?.toolCallId ?? stableKey ?? null,
+          iteration: options?.iteration ?? null,
+        },
       });
+      const startMs = Date.now();
       let decision: ActivationDecision | undefined;
       const retryable = this.recoveryPolicy === ActivationRecoveryPolicy.IdempotentRetry ||
         this.recoveryPolicy === ActivationRecoveryPolicy.DurableSteps;
@@ -140,7 +165,7 @@ export class Tool<TInput = any, TOutput = any> {
           return new TextEncoder().encode(encoded);
         },
         decodeOutput: value => JSON.parse(new TextDecoder().decode(value)) as TOutput,
-        latencyMs: () => 0,
+        latencyMs: () => Date.now() - startMs,
         onAdmitted: admitted => { decision = admitted; },
         failureErrorCode: 'TOOL_FAILED',
         failureRetryable: retryable,

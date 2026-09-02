@@ -320,6 +320,8 @@ pub struct NativeBeginActivationRequest {
     pub run_authority: Buffer,
     pub lease_authority: Buffer,
     pub child: Option<NativeChildActivationLinkage>,
+    pub display_name: String,
+    pub input_data: Option<Buffer>,
 }
 
 #[cfg(feature = "durable-activation-v1")]
@@ -360,6 +362,7 @@ pub struct NativeCompleteActivationRequest {
     pub latency_ms: i64,
     pub provider: String,
     pub model: String,
+    pub cached_tokens: i64,
     pub evidence: Vec<NativeActivationEvidence>,
 }
 
@@ -393,6 +396,7 @@ pub struct NativeFailActivationRequest {
     pub retryable: bool,
     pub external_outcome_certainty: String,
     pub evidence: Vec<NativeActivationEvidence>,
+    pub latency_ms: i64,
 }
 
 #[cfg(feature = "durable-activation-v1")]
@@ -803,6 +807,11 @@ impl Worker {
                 child_definition_digest: child.child_definition_digest.to_vec(),
                 join_policy: child.join_policy,
             }),
+            display_name: request.display_name,
+            input_data: request
+                .input_data
+                .map(|data| data.to_vec())
+                .unwrap_or_default(),
         };
         let mut adapter = self.connected_activation_adapter().await?;
         let decision = adapter
@@ -841,6 +850,7 @@ impl Worker {
                 latency_ms: request.latency_ms,
                 provider: request.provider,
                 model: request.model,
+                cached_tokens: request.cached_tokens,
             }),
             evidence: native_activation_evidence(request.evidence),
         };
@@ -888,6 +898,7 @@ impl Worker {
             retryable: request.retryable,
             external_outcome_certainty: ActivationExternalOutcomeCertainty::Unknown as i32,
             evidence: native_activation_evidence(request.evidence),
+            latency_ms: request.latency_ms,
         };
         let mut adapter = self.connected_activation_adapter().await?;
         let receipt = adapter
