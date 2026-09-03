@@ -7,6 +7,27 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-03
+
+### Added
+
+- Export `FunctionRegistry` from the package root and expose structured model
+  output returned by the native binding.
+
+### Changed
+
+- Preserve assistant tool-call turns, provider continuation metadata, and
+  correlated tool results across the native binding and the OpenAI Chat,
+  OpenAI Responses, Anthropic, Gemini, and Bedrock edge adapters.
+- Build the native binding against `agnt5-sdk-core` 0.2.5.
+
+### Fixed
+
+- Avoid duplicate `workflow.step.*` records when a registered function runs
+  inside a durable step activation.
+- Complete the router iteration before its terminal handoff record and omit an
+  unresolved empty assistant transfer turn from delegated conversation history.
+
 ## [0.8.0-beta.6] - 2026-09-02
 
 ### Fixed
@@ -200,7 +221,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Native package publishing now ignores unsupported empty platform directories.
 - Release builds no longer require their not-yet-published optional platform packages.
 
-[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.4...HEAD
+[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.6...v0.8.0
+[0.8.0-beta.6]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.5...v0.8.0-beta.6
+[0.8.0-beta.5]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.4...v0.8.0-beta.5
 [0.8.0-beta.4]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.3...v0.8.0-beta.4
 [0.8.0-beta.3]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.2...v0.8.0-beta.3
 [0.8.0-beta.2]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.1...v0.8.0-beta.2

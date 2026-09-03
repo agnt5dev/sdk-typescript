@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActivationError, ActivationErrorCode } from '../errors.js';
 import { ActivationKind, activationId } from '../activation.js';
+import { fn, FunctionRegistry } from '../function.js';
 import { Worker } from '../worker.js';
 import { WorkflowRegistry, workflow } from '../workflow.js';
 
@@ -9,6 +10,15 @@ const decoder = new TextDecoder();
 
 function stepCheckpoints(native: ReturnType<typeof activationNative>) {
   return native.emitCheckpoint.mock.calls.filter(call => call[1].startsWith('workflow.step.'));
+}
+
+function lifecycleCheckpoints(native: ReturnType<typeof activationNative>) {
+  const direct = native.emitCheckpoint.mock.calls.map(call => ({
+    eventType: call[1] as string,
+    eventData: call[2] as string,
+  }));
+  const batched = native.emitCheckpointBatch.mock.calls.flatMap(call => call[0]);
+  return [...direct, ...batched];
 }
 
 function activationMetadata(): Record<string, string> {
@@ -76,6 +86,7 @@ async function dispatch(worker: Worker, metadata = activationMetadata()) {
 
 describe('managed worker durable activations', () => {
   beforeEach(() => {
+    FunctionRegistry.clear();
     WorkflowRegistry.clear();
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -122,6 +133,38 @@ describe('managed worker durable activations', () => {
     // nested function.* events and logs parent to the journal record.
     expect(observed.activationId).toMatch(/^actv1_/);
     expect(observed.correlationId).toBe(observed.activationId);
+  });
+
+  it('does not duplicate a durable step boundary around a nested function', async () => {
+    const nested = fn<{ value: string }, string>('nested-function').run(
+      async (_ctx, input) => input.value.toUpperCase(),
+    );
+    workflow('durable-workflow', async ctx => ctx.step(
+      'nested',
+      () => nested(ctx, { value: 'one' }),
+      { key: 'one' },
+    ));
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    const response = await dispatch(worker);
+
+    expect(response.eventType).toBe('run.completed');
+    expect(stepCheckpoints(native)).toHaveLength(0);
+    const functionEvents = lifecycleCheckpoints(native).filter(
+      event => event.eventType.startsWith('function.'),
+    );
+    expect(functionEvents.map(event => event.eventType)).toEqual([
+      'function.started',
+      'function.completed',
+    ]);
+    const admitted = await native.beginActivation.mock.results[0].value;
+    for (const event of functionEvents) {
+      const payload = JSON.parse(event.eventData);
+      expect(payload.parent_correlation_id ?? payload.parentCorrelationId)
+        .toBe(admitted.activationId);
+    }
   });
 
   it('records a failed step through the activation RPC without a checkpoint', async () => {

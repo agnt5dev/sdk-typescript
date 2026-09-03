@@ -58,6 +58,7 @@ use agnt5_sdk_core::lm::{
     TogetherConfig,
     TogetherProvider,
     TokenUsage,
+    ToolCall,
     ToolChoice,
     ToolDefinition,
     XaiConfig,
@@ -204,17 +205,54 @@ impl From<MessageRole> for JsMessageRole {
 pub struct JsMessage {
     pub role: String,
     pub content: String,
+    pub name: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub tool_calls: Option<Vec<JsToolCall>>,
 }
 
-impl From<JsMessage> for Message {
-    fn from(msg: JsMessage) -> Self {
+impl TryFrom<JsMessage> for Message {
+    type Error = Error;
+
+    fn try_from(msg: JsMessage) -> Result<Self> {
         let role = match msg.role.as_str() {
             "system" => MessageRole::System,
             "user" => MessageRole::User,
             "assistant" => MessageRole::Assistant,
             _ => MessageRole::User,
         };
-        Message::new(role, msg.content)
+        let tool_calls = msg
+            .tool_calls
+            .map(|calls| {
+                calls
+                    .into_iter()
+                    .map(|call| {
+                        let provider_data = call
+                            .provider_data
+                            .map(|value| {
+                                serde_json::from_str(&value).map_err(|error| {
+                                    Error::from_reason(format!(
+                                        "Invalid tool-call providerData JSON: {error}"
+                                    ))
+                                })
+                            })
+                            .transpose()?;
+                        Ok(ToolCall {
+                            id: call.id,
+                            name: call.name,
+                            arguments: call.arguments,
+                            provider_data,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?;
+
+        Ok(Message {
+            role,
+            content: msg.content,
+            tool_calls,
+            tool_call_id: msg.tool_call_id,
+        })
     }
 }
 
@@ -223,6 +261,21 @@ impl From<Message> for JsMessage {
         JsMessage {
             role: msg.role.as_str().to_string(),
             content: msg.content,
+            name: None,
+            tool_call_id: msg.tool_call_id,
+            tool_calls: msg.tool_calls.map(|calls| {
+                calls
+                    .into_iter()
+                    .map(|call| JsToolCall {
+                        id: call.id,
+                        name: call.name,
+                        arguments: call.arguments,
+                        provider_data: call
+                            .provider_data
+                            .and_then(|value| serde_json::to_string(&value).ok()),
+                    })
+                    .collect()
+            }),
         }
     }
 }
@@ -297,6 +350,7 @@ pub struct JsToolCall {
     pub id: String,
     pub name: String,
     pub arguments: String,
+    pub provider_data: Option<String>,
 }
 
 // ============================================================================
@@ -531,7 +585,11 @@ impl TryFrom<JsGenerateRequest> for GenerateRequest {
     type Error = Error;
 
     fn try_from(req: JsGenerateRequest) -> Result<Self> {
-        let messages: Vec<Message> = req.messages.into_iter().map(|m| m.into()).collect();
+        let messages = req
+            .messages
+            .into_iter()
+            .map(Message::try_from)
+            .collect::<Result<Vec<_>>>()?;
 
         let tools: Vec<ToolDefinition> = if let Some(js_tools) = req.tools {
             js_tools
@@ -622,7 +680,8 @@ pub struct JsGenerateResponse {
     pub usage: Option<JsTokenUsage>,
     pub finish_reason: Option<String>,
     pub tool_calls: Option<Vec<JsToolCall>>,
-    pub raw: Option<String>, // JSON string
+    pub structured_output: Option<String>, // JSON string
+    pub raw: Option<String>,               // JSON string
 }
 
 impl From<GenerateResponse> for JsGenerateResponse {
@@ -634,12 +693,19 @@ impl From<GenerateResponse> for JsGenerateResponse {
                     id: call.id,
                     name: call.name,
                     arguments: call.arguments,
+                    provider_data: call
+                        .provider_data
+                        .and_then(|value| serde_json::to_string(&value).ok()),
                 })
                 .collect()
         });
 
         let raw = resp
             .raw
+            .map(|value| serde_json::to_string(&value).ok())
+            .flatten();
+        let structured_output = resp
+            .object
             .map(|value| serde_json::to_string(&value).ok())
             .flatten();
 
@@ -651,6 +717,7 @@ impl From<GenerateResponse> for JsGenerateResponse {
             usage: resp.usage.map(|u| u.into()),
             finish_reason: resp.finish_reason,
             tool_calls,
+            structured_output,
             raw,
         }
     }

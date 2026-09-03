@@ -20,12 +20,14 @@ import { ContextImpl } from '../context.js';
 class MockLanguageModel implements LanguageModel {
   private responses: GenerateResponse[];
   private callIndex = 0;
+  readonly requests: GenerateRequest[] = [];
 
   constructor(responses: GenerateResponse[]) {
     this.responses = responses;
   }
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
+    this.requests.push(request);
     const response = this.responses[this.callIndex] || this.responses[this.responses.length - 1];
     this.callIndex++;
     return response;
@@ -534,7 +536,7 @@ describe('Agent Handoffs', () => {
     // The triage agent calls the transfer tool
     const triageModel = new MockLanguageModel([
       {
-        text: 'Transferring to tech',
+        text: '',
         toolCalls: [{
           name: 'transfer_to_tech_specialist',
           arguments: JSON.stringify({ message: 'How do I implement OAuth2?' }),
@@ -555,6 +557,9 @@ describe('Agent Handoffs', () => {
     expect(result.output).toBe('I can help with that technical question');
     expect(result.handoffMetadata).toBeDefined();
     expect(result.handoffMetadata._handoff).toBe(true);
+    expect(targetModel.requests[0].messages?.every(
+      message => message.role !== 'assistant' || message.content.trim() !== '',
+    )).toBe(true);
   });
 
   it('should emit AgentCompleted with handoffTo on handoff', async () => {
@@ -592,6 +597,10 @@ describe('Agent Handoffs', () => {
 
     const completed = events.find(e => e.eventType === 'agent.completed');
     expect(completed).toBeDefined();
+    const iterationTerminalIndex = events.findIndex(e => e.eventType === 'agent.iteration.completed');
+    const agentTerminalIndex = events.findIndex(e => e.eventType === 'agent.completed');
+    expect(iterationTerminalIndex).toBeGreaterThan(-1);
+    expect(iterationTerminalIndex).toBeLessThan(agentTerminalIndex);
     if (completed?.eventType === 'agent.completed') {
       expect(completed.handoffTo).toBe('specialist');
     }
