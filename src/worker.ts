@@ -4,7 +4,12 @@ import { FunctionRegistry } from './function.js';
 import { WorkflowRegistry } from './workflow.js';
 import type { TriggerSpec } from './workflow.js';
 import { ToolRegistry } from './tool.js';
-import { ScorerRegistry, isScorer } from './scorer.js';
+import {
+  BUILTIN_DETERMINISTIC_SCORER_NAMES,
+  BUILTIN_JUDGE_SCORER_NAMES,
+  ScorerRegistry,
+  isScorer,
+} from './scorer.js';
 import { Agent, Message } from './agent.js';
 import type { AgentResult } from './agent.js';
 import { ChatBot } from './chat.js';
@@ -147,17 +152,15 @@ type ComponentRegistration = {
   outputSchema?: string;
 };
 
+const BUILTIN_COMPONENT_SOURCE = 'agnt5_builtin';
+
 function serializedSchema(schema: unknown): string | undefined {
   if (!schema || typeof schema !== 'object') return undefined;
   return JSON.stringify(schema);
 }
 
 function isSystemComponentRegistration(component: ComponentRegistration): boolean {
-  return (
-    component.metadata.source === 'agnt5_builtin' ||
-    Boolean(component.metadata.agnt5_builtin) ||
-    component.config.builtin === 'true'
-  );
+  return component.metadata.source === BUILTIN_COMPONENT_SOURCE;
 }
 
 function validateSleepDuration(durationMs: number): void {
@@ -1719,7 +1722,7 @@ export class Worker {
       components.push({
         name: PROMPT_EXECUTOR_COMPONENT_NAME,
         componentType: 'function',
-        config: { builtin: 'true' },
+        config: {},
         metadata: PROMPT_EXECUTOR_METADATA,
       });
     }
@@ -1756,12 +1759,29 @@ export class Worker {
       components.push({ name, componentType: 'agent', config: {}, metadata: {} });
     }
 
-    const workerExecutedBuiltinScorers = new Set(['llm_judge', 'correctness', 'faithfulness', 'goal_success', 'agent_judge']);
+    // AGNT5-owned built-ins are routable worker capabilities, never user
+    // components. Rust intercepts deterministic scorers before JS dispatch;
+    // managed judge presets fall through to their SDK handlers.
+    for (const name of [
+      ...BUILTIN_DETERMINISTIC_SCORER_NAMES,
+      ...BUILTIN_JUDGE_SCORER_NAMES,
+    ]) {
+      const cfg = ScorerRegistry.get(name);
+      components.push({
+        name,
+        componentType: 'scorer',
+        config: {},
+        metadata: {
+          source: BUILTIN_COMPONENT_SOURCE,
+          ...(cfg?.scope ? { scope: cfg.scope } : {}),
+          ...(cfg?.description ? { description: cfg.description } : {}),
+        },
+      });
+    }
 
-    // Scorers. Deterministic built-ins stay on Rust/control-plane paths, but
-    // managed judge presets need a routable SDK worker component.
+    // Custom scorers are ordinary user components.
     for (const [name, cfg] of ScorerRegistry.all()) {
-      if (isScorer(cfg.handler) || workerExecutedBuiltinScorers.has(name)) {
+      if (isScorer(cfg.handler)) {
         components.push({
           name,
           componentType: 'scorer',
@@ -1769,7 +1789,6 @@ export class Worker {
           metadata: {
             scope: cfg.scope,
             description: cfg.description || '',
-            ...(workerExecutedBuiltinScorers.has(name) ? { source: 'agnt5_builtin' } : {}),
           },
         });
       }

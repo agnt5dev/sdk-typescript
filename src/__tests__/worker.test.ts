@@ -3,7 +3,13 @@ import { Worker, getRuntime } from '../worker';
 import { fn, FunctionRegistry } from '../function';
 import { workflow, WorkflowRegistry } from '../workflow';
 import { tool, ToolRegistry } from '../tool';
-import { ScorerRegistry } from '../scorer';
+import {
+  BUILTIN_DETERMINISTIC_SCORER_NAMES,
+  BUILTIN_JUDGE_SCORER_NAMES,
+  ScorerRegistry,
+  ScorerResult,
+  scorer,
+} from '../scorer';
 
 vi.mock('../native-loader', () => {
   class MockNativeWorker {
@@ -203,6 +209,48 @@ describe('Worker', () => {
       const component = components.find((candidate) => candidate.name === name);
       expect(JSON.parse(component.inputSchema)).toEqual(locationSchema);
     }
+  });
+
+  it('registers custom scorers and marks only worker-executed built-ins by source', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    scorer('custom_quality')(
+      async () => new ScorerResult({ score: 1, passed: true }),
+    );
+
+    await new Worker('test-service').run();
+
+    const components = (globalThis as any).__agnt5RegisteredComponents as any[];
+    const scorers = components.filter((component) => component.componentType === 'scorer');
+    expect(scorers.map((component) => component.name).sort()).toEqual(
+      [
+        ...BUILTIN_DETERMINISTIC_SCORER_NAMES,
+        ...BUILTIN_JUDGE_SCORER_NAMES,
+        'custom_quality',
+      ].sort(),
+    );
+
+    for (const name of [
+      ...BUILTIN_DETERMINISTIC_SCORER_NAMES,
+      ...BUILTIN_JUDGE_SCORER_NAMES,
+    ]) {
+      const component = scorers.find((candidate) => candidate.name === name);
+      expect(component.metadata).toMatchObject({ source: 'agnt5_builtin' });
+      expect(component.metadata).not.toHaveProperty('agnt5_builtin');
+      expect(component.metadata).not.toHaveProperty('agnt5.builtin');
+      expect(component.config).not.toHaveProperty('builtin');
+    }
+
+    const custom = scorers.find((component) => component.name === 'custom_quality');
+    expect(custom.metadata).not.toHaveProperty('source');
+    expect(custom.config).not.toHaveProperty('builtin');
+
+    const promptExecutor = components.find(
+      (component) => component.name === 'agnt5_prompt_executor',
+    );
+    expect(promptExecutor.metadata).toMatchObject({ source: 'agnt5_builtin' });
+    expect(promptExecutor.metadata).not.toHaveProperty('agnt5_builtin');
+    expect(promptExecutor.config).not.toHaveProperty('builtin');
   });
 
   it('maps pull worker options to sdk-core long polling environment', async () => {
