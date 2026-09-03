@@ -57,17 +57,53 @@ function getNativeLogFn() {
 
 // ─── Trace correlation ───────────────────────────────────────────────
 
+const HEX_32 = /^[0-9a-f]{32}$/i;
+const HEX_16 = /^[0-9a-f]{16}$/i;
+const ALL_ZERO = /^0+$/;
+
+/** An id is usable only if it is the right width and not the all-zero "absent" encoding. */
+function validId(value: unknown, shape: RegExp): string | null {
+  return typeof value === 'string' && shape.test(value) && !ALL_ZERO.test(value)
+    ? value.toLowerCase()
+    : null;
+}
+
+/**
+ * Both ids out of a W3C `traceparent`: `<version>-<trace id>-<span id>-<flags>`.
+ *
+ * Returns null unless both ids are well-formed, since half a context is not a
+ * context. Extra trailing fields are tolerated — the spec allows a future
+ * version to append them, and the first four are positionally fixed.
+ */
+function parseTraceparent(value: unknown): { traceId: string; spanId: string } | null {
+  if (typeof value !== 'string') return null;
+  const parts = value.split('-');
+  if (parts.length < 4) return null;
+  const traceId = validId(parts[1], HEX_32);
+  const spanId = validId(parts[2], HEX_16);
+  return traceId && spanId ? { traceId, spanId } : null;
+}
+
 /**
  * Trace and span ids to stamp on a log record, resolved from the ambient run.
  *
  * Every TypeScript log record used to go out with both fields null, so logs
  * could not be correlated to their trace even though the run had one
- * (AGNT5-1073). Two sources, in order:
+ * (AGNT5-1073, root-caused in AGNT5-1080). Three sources, in order:
  *
  *  - an active in-process span, which carries both ids;
- *  - the `trace_id` the runtime stamps on dispatch metadata (sdk-core
- *    `worker.rs` inserts it), which is the id the control plane joins runs and
- *    traces on. No span id is available from this source.
+ *  - the `traceparent` the gateway stamps on dispatch metadata. This is the
+ *    one that fires in practice: `ensure_traceparent` guarantees an entry on
+ *    every dispatch, synthesising one when no gateway span is active, so it is
+ *    the only source that covers an ordinary run. It carries a real span id,
+ *    which correlates the record to the run's actual span rather than to the
+ *    trace at large;
+ *  - loose `trace_id` / `span_id` metadata entries, which only the oss-server
+ *    dispatch path sets.
+ *
+ * Reading `trace_id` alone was the bug: the gateway path never sets that key,
+ * so the lookup missed, and on the oss-server path the sibling `span_id` was
+ * ignored and the half-populated pair was then dropped by the native bridge.
  *
  * Returns nulls outside a run — worker startup logs belong to no trace.
  */
@@ -79,8 +115,16 @@ export function currentTraceCorrelation(): {
   if (span) {
     return { traceId: span.traceId, spanId: span.spanId };
   }
-  const traceId = getCurrentContext()?.metadata?.trace_id;
-  return { traceId: typeof traceId === 'string' && traceId ? traceId : null, spanId: null };
+
+  const metadata = getCurrentContext()?.metadata;
+  if (!metadata) return { traceId: null, spanId: null };
+
+  const traceparent = parseTraceparent(metadata.traceparent);
+  if (traceparent) return traceparent;
+
+  // A span id without a trace id points nowhere, so it is dropped with it.
+  const traceId = validId(metadata.trace_id, HEX_32);
+  return { traceId, spanId: traceId ? validId(metadata.span_id, HEX_16) : null };
 }
 
 /**
