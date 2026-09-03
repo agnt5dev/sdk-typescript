@@ -7,7 +7,7 @@ const boot = vi.hoisted(() => ({
 
 vi.mock('../integrations/index', () => ({ autoEnable: boot.autoEnable }));
 
-vi.mock('../native-loader', () => {
+vi.mock('#native-loader', () => {
   class MockWorker {
     workerId = 'worker-1';
     coordinatorEndpoint = 'http://localhost:34186';

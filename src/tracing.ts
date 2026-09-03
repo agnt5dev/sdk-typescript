@@ -8,7 +8,7 @@
 
 import { AsyncLocalStorage } from 'async_hooks';
 import { randomUUID } from 'crypto';
-import { getLoadedNativeBindings } from './native-loader.js';
+import { getLoadedNativeBindings } from '#native-loader';
 
 // ─── NAPI binding loader ─────────────────────────────────────────────
 

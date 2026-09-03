@@ -13,6 +13,10 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "#native-loader": ["src/native-loader.node.ts"]
+    },
     "types": ["node"]
   },
   "include": ["src/**/*"],

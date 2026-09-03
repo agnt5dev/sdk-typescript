@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { tryLoadNativeBindings } from './native-loader.js';
+import { tryLoadNativeBindings } from '#native-loader';
 
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 

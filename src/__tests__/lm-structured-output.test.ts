@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const generate = vi.fn();
 
-vi.mock('../native-loader.js', () => ({
+vi.mock('#native-loader', () => ({
   tryLoadNativeBindings: () => ({
     LanguageModel: {
       anthropic: () => ({ generate }),

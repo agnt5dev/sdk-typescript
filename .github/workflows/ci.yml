@@ -59,6 +59,12 @@ jobs:
       - name: Build TypeScript
         run: npm run build:ts
 
+      - name: Install workerd smoke dependencies
+        run: npm ci --prefix examples/workerless-cloudflare --ignore-scripts --no-audit --no-fund
+
+      - name: Smoke test packed SDK in workerd
+        run: npm run test:workerd
+
       - name: Check native Rust module
         run: cargo check --manifest-path native/Cargo.toml --locked
 

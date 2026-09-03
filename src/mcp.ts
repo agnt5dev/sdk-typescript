@@ -1,6 +1,6 @@
 import { Tool } from './tool.js';
 import type { Context } from './types.js';
-import { loadNativeBindings } from './native-loader.js';
+import { loadNativeBindings } from '#native-loader';
 
 export interface McpTool {
   name: string;

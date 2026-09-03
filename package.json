@@ -1,13 +1,22 @@
 {
   "name": "@agnt5/sdk",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "AGNT5 TypeScript SDK - Durable AI workflows and agents",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "imports": {
+    "#native-loader": {
+      "workerd": "./dist/native-loader.js",
+      "edge-light": "./dist/native-loader.js",
+      "default": "./dist/native-loader.node.js"
+    }
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "workerd": "./dist/index.js",
+      "edge-light": "./dist/index.js",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
@@ -23,6 +32,8 @@
     },
     "./serverless/cloudflare": {
       "types": "./dist/serverless-cloudflare.d.ts",
+      "workerd": "./dist/serverless-cloudflare.js",
+      "edge-light": "./dist/serverless-cloudflare.js",
       "import": "./dist/serverless-cloudflare.js",
       "default": "./dist/serverless-cloudflare.js"
     },
@@ -58,6 +69,7 @@
     "build:ts": "npm run clean && tsc",
     "dev": "tsc --watch",
     "test": "vitest",
+    "test:workerd": "node examples/workerless-cloudflare/smoke.mjs",
     "artifacts": "napi artifacts",
     "prepublishOnly": "napi prepublish -t npm --no-gh-release --skip-optional-publish && npm run verify:publish-manifest && npm run build:ts",
     "verify:publish-manifest": "node scripts/verify-publish-manifest.mjs",

@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
  */
 
 const bridge = vi.fn();
-vi.mock('../native-loader.js', () => ({
+vi.mock('#native-loader', () => ({
   getLoadedNativeBindings: () => ({ logFromTypescript: bridge }),
   tryLoadNativeBindings: () => ({ logFromTypescript: bridge }),
   loadNativeBindings: () => ({ logFromTypescript: bridge }),
