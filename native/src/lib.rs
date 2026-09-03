@@ -1416,6 +1416,48 @@ pub fn get_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Build the span context to attach to a log record, from hex ids.
+///
+/// The span id is optional on purpose (AGNT5-1080). This used to require both,
+/// so a record that knew its trace but not its span was exported with neither,
+/// silently — which is how every TypeScript log line lost its trace. An absent
+/// or unparseable span id now degrades to `SpanId::INVALID`, the spec's all-zero
+/// "no span" encoding. The trace id still reaches the LogRecord, because the
+/// SDK's log appender keys on whether a span is *set* on the context
+/// (`Context::has_active_span` is `self.span.is_some()`), not on whether that
+/// span context is valid.
+///
+/// Returns None only when there is no usable trace id, since a span id alone
+/// correlates to nothing.
+fn log_span_context(
+    trace_id: Option<&str>,
+    span_id: Option<&str>,
+) -> Option<opentelemetry::trace::SpanContext> {
+    use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId};
+
+    let trace_id = hex::decode(trace_id?)
+        .ok()
+        .and_then(|bytes| <[u8; 16]>::try_from(bytes.as_slice()).ok())
+        .map(TraceId::from_bytes)
+        .filter(|id| *id != TraceId::INVALID)?;
+
+    // A malformed span id must not cost us the trace id, so it falls back
+    // rather than aborting the attach.
+    let span_id = span_id
+        .and_then(|sid| hex::decode(sid).ok())
+        .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
+        .map(SpanId::from_bytes)
+        .unwrap_or(SpanId::INVALID);
+
+    Some(SpanContext::new(
+        trace_id,
+        span_id,
+        TraceFlags::SAMPLED,
+        false,
+        Default::default(),
+    ))
+}
+
 /// Forward TypeScript user logs to Rust tracing system for OpenTelemetry export.
 ///
 /// This mirrors Python's `log_from_python` — user application logs are emitted through
@@ -1440,36 +1482,13 @@ pub fn log_from_typescript(
         .as_ref()
         .map(|attrs| serde_json::to_string(attrs).unwrap_or_else(|_| "{}".to_string()));
 
-    // Attach OpenTelemetry context if trace_id and span_id are provided
-    let _cx_guard = if let (Some(ref tid_str), Some(ref sid_str)) = (&trace_id, &span_id) {
-        use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId};
-
-        if let (Ok(tid_bytes), Ok(sid_bytes)) = (hex::decode(tid_str), hex::decode(sid_str)) {
-            if tid_bytes.len() == 16 && sid_bytes.len() == 8 {
-                let trace_id =
-                    TraceId::from_bytes(tid_bytes.try_into().expect("trace_id length verified"));
-                let span_id =
-                    SpanId::from_bytes(sid_bytes.try_into().expect("span_id length verified"));
-
-                let span_context = SpanContext::new(
-                    trace_id,
-                    span_id,
-                    TraceFlags::SAMPLED,
-                    false,
-                    Default::default(),
-                );
-
-                let cx = opentelemetry::Context::current().with_remote_span_context(span_context);
-                Some(cx.attach())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    // Attach the run's trace context so the exported LogRecord carries it.
+    let _cx_guard = log_span_context(trace_id.as_deref(), span_id.as_deref()).map(|span_context| {
+        use opentelemetry::trace::TraceContextExt;
+        opentelemetry::Context::current()
+            .with_remote_span_context(span_context)
+            .attach()
+    });
 
     // The run id goes out under two names on purpose (AGNT5-1070):
     // `agnt5.run.id` is the canonical attribute, matching what
@@ -1872,6 +1891,51 @@ impl Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AGNT5-1080. The regression these guard is silent: a dropped context
+    /// exports a log record that simply has no trace, with no error anywhere.
+    mod log_span_context {
+        use super::*;
+        use opentelemetry::trace::{SpanId, TraceId};
+
+        const TRACE: &str = "01a06662eea474f0bb8e6ade8e0b589e";
+        const SPAN: &str = "d8e314d6ce264a7b";
+
+        #[test]
+        fn carries_both_ids_when_both_are_given() {
+            let cx = log_span_context(Some(TRACE), Some(SPAN)).expect("context");
+            assert_eq!(cx.trace_id(), TraceId::from_hex(TRACE).unwrap());
+            assert_eq!(cx.span_id(), SpanId::from_hex(SPAN).unwrap());
+        }
+
+        /// The whole point of the fix: the trace survives a missing span.
+        #[test]
+        fn keeps_the_trace_id_when_the_span_id_is_absent() {
+            let cx = log_span_context(Some(TRACE), None).expect("context");
+            assert_eq!(cx.trace_id(), TraceId::from_hex(TRACE).unwrap());
+            assert_eq!(cx.span_id(), SpanId::INVALID);
+        }
+
+        #[test]
+        fn keeps_the_trace_id_when_the_span_id_is_unusable() {
+            for bad in ["", "zzzz", "abc", &"0".repeat(64)] {
+                let cx = log_span_context(Some(TRACE), Some(bad)).expect("context");
+                assert_eq!(cx.trace_id(), TraceId::from_hex(TRACE).unwrap(), "{bad:?}");
+                assert_eq!(cx.span_id(), SpanId::INVALID, "{bad:?}");
+            }
+        }
+
+        #[test]
+        fn declines_without_a_usable_trace_id() {
+            // A span id alone correlates to nothing, and an all-zero trace id is
+            // the spec's "absent" encoding rather than a real trace.
+            assert!(log_span_context(None, Some(SPAN)).is_none());
+            assert!(log_span_context(Some(""), Some(SPAN)).is_none());
+            assert!(log_span_context(Some("nothex"), Some(SPAN)).is_none());
+            assert!(log_span_context(Some(&"0".repeat(32)), Some(SPAN)).is_none());
+            assert!(log_span_context(Some(SPAN), Some(SPAN)).is_none(), "16 hex is too short for a trace id");
+        }
+    }
 
     #[cfg(feature = "durable-activation-v1")]
     #[test]
