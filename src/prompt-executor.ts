@@ -6,7 +6,6 @@ export const PROMPT_WORKER_INPUT_SCHEMA_VERSION = 'agnt5.eval.prompt_worker_inpu
 
 export const PROMPT_EXECUTOR_METADATA: Record<string, string> = {
   source: 'agnt5_builtin',
-  agnt5_builtin: 'prompt_executor',
   schema_version: PROMPT_WORKER_INPUT_SCHEMA_VERSION,
 };
 
