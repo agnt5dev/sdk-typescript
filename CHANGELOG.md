@@ -7,7 +7,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-## [0.8.0-beta.7] - 2026-09-03
+## [0.8.0] - 2026-09-03
 
 ### Added
 
@@ -221,8 +221,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Native package publishing now ignores unsupported empty platform directories.
 - Release builds no longer require their not-yet-published optional platform packages.
 
-[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.7...HEAD
-[0.8.0-beta.7]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.6...v0.8.0-beta.7
+[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.6...v0.8.0
 [0.8.0-beta.6]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.5...v0.8.0-beta.6
 [0.8.0-beta.5]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.4...v0.8.0-beta.5
 [0.8.0-beta.4]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.3...v0.8.0-beta.4
