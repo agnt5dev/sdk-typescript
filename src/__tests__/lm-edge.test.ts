@@ -231,6 +231,92 @@ describe('LM edge fallback', () => {
     });
   });
 
+  it('preserves Gemini function calls and native tool results on continuation', async () => {
+    const requests: any[] = [];
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      requests.push(JSON.parse(String(init.body)));
+      const body = requests.length === 1
+        ? {
+          responseId: 'gemini_tool_1',
+          modelVersion: 'gemini-3.5-flash-lite',
+          candidates: [{
+            finishReason: 'STOP',
+            content: { parts: [{
+              functionCall: { id: 'google-call-123', name: 'calculate', args: { expression: '15 * 23' } },
+              thoughtSignature: 'opaque-google-signature',
+            }] },
+          }],
+        }
+        : {
+          responseId: 'gemini_tool_2',
+          modelVersion: 'gemini-3.5-flash-lite',
+          candidates: [{
+            finishReason: 'STOP',
+            content: { parts: [{ text: '345' }] },
+          }],
+        };
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const model = LM.google({ apiKey: 'google-key' });
+    const first = await model.generate({
+      model: 'google/gemini-3.5-flash-lite',
+      messages: [{ role: 'user', content: 'Calculate 15 * 23' }],
+      tools: [{ name: 'calculate', parameters: '{"type":"object"}' }],
+    });
+    expect(first.toolCalls).toEqual([{
+      id: 'google-call-123',
+      name: 'calculate',
+      arguments: '{"expression":"15 * 23"}',
+      providerData: { google: { thought_signature: 'opaque-google-signature' } },
+    }]);
+
+    const second = await model.generate({
+      model: 'google/gemini-3.5-flash-lite',
+      messages: [
+        { role: 'user', content: 'Calculate 15 * 23' },
+        { role: 'assistant', content: '', toolCalls: first.toolCalls },
+        { role: 'user', content: '345', name: 'calculate', toolCallId: 'google-call-123' },
+      ],
+      config: {
+        reasoningEffort: 'minimal',
+        responseFormat: {
+          formatType: 'json_schema',
+          schemaName: 'answer',
+          schema: '{"type":"object"}',
+        },
+      },
+    });
+    expect(second.text).toBe('345');
+    expect(requests[1]).toMatchObject({
+      contents: [
+        { role: 'user', parts: [{ text: 'Calculate 15 * 23' }] },
+        {
+          role: 'model',
+          parts: [{
+            functionCall: { id: 'google-call-123', name: 'calculate', args: { expression: '15 * 23' } },
+            thoughtSignature: 'opaque-google-signature',
+          }],
+        },
+        {
+          role: 'user',
+          parts: [{
+            functionResponse: {
+              id: 'google-call-123',
+              name: 'calculate',
+              response: { result: 345 },
+            },
+          }],
+        },
+      ],
+      generationConfig: {
+        responseJsonSchema: { type: 'object' },
+        thinkingConfig: { thinkingLevel: 'minimal' },
+      },
+    });
+  });
+
   it('signs Bedrock requests with an edge-safe Web Crypto implementation', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       output: { message: { content: [{ text: 'Bedrock edge response' }] } },

@@ -192,7 +192,7 @@ function responseFormatForChat(request: GenerateRequest): JsonObject | undefined
 function chatPayload(request: GenerateRequest, model: string, stream: boolean): JsonObject {
   const messages = [
     ...(request.systemPrompt ? [{ role: 'system', content: request.systemPrompt }] : []),
-    ...(request.messages ?? []),
+    ...chatMessages(request.messages ?? []),
   ];
   const reasoningModel = isOpenAIReasoningModel(model);
   const tools = request.tools?.map(tool => ({
@@ -221,6 +221,28 @@ function chatPayload(request: GenerateRequest, model: string, stream: boolean): 
     response_format: responseFormatForChat(request),
     tools: tools?.length ? tools : undefined,
     tool_choice: toolChoice,
+  });
+}
+
+function chatMessages(messages: NonNullable<GenerateRequest['messages']>): JsonObject[] {
+  return messages.map(message => {
+    if (message.toolCallId) {
+      return compact({
+        role: 'tool',
+        content: message.content,
+        tool_call_id: message.toolCallId,
+        name: message.name,
+      });
+    }
+    return compact({
+      role: message.role,
+      content: message.content,
+      tool_calls: message.toolCalls?.map(call => ({
+        id: call.id,
+        type: 'function',
+        function: { name: call.name, arguments: call.arguments },
+      })),
+    });
   });
 }
 
@@ -617,7 +639,7 @@ class OpenAIResponsesEdgeProvider implements EdgeLanguageModel {
     );
     const cache = cacheConfig(request);
     const input = request.messages?.length
-      ? request.messages.map(message => ({ type: 'message', role: message.role, content: message.content }))
+      ? openAIResponsesInput(request.messages)
       : request.systemPrompt ?? '';
     return compact({
       model,
@@ -639,6 +661,34 @@ class OpenAIResponsesEdgeProvider implements EdgeLanguageModel {
       text: textFormat,
     });
   }
+}
+
+function openAIResponsesInput(messages: NonNullable<GenerateRequest['messages']>): JsonObject[] {
+  const input: JsonObject[] = [];
+  for (const message of messages) {
+    if (message.toolCallId) {
+      input.push({
+        type: 'function_call_output',
+        call_id: message.toolCallId,
+        output: message.content,
+      });
+      continue;
+    }
+    if (message.toolCalls?.length) {
+      if (message.content) {
+        input.push({ type: 'message', role: 'assistant', content: message.content });
+      }
+      input.push(...message.toolCalls.map(call => ({
+        type: 'function_call',
+        call_id: call.id,
+        name: call.name,
+        arguments: call.arguments,
+      })));
+      continue;
+    }
+    input.push({ type: 'message', role: message.role, content: message.content });
+  }
+  return input;
 }
 
 function responseFromOpenAI(value: JsonObject): GenerateResponse {
@@ -799,7 +849,7 @@ class AnthropicEdgeProvider implements EdgeLanguageModel {
     return compact({
       model: modelWithoutProvider(request.model, 'anthropic'),
       system,
-      messages: request.messages ?? [],
+      messages: anthropicMessages(request.messages ?? []),
       max_tokens: request.config?.maxOutputTokens ?? 4096,
       temperature: request.config?.temperature,
       top_p: request.config?.topP,
@@ -808,6 +858,36 @@ class AnthropicEdgeProvider implements EdgeLanguageModel {
       stream: stream || undefined,
     });
   }
+}
+
+function anthropicMessages(messages: NonNullable<GenerateRequest['messages']>): JsonObject[] {
+  return messages.map(message => {
+    if (message.toolCallId) {
+      return {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: message.toolCallId,
+          content: message.content,
+        }],
+      };
+    }
+    if (message.toolCalls?.length) {
+      return {
+        role: 'assistant',
+        content: [
+          ...(message.content ? [{ type: 'text', text: message.content }] : []),
+          ...message.toolCalls.map(call => ({
+            type: 'tool_use',
+            id: call.id,
+            name: call.name,
+            input: parseJsonObject(call.arguments),
+          })),
+        ],
+      };
+    }
+    return { role: message.role, content: message.content };
+  });
 }
 
 function responseFromAnthropic(value: JsonObject): GenerateResponse {
@@ -871,6 +951,9 @@ class GoogleEdgeProvider implements EdgeLanguageModel {
             id: part.functionCall.id ?? `call_${toolCalls.length}`,
             name: part.functionCall.name ?? '',
             arguments: JSON.stringify(part.functionCall.args ?? {}),
+            providerData: part.thoughtSignature
+              ? { google: { thought_signature: part.thoughtSignature } }
+              : undefined,
           });
         }
       }
@@ -935,17 +1018,17 @@ class GoogleEdgeProvider implements EdgeLanguageModel {
       responseMimeType: responseFormat?.formatType === 'json' || responseFormat?.formatType === 'json_schema'
         ? 'application/json'
         : undefined,
-      responseSchema: responseFormat?.formatType === 'json_schema'
+      responseJsonSchema: responseFormat?.formatType === 'json_schema'
         ? parseParameters(responseFormat.schema)
+        : undefined,
+      thinkingConfig: request.config?.reasoningEffort
+        ? { thinkingLevel: request.config.reasoningEffort }
         : undefined,
     });
     const cache = cacheConfig(request);
     return compact({
       systemInstruction: request.systemPrompt ? { parts: [{ text: request.systemPrompt }] } : undefined,
-      contents: (request.messages ?? []).map(message => ({
-        role: message.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: message.content }],
-      })),
+      contents: googleContents(request.messages ?? []),
       tools: tools?.length || request.config?.builtInTools?.includes('web_search')
         ? [
             ...(tools?.length ? [{ functionDeclarations: tools }] : []),
@@ -994,6 +1077,9 @@ function responseFromGoogle(value: JsonObject, model: string): GenerateResponse 
       id: part.functionCall.id ?? `call_${index}`,
       name: part.functionCall.name ?? '',
       arguments: JSON.stringify(part.functionCall.args ?? {}),
+      providerData: part.thoughtSignature
+        ? { google: { thought_signature: part.thoughtSignature } }
+        : undefined,
     }));
   return compact({
     id: value.responseId ?? '',
@@ -1004,6 +1090,69 @@ function responseFromGoogle(value: JsonObject, model: string): GenerateResponse 
     toolCalls: toolCalls.length ? toolCalls : undefined,
     raw: JSON.stringify(value),
   }) as GenerateResponse;
+}
+
+function googleContents(messages: NonNullable<GenerateRequest['messages']>): JsonObject[] {
+  const toolCallNames = new Map<string, string>();
+  return messages.map(message => {
+    if (message.toolCallId) {
+      return {
+        role: 'user',
+        parts: [{
+          functionResponse: {
+            name: message.name ?? toolCallNames.get(message.toolCallId) ?? message.toolCallId,
+            response: googleFunctionResponse(message.content),
+            id: message.toolCallId,
+          },
+        }],
+      };
+    }
+
+    if (message.toolCalls?.length) {
+      const parts: JsonObject[] = message.content ? [{ text: message.content }] : [];
+      for (const call of message.toolCalls) {
+        toolCallNames.set(call.id, call.name);
+        const providerData = typeof call.providerData === 'string'
+          ? parseJsonObject(call.providerData)
+          : call.providerData as JsonObject | undefined;
+        const signature = providerData?.google?.thought_signature;
+        parts.push(compact({
+          functionCall: {
+            id: call.id,
+            name: call.name,
+            args: parseJsonObject(call.arguments),
+          },
+          thoughtSignature: signature,
+        }));
+      }
+      return { role: 'model', parts };
+    }
+
+    return {
+      role: message.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: message.content }],
+    };
+  });
+}
+
+function googleFunctionResponse(content: string): JsonObject {
+  try {
+    const value = JSON.parse(content);
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value
+      : { result: value };
+  } catch {
+    return { result: content };
+  }
+}
+
+function parseJsonObject(value: string): JsonObject {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function usageFromGoogle(usage: JsonObject | undefined): GenerateResponse['usage'] {
@@ -1023,10 +1172,7 @@ class BedrockEdgeProvider implements EdgeLanguageModel {
     const { region, model } = this.target(request.model);
     const body = compact({
       system: request.systemPrompt ? [{ text: request.systemPrompt }] : undefined,
-      messages: (request.messages ?? []).map(message => ({
-        role: message.role === 'assistant' ? 'assistant' : 'user',
-        content: [{ text: message.content }],
-      })),
+      messages: bedrockMessages(request.messages ?? []),
       inferenceConfig: compact({
         maxTokens: nonZero(request.config?.maxOutputTokens),
         temperature: request.config?.temperature,
@@ -1124,6 +1270,41 @@ class BedrockEdgeProvider implements EdgeLanguageModel {
       Authorization: `AWS4-HMAC-SHA256 Credential=${accessKey}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
     };
   }
+}
+
+function bedrockMessages(messages: NonNullable<GenerateRequest['messages']>): JsonObject[] {
+  return messages.map(message => {
+    if (message.toolCallId) {
+      return {
+        role: 'user',
+        content: [{
+          toolResult: {
+            toolUseId: message.toolCallId,
+            content: [{ json: googleFunctionResponse(message.content) }],
+          },
+        }],
+      };
+    }
+    if (message.toolCalls?.length) {
+      return {
+        role: 'assistant',
+        content: [
+          ...(message.content ? [{ text: message.content }] : []),
+          ...message.toolCalls.map(call => ({
+            toolUse: {
+              toolUseId: call.id,
+              name: call.name,
+              input: parseJsonObject(call.arguments),
+            },
+          })),
+        ],
+      };
+    }
+    return {
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      content: [{ text: message.content }],
+    };
+  });
 }
 
 function bedrockToolChoice(request: GenerateRequest): JsonObject | undefined {

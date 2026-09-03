@@ -217,8 +217,10 @@ describe('Agent', () => {
         text: "I'll calculate that",
         toolCalls: [
           {
+            id: 'call_0',
             name: 'calculator',
-            arguments: JSON.stringify({ operation: 'add', a: 10, b: 5 })
+            arguments: JSON.stringify({ operation: 'add', a: 10, b: 5 }),
+            providerData: { google: { thought_signature: 'opaque-google-signature' } },
           }
         ]
       },
@@ -241,6 +243,22 @@ describe('Agent', () => {
     expect(result.output).toBe('The result is 15');
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls[0].name).toBe('calculator');
+    expect(mockModel.requests[1].messages[1]).toEqual({
+      role: 'assistant',
+      content: "I'll calculate that",
+      toolCalls: [{
+        id: 'call_0',
+        name: 'calculator',
+        arguments: JSON.stringify({ operation: 'add', a: 10, b: 5 }),
+        providerData: { google: { thought_signature: 'opaque-google-signature' } },
+      }],
+    });
+    expect(mockModel.requests[1].messages[2]).toEqual({
+      role: 'user',
+      content: '15',
+      name: 'calculator',
+      toolCallId: 'call_0',
+    });
   });
 
   it('should record built-in tool calls without local dispatch', async () => {

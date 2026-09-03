@@ -77,8 +77,28 @@ export const Message = {
   // throw `Missing field \`content\` on JsGenerateRequest.messages`.
   system: (content: string): Message => ({ role: 'system', content: content ?? '' }),
   user: (content: string): Message => ({ role: 'user', content: content ?? '' }),
-  assistant: (content: string): Message => ({ role: 'assistant', content: content ?? '' })
+  assistant: (content: string, toolCalls?: ToolCall[]): Message => ({
+    role: 'assistant',
+    content: content ?? '',
+    ...(toolCalls?.length ? { toolCalls } : {}),
+  }),
+  toolResult: (name: string, toolCallId: string, content: string): Message => ({
+    role: 'user',
+    content: content ?? '',
+    name,
+    toolCallId,
+  }),
 };
+
+function resolvedHandoffHistory(history: Message[]): Message[] {
+  // The final assistant turn requested the transfer and has no matching tool
+  // result in the parent conversation. Do not replay that unresolved turn in
+  // the delegated child's provider request (Anthropic rejects empty blocks).
+  if (history.at(-1)?.role === 'assistant') {
+    return history.slice(0, -1);
+  }
+  return [...history];
+}
 
 /**
  * Tool call from LLM (uses LM types internally)
@@ -614,7 +634,9 @@ export class Agent {
         const result = await targetAgent.runDelegatedChild(
           ctx,
           message,
-          passHistory ? (ctx as any)._agentConversation : undefined,
+          passHistory
+            ? resolvedHandoffHistory((ctx as any)._agentConversation ?? [])
+            : undefined,
           h.joinPolicy,
         );
 
@@ -1537,8 +1559,6 @@ export class Agent {
           throw new Error(`Model '${this.modelName}' stream completed without a response`);
         }
 
-        messages.push(Message.assistant(response.text));
-
         const builtInNames = builtInToolNames(this.builtInTools);
         let localToolCalls = response.toolCalls ?? [];
 
@@ -1574,8 +1594,17 @@ export class Agent {
         }
 
         if (localToolCalls.length > 0) {
+          // Preserve the provider's complete assistant tool-call turn. Gemini 3
+          // requires opaque thought signatures from this turn on continuation.
+          messages.push(Message.assistant(response.text, localToolCalls));
+
           // Execute tool calls
-          const toolResults: Array<{ tool: string; result: string | null; error: string | null }> = [];
+          const toolResults: Array<{
+            tool: string;
+            toolCallId: string;
+            result: string | null;
+            error: string | null;
+          }> = [];
 
           for (const tc of localToolCalls) {
             const tcId = randomUUID();
@@ -1610,7 +1639,12 @@ export class Agent {
                   toolCallId: tcId,
                   error: `Tool '${toolName}' not found`,
                 });
-                toolResults.push({ tool: toolName, result: null, error: `Tool '${toolName}' not found` });
+                toolResults.push({
+                  tool: toolName,
+                  toolCallId: tc.id || tcId,
+                  result: null,
+                  error: `Tool '${toolName}' not found`,
+                });
                 continue;
               }
 
@@ -1644,6 +1678,14 @@ export class Agent {
                 };
                 handoffResult = await this.runAfterAgentCallback(ctx, userMessage, history, handoffResult);
 
+                // The delegated child and transfer tool are settled, so the
+                // router iteration must terminate before the router agent.
+                yield iterationCompleted(iterCorrelationId, agentCorrelationId, {
+                  iteration: iteration + 1,
+                  hasToolCalls: true,
+                  toolCallsCount: localToolCalls.length,
+                });
+
                 // ── AgentCompleted (with handoff) ──
                 if (!managed) yield agentCompleted(this.name, agentCorrelationId, {
                   iterations: completedIterations,
@@ -1665,7 +1707,12 @@ export class Agent {
                 outputData: { result: resultText },
               });
               ctx.logger?.info(`Tool ${toolName} completed`);
-              toolResults.push({ tool: toolName, result: resultText, error: null });
+              toolResults.push({
+                tool: toolName,
+                toolCallId: tc.id || tcId,
+                result: resultText,
+                error: null,
+              });
             } catch (error) {
               // HITL: WaitingForUserInputError must propagate to pause the
               // workflow — do NOT treat it as a tool failure or the LLM will
@@ -1678,15 +1725,27 @@ export class Agent {
                 toolCallId: tcId,
                 error: String(error),
               });
-              toolResults.push({ tool: toolName, result: null, error: String(error) });
+              toolResults.push({
+                tool: toolName,
+                toolCallId: tc.id || tcId,
+                result: null,
+                error: String(error),
+              });
             }
           }
 
-          // Add tool results to conversation
-          const resultsText = toolResults
-            .map(tr => tr.error ? `Tool: ${tr.tool}\nError: ${tr.error}` : `Tool: ${tr.tool}\nResult: ${tr.result}`)
-            .join('\n\n');
-          messages.push(Message.user(`Tool results:\n${resultsText}`));
+          // Keep each result correlated to the provider tool-call ID. The native
+          // and edge adapters translate this neutral shape to functionResponse,
+          // tool_result, or the provider's equivalent wire format.
+          for (const toolResult of toolResults) {
+            messages.push(Message.toolResult(
+              toolResult.tool,
+              toolResult.toolCallId,
+              toolResult.error
+                ? JSON.stringify({ error: toolResult.error })
+                : toolResult.result ?? 'null',
+            ));
+          }
 
           // ── IterationCompleted (with tools) ──
           yield iterationCompleted(iterCorrelationId, agentCorrelationId, {
@@ -1697,6 +1756,7 @@ export class Agent {
 
           completedIterations = iteration + 1;
         } else {
+          messages.push(Message.assistant(response.text));
           // No tool calls — agent is done
           completedIterations = iteration + 1;
 

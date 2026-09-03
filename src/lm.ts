@@ -57,6 +57,12 @@ export type MessageRole = 'system' | 'user' | 'assistant';
 export interface Message {
   role: MessageRole;
   content: string;
+  /** Tool calls made by an assistant turn. Preserve providerData unchanged. */
+  toolCalls?: ToolCall[];
+  /** ID of the assistant tool call answered by this user-role tool result. */
+  toolCallId?: string;
+  /** Tool name, retained for edge providers that require it on the result. */
+  name?: string;
 }
 
 export interface ToolDefinition {
@@ -70,6 +76,8 @@ export interface ToolCall {
   id: string;
   name: string;
   arguments: string; // JSON string
+  /** Opaque provider state; preserve unchanged when replaying a tool call. */
+  providerData?: unknown;
 }
 
 export interface TokenUsage {
@@ -88,6 +96,7 @@ export interface GenerateResponse {
   usage?: TokenUsage;
   finishReason?: string;
   toolCalls?: ToolCall[];
+  structuredOutput?: unknown;
   raw?: string; // JSON string
 }
 
@@ -499,6 +508,41 @@ function withoutUndefined(value: unknown): unknown {
   return value;
 }
 
+function messagesForNative(messages: Message[] | undefined): Message[] {
+  return (messages ?? []).map(message => ({
+    ...message,
+    toolCalls: message.toolCalls?.map(call => ({
+      ...call,
+      providerData: call.providerData === undefined || typeof call.providerData === 'string'
+        ? call.providerData
+        : JSON.stringify(call.providerData),
+    })),
+  }));
+}
+
+function parseJsonIfPossible(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    // Provider state is opaque. New native bindings encode objects as JSON,
+    // but older or third-party bindings may return a plain string.
+    return value;
+  }
+}
+
+function normalizeNativeResponse(response: GenerateResponse): GenerateResponse {
+  const toolCalls = response.toolCalls?.map((call: ToolCall & { providerData?: unknown }) => ({
+    ...call,
+    providerData: parseJsonIfPossible(call.providerData),
+  }));
+  return {
+    ...response,
+    toolCalls,
+    structuredOutput: parseJsonIfPossible(response.structuredOutput),
+  };
+}
+
 /** Plaintext record input for a model activation (bounded by the request builder). */
 function durableModelRecordInput(request: GenerateRequest, provider: string): unknown {
   const config = request.config as
@@ -794,14 +838,15 @@ export class LM {
   private async generateNative(request: GenerateRequest): Promise<GenerateResponse> {
     const { __runtimeOverridesApplied: _runtimeOverridesApplied, ...nativeRequest } = request;
     const model = validateModelForProvider(request.model, this.providerName);
-    return await this.model.generate({
+    const response = await this.model.generate({
       ...nativeRequest,
       prompt: undefined,
-      messages: request.messages ?? [],
+      messages: messagesForNative(request.messages),
       promptRef: undefined,
       config: normalizeGenerationConfigForNative(request.config, this.providerName),
       model,
     });
+    return normalizeNativeResponse(response);
   }
 
   private async generateDurable(
@@ -931,11 +976,13 @@ export class LM {
     return await this.model.stream({
       ...nativeRequest,
       prompt: undefined,
-      messages: request.messages ?? [],
+      messages: messagesForNative(request.messages),
       promptRef: undefined,
       config: normalizeGenerationConfigForNative(request.config, this.providerName),
       model,
-    }, callback);
+    }, (chunk: StreamChunk) => callback(chunk.chunkType === 'completed' && chunk.response
+      ? { ...chunk, response: normalizeNativeResponse(chunk.response) }
+      : chunk));
   }
 
   private async streamDurable(

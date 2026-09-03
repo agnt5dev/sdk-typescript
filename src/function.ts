@@ -98,13 +98,19 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
    * The handler is registered as-is for top-level dispatch (the worker's
    * function dispatch path at worker.ts emits function.started/completed
    * around it). For nested invocations from a workflow body, the *returned*
-   * function is a wrapper that emits the full Python-parity event chain:
+   * function is a wrapper that emits its function lifecycle. On the legacy
+   * workflow path it also owns a decorative step boundary:
    *
    *   workflow.step.started (parent=workflow_cid)
    *     function.started    (parent=step_cid)
    *       handler runs
    *     function.completed  (parent=step_cid)
    *   workflow.step.completed (parent=workflow_cid)
+   *
+   * A durable `ctx.step` is different: the runtime already journals the
+   * authoritative `workflow.step.*` activation records. In that scope the
+   * wrapper emits only `function.*`, parented to the activation id, so one
+   * logical step never appears as two step lifecycles.
    *
    * The wrapper detects a platform Context by sniffing for `emit` +
    * correlation-stack methods; when called without one (e.g. unit tests),
@@ -141,8 +147,13 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
         return handler(ctx, ...args);
       }
 
-      const stepName: string = anyCtx.nextStepName?.(handlerName) ?? `${handlerName}_0`;
-      const stepCid = generateCid();
+      const activationId: string | undefined = anyCtx.activation?.activationId;
+      const ownsStepBoundary = !activationId;
+      const stepName: string | undefined = ownsStepBoundary
+        ? anyCtx.nextStepName?.(handlerName) ?? `${handlerName}_0`
+        : undefined;
+      const stepCid: string | undefined = ownsStepBoundary ? generateCid() : undefined;
+      const functionParentCid = activationId ?? stepCid ?? parentCid;
       const fnCid = generateCid();
       const startMs = Date.now();
 
@@ -151,16 +162,18 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
       // arg list so nothing is dropped from the journal.
       const inputForEvent: any = args.length <= 1 ? args[0] : args;
 
+      if (ownsStepBoundary && stepCid && stepName) {
+        await ctx.emit(
+          workflowStepStarted(stepCid, parentCid, {
+            handlerName,
+            stepName,
+            input: inputForEvent,
+            attempt: 1,
+          }),
+        );
+      }
       await ctx.emit(
-        workflowStepStarted(stepCid, parentCid, {
-          handlerName,
-          stepName,
-          input: inputForEvent,
-          attempt: 1,
-        }),
-      );
-      await ctx.emit(
-        functionStarted(fnCid, stepCid, {
+        functionStarted(fnCid, functionParentCid, {
           inputData: inputForEvent,
           attempt: 0,
           componentName: handlerName,
@@ -180,41 +193,45 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
         const durationMs = Date.now() - startMs;
 
         await ctx.emit(
-          functionCompleted(fnCid, stepCid, {
+          functionCompleted(fnCid, functionParentCid, {
             outputData: result,
             durationMs,
             componentName: handlerName,
           }),
         );
-        await ctx.emit(
-          workflowStepCompleted(stepCid, parentCid, {
-            handlerName,
-            stepName,
-            result,
-            durationMs,
-          }),
-        );
+        if (ownsStepBoundary && stepCid && stepName) {
+          await ctx.emit(
+            workflowStepCompleted(stepCid, parentCid, {
+              handlerName,
+              stepName,
+              result,
+              durationMs,
+            }),
+          );
+        }
         return result;
       } catch (err) {
         const durationMs = Date.now() - startMs;
         const errorMessage = (err as Error).message ?? String(err);
 
         await ctx.emit(
-          functionFailed(fnCid, stepCid, {
+          functionFailed(fnCid, functionParentCid, {
             errorCode: 'FUNCTION_ERROR',
             errorMessage,
             durationMs,
             componentName: handlerName,
           }),
         );
-        await ctx.emit(
-          workflowStepFailed(stepCid, parentCid, {
-            stepName,
-            errorCode: 'FUNCTION_ERROR',
-            errorMessage,
-            durationMs,
-          }),
-        );
+        if (ownsStepBoundary && stepCid && stepName) {
+          await ctx.emit(
+            workflowStepFailed(stepCid, parentCid, {
+              stepName,
+              errorCode: 'FUNCTION_ERROR',
+              errorMessage,
+              durationMs,
+            }),
+          );
+        }
         throw err;
       } finally {
         if (!hasTaskLocalCorrelation) {

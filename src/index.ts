@@ -7,7 +7,7 @@
  */
 
 // Core exports
-export { fn, FunctionBuilder } from './function.js';
+export { fn, FunctionBuilder, FunctionRegistry } from './function.js';
 export { Worker, getRuntime, checkPlatformConnectivity } from './worker.js';
 export type { PlatformWorkerOptions } from './worker.js';
 export { ContextImpl } from './context.js';
