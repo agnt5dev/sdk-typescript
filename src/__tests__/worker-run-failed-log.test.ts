@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // Capture everything that reaches the NAPI log bridge. Both ContextImpl.logger
 // and ContextLogger resolve their log fn through this module at call time.
 const bridge = vi.fn();
-vi.mock('../native-loader.js', () => ({
+vi.mock('#native-loader', () => ({
   getLoadedNativeBindings: () => ({ logFromTypescript: bridge }),
   tryLoadNativeBindings: () => ({ logFromTypescript: bridge }),
   loadNativeBindings: () => ({ logFromTypescript: bridge }),

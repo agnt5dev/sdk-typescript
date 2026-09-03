@@ -5,7 +5,7 @@ import { workflow, WorkflowRegistry } from '../workflow';
 import { tool, ToolRegistry } from '../tool';
 import { ScorerRegistry } from '../scorer';
 
-vi.mock('../native-loader', () => {
+vi.mock('#native-loader', () => {
   class MockNativeWorker {
     workerId = 'worker-123';
     coordinatorEndpoint: string;

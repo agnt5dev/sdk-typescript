@@ -11,7 +11,7 @@ const generate = vi.fn(async (request: any) => ({
   text: 'ok',
 }));
 
-vi.mock('../native-loader.js', () => {
+vi.mock('#native-loader', () => {
   const bindings = {
     LanguageModel: {
       openai: vi.fn(() => ({ generate })),

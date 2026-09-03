@@ -39,7 +39,7 @@ import type {
   ActivationDecision,
   ActivationEvidence,
 } from './activation.js';
-import { tryLoadNativeBindings } from './native-loader.js';
+import { tryLoadNativeBindings } from '#native-loader';
 import {
   createEdgeLanguageModel,
   type EdgeProviderConfig,

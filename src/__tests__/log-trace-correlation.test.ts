@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
  */
 
 const bridge = vi.fn();
-vi.mock('../native-loader.js', () => ({
+vi.mock('#native-loader', () => ({
   // No `Span` on the bindings, so tracing falls back to in-process span ids.
   getLoadedNativeBindings: () => ({ logFromTypescript: bridge }),
   tryLoadNativeBindings: () => ({ logFromTypescript: bridge }),

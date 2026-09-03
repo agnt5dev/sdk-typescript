@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const loader = vi.hoisted(() => ({ bindings: null as any }));
 
-vi.mock('../native-loader.js', () => ({
+vi.mock('#native-loader', () => ({
   getLoadedNativeBindings: () => loader.bindings,
   tryLoadNativeBindings: () => loader.bindings,
   loadNativeBindings: () => {

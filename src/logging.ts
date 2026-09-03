@@ -8,7 +8,7 @@
 import type { Logger } from './types.js';
 import { getCurrentContext } from './async-context.js';
 import { logEvent } from './events.js';
-import { getLoadedNativeBindings } from './native-loader.js';
+import { getLoadedNativeBindings } from '#native-loader';
 import { getCurrentSpanInfo } from './tracing.js';
 
 // ─── Log level management ────────────────────────────────────────────

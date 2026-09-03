@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-03
+
+### Changed
+
+- Build the native binding against `agnt5-sdk-core` 0.2.6.
+
+### Fixed
+
+- Select an edge-safe native-loader stub under `workerd` and `edge-light`
+  export conditions so Cloudflare bundles can use the fetch-based LM fallback.
+- Exercise the packed SDK with a real Wrangler/workerd provider call in CI.
+
 ## [0.8.0] - 2026-09-03
 
 ### Added
@@ -221,7 +233,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Native package publishing now ignores unsupported empty platform directories.
 - Release builds no longer require their not-yet-published optional platform packages.
 
-[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.6...v0.8.0
 [0.8.0-beta.6]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.5...v0.8.0-beta.6
 [0.8.0-beta.5]: https://github.com/agnt5dev/sdk-typescript/compare/v0.8.0-beta.4...v0.8.0-beta.5

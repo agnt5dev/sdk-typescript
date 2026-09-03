@@ -5,7 +5,7 @@
 import type { Context, Logger, StepOptions } from './types.js';
 import { StateError, CheckpointError, ConfigurationError } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
-import { loadNativeBindings, tryLoadNativeBindings } from './native-loader.js';
+import { loadNativeBindings, tryLoadNativeBindings } from '#native-loader';
 import { emptyRuntimeContext } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
 import { isLogLevelEnabled } from './logging.js';

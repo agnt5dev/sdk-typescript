@@ -30,7 +30,7 @@ import {
   logEvent,
 } from './events.js';
 import type { AgentEvent } from './events.js';
-import { loadNativeBindings, tryLoadNativeBindings } from './native-loader.js';
+import { loadNativeBindings, tryLoadNativeBindings } from '#native-loader';
 import { autoEnable as autoEnableCapture } from './integrations/index.js';
 import { ContextLogger, currentTraceCorrelation, isLogLevelEnabled } from './logging.js';
 import type { LogLevel } from './logging.js';

@@ -15,7 +15,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { currentTraceCorrelation, isLogLevelEnabled } from './logging.js';
 import type { LogLevel } from './logging.js';
-import { getLoadedNativeBindings } from './native-loader.js';
+import { getLoadedNativeBindings } from '#native-loader';
 import {
   ActivationClient,
   currentActivation,
