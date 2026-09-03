@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 
 const workflowUrl = new URL('../.github/workflows/release.yml', import.meta.url);
 const workflow = readFileSync(workflowUrl, 'utf8');
+const packageUrl = new URL('../package.json', import.meta.url);
+const packageManifest = JSON.parse(readFileSync(packageUrl, 'utf8'));
 
 function requirePattern(pattern, message) {
   if (!pattern.test(workflow)) {
@@ -31,6 +33,22 @@ requirePattern(/RUSTC_WRAPPER: sccache/, 'Rust jobs must route compilation throu
 for (const staleLocalCacheSetting of ['SCCACHE_DIR', 'SCCACHE_VERSION', 'sccache-target']) {
   if (workflow.includes(staleLocalCacheSetting)) {
     throw new Error(`Release workflow still contains local-only cache setting ${staleLocalCacheSetting}`);
+  }
+}
+
+const prepublishOnly = packageManifest.scripts?.prepublishOnly ?? '';
+requirePattern(
+  /name: Publish platform packages/,
+  'Release workflow must publish native platform packages explicitly',
+);
+if (!/\bnapi prepublish\b/.test(prepublishOnly)) {
+  throw new Error('prepublishOnly must prepare the NAPI publish manifest');
+}
+for (const requiredFlag of ['--no-gh-release', '--skip-optional-publish']) {
+  if (!prepublishOnly.includes(requiredFlag)) {
+    throw new Error(
+      `prepublishOnly must include ${requiredFlag} because the release workflow owns platform and tag publication`,
+    );
   }
 }
 

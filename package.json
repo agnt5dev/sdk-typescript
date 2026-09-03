@@ -59,7 +59,7 @@
     "dev": "tsc --watch",
     "test": "vitest",
     "artifacts": "napi artifacts",
-    "prepublishOnly": "napi prepublish -t npm && npm run verify:publish-manifest && npm run build:ts",
+    "prepublishOnly": "napi prepublish -t npm --no-gh-release --skip-optional-publish && npm run verify:publish-manifest && npm run build:ts",
     "verify:publish-manifest": "node scripts/verify-publish-manifest.mjs",
     "verify:release-workflow": "node scripts/verify-release-workflow.mjs",
     "version": "napi version"
