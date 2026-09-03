@@ -79,11 +79,6 @@ for (const [label, workflow] of [
   );
   requirePattern(
     workflow,
-    /SCCACHE_GHA_ENABLED: "true"/,
-    `${label} workflow must enable the GitHub Actions sccache backend`,
-  );
-  requirePattern(
-    workflow,
     /RUSTC_WRAPPER: sccache/,
     `${label} workflow must route Rust compilation through sccache`,
   );
@@ -94,6 +89,33 @@ for (const [label, workflow] of [
       );
     }
   }
+}
+
+requirePattern(
+  releaseWorkflow,
+  /SCCACHE_GHA_ENABLED: "true"/,
+  'Release workflow must enable the GitHub Actions sccache backend',
+);
+
+// --- CI: compiler cache shared across branches via R2 ----------------------
+// The Actions cache is branch-scoped, so every PR starts cold. CI reads the
+// bucket from repo variables/secrets and falls back to the Actions cache when
+// they are absent (fork PRs).
+for (const [pattern, message] of [
+  [/SCCACHE_BUCKET=\$R2_BUCKET/, 'CI must point sccache at the R2 bucket'],
+  [
+    /SCCACHE_ENDPOINT=https:\/\/\$\{R2_ACCOUNT_ID\}\.r2\.cloudflarestorage\.com/,
+    'CI must use the R2 S3-compatible endpoint',
+  ],
+  [/SCCACHE_REGION=auto/, 'CI must use region "auto" for R2'],
+  [/SCCACHE_S3_KEY_PREFIX=sdk-typescript\//, 'CI must namespace the cache per repository'],
+  [/secrets\.R2_ACCESS_KEY_ID/, 'CI must read the R2 access key from secrets'],
+  [/secrets\.R2_SECRET_ACCESS_KEY/, 'CI must read the R2 secret key from secrets'],
+  [/SCCACHE_GHA_ENABLED=true/, 'CI must fall back to the Actions cache without R2'],
+  [/CARGO_INCREMENTAL: "0"/, 'CI must disable incremental compilation for sccache'],
+  [/CARGO_PROFILE_DEV_DEBUG: "0"/, 'CI must strip debug info from dev builds'],
+]) {
+  requirePattern(ciWorkflow, pattern, message);
 }
 
 // --- publish contract ------------------------------------------------------
