@@ -1,0 +1,67 @@
+name: SDK TypeScript CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  validate-pr:
+    name: Validate pull request
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Setup Rust toolchain
+        run: |
+          if ! command -v rustup &> /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+            source "$HOME/.cargo/env"
+          else
+            rustup default stable
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Setup shared compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.16.0"
+
+      - name: Configure build parallelism
+        run: echo "CARGO_BUILD_JOBS=$(nproc 2>/dev/null || echo 4)" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify release workflow
+        run: npm run verify:release-workflow
+
+      - name: Verify publish manifest
+        run: npm run verify:publish-manifest
+
+      - name: Build TypeScript
+        run: npm run build:ts
+
+      - name: Check native Rust module
+        run: cargo check --manifest-path native/Cargo.toml --locked
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats

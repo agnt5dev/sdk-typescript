@@ -1,82 +1,27 @@
 name: SDK TypeScript Release
 
+# Runs only when a GitHub release is published. There is intentionally no
+# manual trigger: cut a release (or prerelease) from the GitHub UI or `gh
+# release create` and this workflow builds and publishes the matching version.
+# Pull request validation lives in ci.yml.
 on:
-  pull_request:
   release:
     types: [published]
-  workflow_dispatch:
-    inputs:
-      skip-publish:
-        description: "Skip npm publish"
-        type: boolean
-        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   SCCACHE_GHA_ENABLED: "true"
 
 jobs:
-  validate-pr:
-    name: Validate pull request
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    env:
-      RUSTC_WRAPPER: sccache
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: 20
-
-      - name: Setup Rust toolchain
-        run: |
-          if ! command -v rustup &> /dev/null; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-            source "$HOME/.cargo/env"
-          else
-            rustup default stable
-          fi
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Setup shared compiler cache
-        uses: mozilla-actions/sccache-action@v0.0.11
-        with:
-          version: "v0.16.0"
-
-      - name: Configure build parallelism
-        run: echo "CARGO_BUILD_JOBS=$(nproc 2>/dev/null || echo 4)" >> "$GITHUB_ENV"
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
-
-      - name: Verify release workflow
-        run: npm run verify:release-workflow
-
-      - name: Verify publish manifest
-        run: npm run verify:publish-manifest
-
-      - name: Build TypeScript
-        run: npm run build:ts
-
-      - name: Check native Rust module
-        run: cargo check --manifest-path native/Cargo.toml --locked
-
-      - name: Show sccache stats
-        if: always()
-        run: sccache --show-stats
-
   validate-release:
     name: Validate release metadata
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -86,10 +31,8 @@ jobs:
       - name: Validate version and changelog
         id: version
         env:
-          EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
-          SKIP_PUBLISH: ${{ inputs.skip-publish }}
         run: |
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
           NATIVE_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' native/Cargo.toml | head -1)
@@ -107,31 +50,27 @@ jobs:
             fi
           done
 
-          if [ "$EVENT_NAME" = release ]; then
-            if ! printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$'; then
-              echo "Release tag must be a stable or SemVer prerelease version: $RELEASE_TAG" >&2
+          if ! printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$'; then
+            echo "Release tag must be a stable or SemVer prerelease version: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          RELEASE_VERSION=${RELEASE_TAG#v}
+          if [ "$RELEASE_VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "Release tag $RELEASE_TAG does not match package version $PACKAGE_VERSION" >&2
+            exit 1
+          fi
+          if ! grep -Fq "## [$RELEASE_VERSION]" CHANGELOG.md; then
+            echo "CHANGELOG.md is missing ## [$RELEASE_VERSION]" >&2
+            exit 1
+          fi
+          if printf '%s\n' "$PACKAGE_VERSION" | grep -q -- '-'; then
+            if [ "$RELEASE_PRERELEASE" != true ]; then
+              echo "Prerelease package $PACKAGE_VERSION requires a GitHub prerelease" >&2
               exit 1
             fi
-            RELEASE_VERSION=${RELEASE_TAG#v}
-            if [ "$RELEASE_VERSION" != "$PACKAGE_VERSION" ]; then
-              echo "Release tag $RELEASE_TAG does not match package version $PACKAGE_VERSION" >&2
-              exit 1
-            fi
-            if ! grep -Fq "## [$RELEASE_VERSION]" CHANGELOG.md; then
-              echo "CHANGELOG.md is missing ## [$RELEASE_VERSION]" >&2
-              exit 1
-            fi
-            if printf '%s\n' "$PACKAGE_VERSION" | grep -q -- '-'; then
-              if [ "$RELEASE_PRERELEASE" != true ]; then
-                echo "Prerelease package $PACKAGE_VERSION requires a GitHub prerelease" >&2
-                exit 1
-              fi
-            elif [ "$RELEASE_PRERELEASE" = true ]; then
-              echo "Stable package $PACKAGE_VERSION cannot be published from a GitHub prerelease" >&2
-              exit 1
-            fi
-          elif [ "$EVENT_NAME" = workflow_dispatch ] && [ "$SKIP_PUBLISH" != true ]; then
-            test "${GITHUB_REF_NAME}" = main
+          elif [ "$RELEASE_PRERELEASE" = true ]; then
+            echo "Stable package $PACKAGE_VERSION cannot be published from a GitHub prerelease" >&2
+            exit 1
           fi
 
           echo "version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
@@ -332,19 +271,10 @@ jobs:
     name: Publish to npm
     needs: [validate-release, verify-publish-manifest, build-native-linux, verify-native-linux, build-native-macos]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     outputs:
       version: ${{ steps.version.outputs.version }}
-    # Always run so that `skip-publish=true` still exercises artifact
-    # collection, napi artifacts, and tsc end-to-end as a dry run.
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Require main branch
-        if: github.event_name == 'workflow_dispatch' && inputs.skip-publish != true
-        run: test "${GITHUB_REF_NAME}" = main
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -442,14 +372,9 @@ jobs:
         working-directory: .
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          DRY_RUN: ${{ inputs.skip-publish }}
           NPM_DIST_TAG: ${{ steps.version.outputs.dist_tag }}
           NPM_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          publish_args=(--access public --tag "$NPM_DIST_TAG")
-          if [ "$DRY_RUN" = true ]; then
-            publish_args+=(--dry-run)
-          fi
           for manifest in npm/*/package.json; do
             dir=${manifest%/package.json}
             pkg_name=$(node -p "require('./${manifest}').name")
@@ -458,35 +383,22 @@ jobs:
               continue
             fi
             echo "Publishing ${pkg_name}@${NPM_VERSION} with dist-tag ${NPM_DIST_TAG}..."
-            (cd "$dir" && npm publish "${publish_args[@]}")
+            (cd "$dir" && npm publish --access public --tag "$NPM_DIST_TAG")
           done
 
       - name: Publish main package
         working-directory: .
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          DRY_RUN: ${{ inputs.skip-publish }}
           NPM_DIST_TAG: ${{ steps.version.outputs.dist_tag }}
+          NPM_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          publish_args=(--access public --tag "$NPM_DIST_TAG")
-          if [ "$DRY_RUN" = true ]; then
-            publish_args+=(--dry-run)
+          pkg_name=$(node -p "require('./package.json').name")
+          if npm view "${pkg_name}@${NPM_VERSION}" version >/dev/null 2>&1; then
+            echo "Skipping ${pkg_name}@${NPM_VERSION}; it is already published."
+            exit 0
           fi
-          npm publish "${publish_args[@]}"
-
-      - name: Create and push release tag
-        if: github.event_name == 'workflow_dispatch' && inputs.skip-publish != true
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
-            echo "Tag v${VERSION} already exists" >&2
-            exit 1
-          fi
-          git config user.name "agnt5-release-bot"
-          git config user.email "release-bot@agnt5.com"
-          git tag -a "v${VERSION}" -m "v${VERSION}"
-          git push origin "v${VERSION}"
+          npm publish --access public --tag "$NPM_DIST_TAG"
 
       - name: Output release summary
         working-directory: .
@@ -495,8 +407,8 @@ jobs:
           echo "**Package:** \`@agnt5/sdk\`" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**npm dist-tag:** \`${{ steps.version.outputs.dist_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Release:** ${{ github.event.release.html_url }}" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Dry run:** \`${{ inputs.skip-publish && 'yes' || 'no' }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Platform packages" >> $GITHUB_STEP_SUMMARY
           for manifest in npm/*/package.json; do
