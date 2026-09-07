@@ -649,9 +649,7 @@ impl Worker {
             .map_err(native_activation_error)
     }
 
-    async fn connected_activation_adapter(
-        &self,
-    ) -> napi::Result<tokio::sync::MutexGuard<'_, Option<ActivationAdapter>>> {
+    async fn connected_activation_adapter(&self) -> napi::Result<ActivationAdapter> {
         let mut adapter = self.activation_adapter.lock().await;
         if adapter.is_none() {
             let endpoint = self
@@ -664,7 +662,12 @@ impl Worker {
                 .map_err(native_activation_error)?;
             *adapter = Some(ActivationAdapter::new(client));
         }
-        Ok(adapter)
+        // The adapter clones the multiplexed connection pool. Only connection
+        // initialization is serialized; no run owns this lock during an RPC.
+        Ok(adapter
+            .as_ref()
+            .expect("activation adapter initialized")
+            .clone())
     }
 }
 
@@ -831,8 +834,6 @@ impl Worker {
         };
         let mut adapter = self.connected_activation_adapter().await?;
         let decision = adapter
-            .as_mut()
-            .expect("activation adapter initialized")
             .begin(request)
             .await
             .map_err(native_activation_error)?;
@@ -873,8 +874,6 @@ impl Worker {
         };
         let mut adapter = self.connected_activation_adapter().await?;
         let receipt = adapter
-            .as_mut()
-            .expect("activation adapter initialized")
             .complete(request)
             .await
             .map_err(native_activation_error)?;
@@ -920,8 +919,6 @@ impl Worker {
         };
         let mut adapter = self.connected_activation_adapter().await?;
         let receipt = adapter
-            .as_mut()
-            .expect("activation adapter initialized")
             .fail(request)
             .await
             .map_err(native_activation_error)?;
@@ -1892,6 +1889,47 @@ impl Span {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "durable-activation-v1")]
+    #[tokio::test]
+    async fn activation_rpc_does_not_hold_worker_adapter_lock() {
+        // Accept connections but never answer an RPC. One stalled run must
+        // not prevent another run from obtaining the shared connection pool.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            loop {
+                sockets.push(listener.accept().await.unwrap().0);
+            }
+        });
+        let worker = Worker::new(WorkerOptions {
+            service_name: "activation-concurrency-test".into(),
+            service_version: None,
+            service_type: None,
+            coordinator_endpoint: Some(endpoint.clone()),
+            tenant_id: None,
+            deployment_id: None,
+            max_concurrency: Some(2),
+            activation_artifact_sha256: None,
+        })
+        .unwrap();
+        // Pin the endpoint independently of any local worker configuration.
+        let client = EngineClient::connect(&endpoint).await.unwrap();
+        *worker.activation_adapter.lock().await = Some(ActivationAdapter::new(client));
+        let first = worker.connected_activation_adapter().await.unwrap();
+        let second = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            worker.connected_activation_adapter(),
+        )
+        .await;
+        server.abort();
+        assert!(
+            second.is_ok(),
+            "another run is serialized behind the first adapter"
+        );
+        drop(first);
+    }
+
     /// AGNT5-1080. The regression these guard is silent: a dropped context
     /// exports a log record that simply has no trace, with no error anywhere.
     mod log_span_context {
@@ -1933,7 +1971,10 @@ mod tests {
             assert!(log_span_context(Some(""), Some(SPAN)).is_none());
             assert!(log_span_context(Some("nothex"), Some(SPAN)).is_none());
             assert!(log_span_context(Some(&"0".repeat(32)), Some(SPAN)).is_none());
-            assert!(log_span_context(Some(SPAN), Some(SPAN)).is_none(), "16 hex is too short for a trace id");
+            assert!(
+                log_span_context(Some(SPAN), Some(SPAN)).is_none(),
+                "16 hex is too short for a trace id"
+            );
         }
     }
 
