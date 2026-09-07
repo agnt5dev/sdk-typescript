@@ -43,6 +43,15 @@ export interface BaseEvent {
   metadata: Record<string, any>;
 }
 
+export function workflowStateChanged(
+  key: string, value: unknown, operation: 'set' | 'delete', name: string,
+): BaseEvent & { key: string; value: unknown } {
+  return {
+    ...baseFields(name, generateCid(), null),
+    eventType: 'workflow.state.changed', key, value, operation,
+  };
+}
+
 export type CaptureMode = 'native' | 'observed';
 
 // ─── Agent lifecycle events ──────────────────────────────────────────

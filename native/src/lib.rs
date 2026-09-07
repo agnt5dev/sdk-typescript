@@ -209,6 +209,7 @@ mod memory;
 
 // Sandbox module (WasmSandbox + RemoteSandbox)
 mod sandbox;
+mod workflow_state;
 
 /// Worker configuration options
 #[napi(object)]
@@ -610,6 +611,7 @@ pub struct ServiceMessageData {
 /// Worker for handling function invocations and platform connectivity
 #[napi]
 pub struct Worker {
+    workflow_state: workflow_state::WorkflowStateSink,
     service_name: String,
     config: WorkerConfig,
     core_worker: Arc<TokioMutex<CoreWorker>>,
@@ -990,6 +992,7 @@ impl Worker {
         let emit_worker = core_worker.clone();
 
         Ok(Worker {
+            workflow_state: workflow_state::WorkflowStateSink::default(),
             service_name: options.service_name,
             config,
             core_worker: Arc::new(TokioMutex::new(core_worker)),
