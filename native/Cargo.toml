@@ -13,8 +13,7 @@ napi = { version = "2", features = ["async", "tokio_rt"] }
 napi-derive = "2"
 
 # Shared AGNT5 runtime foundation
-# Pin the reviewed core changes until the coordinated 0.2.7 release is published.
-agnt5-sdk-core = { version = "0.2.7", git = "https://github.com/agnt5dev/sdk-core.git", rev = "be7d7f30f6e91de2c30455e0e70888e5514006d5" }
+agnt5-sdk-core = "0.2.7"
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
