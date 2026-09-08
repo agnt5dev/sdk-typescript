@@ -58,6 +58,14 @@ export const prepareReport = workflow(
 Keep step names and ordering stable across retries so completed work can be
 reused.
 
+In pull-worker workflows, `await ctx.set(key, value)` and
+`await ctx.delete(key)` wait for durable state-change acknowledgments.
+`ctx.get(key)` reads the local workflow state. Before successful completion,
+the worker persists the final `WorkflowEntity` snapshot with the active lease
+and a version check, matching Python's workflow state persistence. State
+writes are ordered within each workflow; independent workflows can proceed
+concurrently. Standalone in-process contexts retain their local state behavior.
+
 ## Package entrypoints
 
 | Import | Purpose |

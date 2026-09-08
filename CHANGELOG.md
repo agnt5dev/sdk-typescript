@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-09-08
+
+### Fixed
+
+- Persist pull-workflow state through the runtime-backed state adapter.
+- Release the activation adapter lock before RPCs to avoid serializing calls.
+
+### Added
+
+- Measure business execution with the shared core clock without changing
+  execution results when telemetry is unavailable.
+
+### Changed
+
+- Build against SDK core 0.2.7 for session refresh, slot scaling, and execution
+  timing observations.
+
 ## [0.8.1] - 2026-09-03
 
 ### Changed

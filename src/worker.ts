@@ -33,6 +33,7 @@ import {
   toolStarted, toolCompleted, toolFailed,
   outputDelta,
   logEvent,
+  workflowStateChanged,
 } from './events.js';
 import type { AgentEvent } from './events.js';
 import { loadNativeBindings, tryLoadNativeBindings } from '#native-loader';
@@ -251,6 +252,9 @@ class SimpleContext implements Context {
   private _stepCounter = 0;
   private _stepCache = new Map<string, any>();
   private _activationSequences = new Map<string, number>();
+  private _persistWorkflowState = false;
+  private _stateDirty = false;
+  private _stateWrites: Promise<void> = Promise.resolve();
 
   // HITL state — populated by Worker.processMessage on resume from message metadata.
   // _pauseIndex is the running counter incremented by each waitForUser call.
@@ -613,11 +617,48 @@ class SimpleContext implements Context {
   }
 
   async set<T>(key: string, value: T): Promise<void> {
-    this.state.set(key, value);
+    await this.changeState(key, value, 'set');
   }
 
   async delete(key: string): Promise<boolean> {
-    return this.state.delete(key);
+    return this.changeState(key, null, 'delete');
+  }
+
+  enableWorkflowStatePersistence(): void {
+    this._persistWorkflowState = true;
+  }
+
+  private changeState(key: string, value: unknown, operation: 'set' | 'delete'): Promise<boolean> {
+    const change = this._stateWrites.then(async () => {
+      if (this._persistWorkflowState) {
+        if (!this._emitter) throw new Error('Workflow state requires a checkpoint emitter');
+        await this._emitter.emit(workflowStateChanged(
+          key, value, operation, this.metadata.component_name || 'workflow',
+        ));
+      }
+      const existed = this.state.has(key);
+      if (operation === 'delete') this.state.delete(key);
+      else this.state.set(key, value);
+      this._stateDirty = true;
+      return existed;
+    });
+    // Ordering is per workflow. The caller still receives every write error.
+    this._stateWrites = change.then(() => {}, () => {});
+    return change;
+  }
+
+  async persistWorkflowState(): Promise<void> {
+    await this._stateWrites;
+    if (!this._persistWorkflowState || !this._stateDirty) return;
+    if (typeof this._nativeWorker?.persistWorkflowState !== 'function') {
+      throw new Error('Workflow state persistence requires matching native SDK bindings');
+    }
+    await this._nativeWorker.persistWorkflowState({
+      runId: this.runId,
+      metadata: this.metadata,
+      stateJson: JSON.stringify(Object.fromEntries(this.state)),
+    });
+    this._stateDirty = false;
   }
 
   /**
@@ -1225,6 +1266,7 @@ export class Worker {
             }
 
             case 'workflow': {
+              if (isPullDispatch) ctx.enableWorkflowStatePersistence();
               const wf = WorkflowRegistry.get(message.componentName);
               if (!wf) {
                 throw new Error(`Workflow not found: ${message.componentName}`);
@@ -1249,6 +1291,7 @@ export class Worker {
               ctx.pushCorrelation(wfCid);
               try {
                 result = await wf.handler(ctx, inputData);
+                await ctx.persistWorkflowState();
                 const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
 
                 // ── workflow.completed ──

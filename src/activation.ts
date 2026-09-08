@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import { ActivationError, ActivationErrorCode } from './errors.js';
+import { measureBusiness } from './core-metrics.js';
 
 export const DURABLE_ACTIVATION_V1 = 'durable_activation_v1';
 const IDENTITY_DOMAIN = utf8('agnt5.activation.identity.v1\0');
@@ -557,7 +558,7 @@ export class ActivationClient {
 
     let result: T;
     try {
-      result = await execute();
+      result = await measureBusiness(request.runId, execute);
     } catch (error) {
       const errorData = utf8(JSON.stringify({
         message: error instanceof Error ? error.message : String(error),
