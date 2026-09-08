@@ -1558,6 +1558,17 @@ pub fn log_from_typescript(
     Ok(())
 }
 
+/// Shared monotonic clock for worker and language execution observations.
+#[napi(js_name = "coreMetricTimeMs")]
+pub fn core_metric_time_ms() -> f64 {
+    agnt5_sdk_core::core_metrics::now_ms()
+}
+
+#[napi(js_name = "recordCoreBusinessTiming")]
+pub fn record_core_business_timing(run_id: String, started_ms: f64, outcome: String) {
+    agnt5_sdk_core::core_metrics::record_timing(&run_id, "business", started_ms, &outcome);
+}
+
 /// Record one opt-in worker memory sample as an OTEL gauge sample.
 #[napi(js_name = "recordWorkerMemoryMetric")]
 pub fn record_worker_memory_metric(
