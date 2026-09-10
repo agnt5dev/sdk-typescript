@@ -35,6 +35,7 @@ import {
   runWithActivation,
 } from './activation.js';
 import type { ActivationDecision } from './activation.js';
+import { runWithDisplayParent } from './display-parent-context.js';
 import type { AgentEvent, LMStreamEvent } from './events.js';
 import {
   agentStarted,
@@ -925,6 +926,7 @@ export class Agent {
 
   private async *streamWithNewLM(
     request: LMGenerateRequest,
+    parentCorrelationId: string,
     onActivation?: (activationId: string) => void,
   ): AsyncIterableIterator<string | LanguageModelStreamChunk> {
     const chunks: LMCallbackChunk[] = [];
@@ -938,14 +940,18 @@ export class Agent {
       resolve?.();
     };
 
-    const streamPromise = (this.model as LM).stream(request, chunk => {
-      // The provider callback runs inside the durable model activation scope;
-      // the consuming generator does not, so capture the id here.
-      const activation = currentActivation();
-      if (activation) onActivation?.(activation.activationId);
-      chunks.push(chunk);
-      notify();
-    }).then(
+    // Scope the actual async execution; constructing an async generator alone
+    // would lose the context when its consumer later calls next().
+    const streamPromise = runWithDisplayParent(parentCorrelationId, () =>
+      (this.model as LM).stream(request, chunk => {
+        // The provider callback runs inside the durable model activation scope;
+        // the consuming generator does not, so capture the id here.
+        const activation = currentActivation();
+        if (activation) onActivation?.(activation.activationId);
+        chunks.push(chunk);
+        notify();
+      }),
+    ).then(
       () => {
         finished = true;
         notify();
@@ -1037,7 +1043,10 @@ export class Agent {
 
     try {
       const stream = this.isNewLM
-        ? this.streamWithNewLM(request as LMGenerateRequest, id => { activationCid = id; })
+        ? this.streamWithNewLM(
+          request as LMGenerateRequest, parentCorrelationId,
+          id => { activationCid = id; },
+        )
         : (this.model as LanguageModel).stream!(request as GenerateRequest);
       for await (const chunk of stream) {
         if (typeof chunk === 'string') {
@@ -1549,11 +1558,13 @@ export class Agent {
             }
           }
         } else {
-          response = await this.generateWithModel(messages, toolDefs, {
-            context: ctx,
-            iteration: iteration + 1,
-            parentCorrelationId: iterCorrelationId,
-          });
+          response = await runWithDisplayParent(iterCorrelationId, () =>
+            this.generateWithModel(messages, toolDefs, {
+              context: ctx,
+              iteration: iteration + 1,
+              parentCorrelationId: iterCorrelationId,
+            }),
+          );
         }
         if (!response) {
           throw new Error(`Model '${this.modelName}' stream completed without a response`);
@@ -1648,17 +1659,19 @@ export class Agent {
                 continue;
               }
 
-              const result = await this.invokeToolWithCallbacks({
-                agent: this,
-                context: ctx,
-                iteration: iteration + 1,
-                toolName,
-                toolCallId: tc.id || tcId,
-                providerToolCallId: tc.id || undefined,
-                toolCall: { ...tc, id: tc.id || tcId },
-                args: toolArgs,
-                tool,
-              });
+              const result = await runWithDisplayParent(iterCorrelationId, () =>
+                this.invokeToolWithCallbacks({
+                  agent: this,
+                  context: ctx,
+                  iteration: iteration + 1,
+                  toolName,
+                  toolCallId: tc.id || tcId,
+                  providerToolCallId: tc.id || undefined,
+                  toolCall: { ...tc, id: tc.id || tcId },
+                  args: toolArgs,
+                  tool,
+                }),
+              );
 
               // ── Handoff detection ──
               if (result && typeof result === 'object' && (result as any)._handoff) {
