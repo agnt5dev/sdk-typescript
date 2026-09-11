@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-11
+
 ### Fixed
 
 - Reject invalid `batchEval` concurrency instead of hanging without starting evaluations (AGNT5-708). Document the existing managed evaluation path.
@@ -15,14 +17,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Workers now default to `pull` when `AGNT5_WORKER_MODE` is unset or empty.
   Explicit `push` remains supported; set it before upgrading if your worker
-  relies on coordinator-push dispatch. Schedule this compatibility change for
-  the next minor release (0.9.0; AGNT5-1100).
+  relies on coordinator-push dispatch (AGNT5-1100).
 
 ### Fixed
 
 - Preserve durable model/tool display ancestry across concurrent agent iterations
-  and streaming. The native bridge pins SDK core commit `52311a2de028` until its
-  next registry release. Deploy compatible runtime readers before these writers
+  and streaming. The native bridge uses released SDK core 0.3.0. Deploy compatible runtime readers before these writers
   (AGNT5-1118).
 
 ## [0.8.2] - 2026-09-08
