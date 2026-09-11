@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Reject invalid `batchEval` concurrency instead of hanging without starting evaluations (AGNT5-708). Document the existing managed evaluation path.
+
 ### Changed
 
 - Workers now default to `pull` when `AGNT5_WORKER_MODE` is unset or empty.

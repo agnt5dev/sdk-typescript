@@ -153,3 +153,25 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues according to
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE).
+
+## Managed evaluation
+
+Use `client.eval()` to run a registered component and score its output through
+`POST /v1/eval`. This requires a reachable AGNT5 runtime and a worker serving the
+component; it is not an offline experiment runner.
+
+```typescript
+const result = await client.eval('greet', { name: 'Alice' }, {
+  expected: 'Hello, Alice!', // Defaults to the built-in exact_match scorer.
+});
+console.log(result.isSuccess, result.passed, result.scores);
+```
+
+`isSuccess` reports successful component execution; `passed` reports the scoring
+outcome. A score mismatch can therefore have `isSuccess === true` and
+`passed === false`. Built-in scorers do not require application registration.
+
+For multiple inputs, use `client.batchEval(component, items, { maxConcurrency: 5 })`.
+Each item is evaluated through the managed endpoint. `maxConcurrency` must be a
+positive integer. Local custom scorer calls remain available through `runScorer`;
+they do not create a managed experiment run or provide an offline dataset runner.
