@@ -7,10 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+
+- Workers now default to `pull` when `AGNT5_WORKER_MODE` is unset or empty.
+  Explicit `push` remains supported; set it before upgrading if your worker
+  relies on coordinator-push dispatch. Schedule this compatibility change for
+  the next minor release (0.9.0; AGNT5-1100).
+
 ### Fixed
 
 - Preserve durable model/tool display ancestry across concurrent agent iterations
-  and streaming. The native bridge pins SDK core commit `6f5188ec282d` until its
+  and streaming. The native bridge pins SDK core commit `52311a2de028` until its
   next registry release. Deploy compatible runtime readers before these writers
   (AGNT5-1118).
 

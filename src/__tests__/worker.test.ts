@@ -303,3 +303,21 @@ describe('getRuntime', () => {
     expect(runtime).toMatch(/node|bun|deno|edge|unknown/);
   });
 });
+
+
+describe('worker mode defaults', () => {
+  it.each([undefined, '', 'push', 'pull'])('resolves environment mode %s before native startup', async (mode) => {
+    if (mode === undefined) delete process.env.AGNT5_WORKER_MODE;
+    else process.env.AGNT5_WORKER_MODE = mode;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await new Worker('test-service').run();
+    expect(process.env.AGNT5_WORKER_MODE).toBe(mode || 'pull');
+  });
+
+  it('preserves explicit push over a pull environment', async () => {
+    process.env.AGNT5_WORKER_MODE = 'pull';
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await new Worker('test-service', { workerMode: 'push' }).run();
+    expect(process.env.AGNT5_WORKER_MODE).toBe('push');
+  });
+});

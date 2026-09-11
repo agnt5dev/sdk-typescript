@@ -110,7 +110,7 @@ export interface PlatformWorkerOptions extends WorkerOptions {
   /** Auto-discover components from registries (default: false) */
   autoRegister?: boolean;
   /**
-   * Worker assignment mode. Defaults to env `AGNT5_WORKER_MODE`, then `push`.
+   * Worker assignment mode. Defaults to env `AGNT5_WORKER_MODE`, then `pull`.
    * Set to `pull` to use worker-side polling instead of push dispatch.
    */
   workerMode?: 'push' | 'pull';
@@ -220,7 +220,8 @@ function optionNumberToEnv(name: string, value: number | undefined): void {
 
 function configurePullWorkerEnvironment(options: PlatformWorkerOptions): void {
   const workerMode = options.workerMode ??
-    (options.enableJobQueue || options.parkedPolling ? 'pull' : undefined);
+    (options.enableJobQueue || options.parkedPolling ? 'pull' : undefined) ??
+    (process.env.AGNT5_WORKER_MODE || 'pull');
   const maxSlots = options.maxSlots ?? options.jobQueueConcurrency;
 
   if (workerMode === 'pull' && options.parkedPolling === false) {
