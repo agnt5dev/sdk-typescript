@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 // A successful npm publish can leave a version staged but unreadable. Gate
 // consumers on public metadata AND the tarball, without registry credentials.
 export async function waitForPackage(name, version, {
-  fetcher = fetch, pause = delay, attempts = 60, interval = 10000,
+  fetcher = fetch, pause = delay, attempts = 120, interval = 10000,
 } = {}) {
   let failure = 'not available';
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -33,7 +33,7 @@ export async function waitForPackage(name, version, {
     }
     if (attempt + 1 < attempts) await pause(interval);
   }
-  throw new Error(`${name}@${version} is not publicly available: ${failure}`);
+  throw new Error(`${name}@${version} is not publicly available: ${failure}. Check npm scan/staged status before retrying publication.`);
 }
 
 export function platformManifests(root) {

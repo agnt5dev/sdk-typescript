@@ -175,3 +175,18 @@ For multiple inputs, use `client.batchEval(component, items, { maxConcurrency: 5
 Each item is evaluated through the managed endpoint. `maxConcurrency` must be a
 positive integer. Local custom scorer calls remain available through `runScorer`;
 they do not create a managed experiment run or provide an offline dataset runner.
+
+## Release verification
+
+A successful npm upload does not guarantee immediate package availability. npm
+scans new versions and may hold them for review. The release workflow waits up
+to 20 minutes (plus request time) for public native-package metadata and tarballs
+before publishing the main SDK, then verifies the main package too.
+
+If a version remains unavailable, inspect its scan/staged status in npm using a
+maintainer account. Complete any required review or appeal through npm. Do not
+keep retrying an immutable version that returns "previously staged version";
+a new version alone does not resolve a scan or approval hold.
+
+See [npm publish-time scanning](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/)
+and [staged publishing](https://docs.npmjs.com/staged-publishing/).
