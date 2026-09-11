@@ -117,3 +117,10 @@ for (const requiredFlag of ['--no-gh-release', '--skip-optional-publish']) {
 console.log(
   'CI workflow covers pull requests; release workflow runs only on published GitHub releases.',
 );
+
+const platformGate = releaseWorkflow.indexOf('run: node scripts/verify-registry-release.mjs\n');
+const publishMain = releaseWorkflow.indexOf('name: Publish main package');
+const mainGate = releaseWorkflow.indexOf('run: node scripts/verify-registry-release.mjs --main');
+if (platformGate < 0 || publishMain < platformGate || mainGate < publishMain) {
+  throw new Error('Public native availability must gate main publication, followed by main availability verification');
+}

@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-11
+
+### Fixed
+
+- Republish all native platforms under a fresh patch version after npm left Linux x64 0.9.0 staged and publicly unavailable.
+- Require public registry metadata and downloadable native tarballs before publishing the main SDK; verify the main package after publishing.
+- Check native platform version alignment in PR CI.
+
+
 ## [0.9.0] - 2026-09-11
 
 ### Fixed

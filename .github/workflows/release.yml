@@ -386,6 +386,9 @@ jobs:
             (cd "$dir" && npm publish --access public --tag "$NPM_DIST_TAG")
           done
 
+      - name: Verify native packages are publicly available
+        run: node scripts/verify-registry-release.mjs
+
       - name: Publish main package
         working-directory: .
         env:
@@ -399,6 +402,9 @@ jobs:
             exit 0
           fi
           npm publish --access public --tag "$NPM_DIST_TAG"
+
+      - name: Verify main package is publicly available
+        run: node scripts/verify-registry-release.mjs --main
 
       - name: Output release summary
         working-directory: .

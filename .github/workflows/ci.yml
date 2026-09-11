@@ -56,6 +56,9 @@ jobs:
       - name: Verify publish manifest
         run: npm run verify:publish-manifest
 
+      - name: Test registry publication gate
+        run: node --test scripts/verify-registry-release.test.mjs
+
       - name: Build TypeScript
         run: npm run build:ts
 

@@ -20,6 +20,13 @@ for (const [name, version] of Object.entries(expectedOptionalDependencies)) {
   }
 }
 
+for (const [name, localPath] of Object.entries(platformDependencies)) {
+  const platform = JSON.parse(readFileSync(new URL(`../${localPath.slice(5)}/package.json`, import.meta.url), 'utf8'));
+  if (platform.name !== name || platform.version !== manifest.version) {
+    throw new Error(`Native package ${name} must match SDK version ${manifest.version}; found ${platform.version}`);
+  }
+}
+
 const platformVersions = Object.entries(platformDependencies).map(([name, localPath]) => ({
   name,
   localPath,
