@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve durable model/tool display ancestry across concurrent agent iterations
+  and streaming. The native bridge pins SDK core commit `6f5188ec282d` until its
+  next registry release. Deploy compatible runtime readers before these writers
+  (AGNT5-1118).
+
 ## [0.8.2] - 2026-09-08
 
 ### Fixed
