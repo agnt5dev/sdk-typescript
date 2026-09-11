@@ -1135,6 +1135,9 @@ export class Client {
   ): Promise<BatchEvalResult> {
     const normalized = normalizeBatchEvalItems(items, options.expected);
     const maxConcurrency = options.maxConcurrency ?? 10;
+    if (!Number.isInteger(maxConcurrency) || maxConcurrency <= 0) {
+      throw new RangeError('maxConcurrency must be a positive integer');
+    }
     const startTime = Date.now();
 
     // Run evaluations with concurrency limit

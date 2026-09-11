@@ -323,6 +323,8 @@ pub struct NativeBeginActivationRequest {
     pub child: Option<NativeChildActivationLinkage>,
     pub display_name: String,
     pub input_data: Option<Buffer>,
+    /// Reader-only ancestry; does not participate in activation identity.
+    pub display_parent_correlation_id: Option<String>,
 }
 
 #[cfg(feature = "durable-activation-v1")]
@@ -832,6 +834,9 @@ impl Worker {
             input_data: request
                 .input_data
                 .map(|data| data.to_vec())
+                .unwrap_or_default(),
+            display_parent_correlation_id: request
+                .display_parent_correlation_id
                 .unwrap_or_default(),
         };
         let mut adapter = self.connected_activation_adapter().await?;

@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import { ActivationError, ActivationErrorCode } from './errors.js';
 import { measureBusiness } from './core-metrics.js';
+import { currentDisplayParentCorrelationId, runWithDisplayParent } from './display-parent-context.js';
 
 export const DURABLE_ACTIVATION_V1 = 'durable_activation_v1';
 const IDENTITY_DOMAIN = utf8('agnt5.activation.identity.v1\0');
@@ -126,6 +127,8 @@ export interface BeginActivationRequest {
   displayName: string;
   /** Optional plaintext JSON input rendered on the journal record. */
   inputData?: Uint8Array;
+  /** Reader-only parent journal correlation; never part of activation identity. */
+  displayParentCorrelationId?: string;
 }
 
 export interface ActivationDecision {
@@ -185,11 +188,13 @@ export function runWithActivation<T>(
   decision: ActivationDecision,
   execute: () => T | Promise<T>,
 ): T | Promise<T> {
-  return activationStorage.run({
+  // The admitted activation now owns nested work. Do not leak the display
+  // parent used to describe this activation into its children (e.g. tool LMs).
+  return runWithDisplayParent(undefined, () => activationStorage.run({
     activationId: decision.activationId,
     attempt: decision.attempt,
     idempotencyKey: `agnt5:${decision.activationId}`,
-  }, execute);
+  }, execute));
 }
 
 export interface ActivationTransport {
@@ -645,6 +650,7 @@ export async function activationRequestFromContext(
     leaseAuthority: utf8(leaseAuthority),
     child: options.child,
     displayName: options.displayName ?? options.stableKey,
+    displayParentCorrelationId: currentDisplayParentCorrelationId(),
     inputData: boundedInputData(
       options.inputData !== undefined ? options.inputData : options.input,
     ),
