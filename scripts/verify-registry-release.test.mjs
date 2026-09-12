@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { waitForPackage } from './verify-registry-release.mjs';
+import { waitForPackage, platformManifests } from './verify-registry-release.mjs';
 const metadata = () => new Response(JSON.stringify({
   name: '@agnt5/sdk-test', version: '0.9.1',
   dist: { tarball: 'https://registry.npmjs.org/test.tgz' },
@@ -29,4 +29,23 @@ test('waits for propagation and verifies the tarball', async () => {
     }, attempts: 2, pause: async () => {},
   });
   assert.equal(requests, 3);
+});
+
+
+test('ignores empty platform directories produced by NAPI artifacts', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const root = mkdtempSync(join(tmpdir(), 'agnt5-registry-test-'));
+  try {
+    mkdirSync(join(root, 'npm/darwin-x64'), { recursive: true });
+    mkdirSync(join(root, 'npm/linux-x64-gnu'), { recursive: true });
+    writeFileSync(join(root, 'npm/linux-x64-gnu/package.json'), JSON.stringify({
+      name: '@agnt5/sdk-linux-x64-gnu', version: '0.9.2',
+    }));
+    assert.deepEqual(platformManifests(pathToFileURL(root + '/')), [{
+      name: '@agnt5/sdk-linux-x64-gnu', version: '0.9.2',
+    }]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
