@@ -62,6 +62,25 @@ describe('Agent', () => {
     expect(request.config?.cache).toEqual({ enabled: true, ttl: '1h' });
   });
 
+  it('drops the default temperature for gpt-6 models, as for gpt-5, unless set explicitly (AGNT5-1302)', () => {
+    const request = (modelName: string, temperature?: number) => {
+      const mockModel = new MockLanguageModel([{ text: 'ok', finishReason: 'stop' }]);
+      const agent = new Agent({
+        name: 'reasoning-agent',
+        model: mockModel,
+        instructions: 'Answer briefly.',
+        modelName,
+        ...(temperature !== undefined ? { temperature } : {}),
+      });
+      return (agent as any).buildModelRequest([{ role: 'user', content: 'hi' }], []) as GenerateRequest;
+    };
+    expect(request('openai/gpt-6-luna').config?.temperature).toBeUndefined();
+    expect(request('openai/gpt-5-mini').config?.temperature).toBeUndefined();
+    expect(request('openai/gpt-4.1-mini').config?.temperature).toBe(0.7);
+    // An explicit value is the caller's decision and still travels.
+    expect(request('openai/gpt-6-luna', 0.2).config?.temperature).toBe(0.2);
+  });
+
   it('should add standard sandbox tools when sandbox is configured', () => {
     const mockModel = new MockLanguageModel([
       { text: 'Hello!', finishReason: 'stop' }

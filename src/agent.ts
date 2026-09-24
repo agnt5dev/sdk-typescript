@@ -1,3 +1,4 @@
+import { isOpenAIReasoningModel } from './providers/openai-models';
 /**
  * Agent component for LLM-driven autonomous execution.
  *
@@ -844,21 +845,13 @@ export class Agent {
   }
 
   /**
-   * OpenAI reasoning models (gpt-5*, o1/o3/o4 families) reject an explicit
-   * `temperature`. Detected from the resolved `openai/<model>` identifier.
+   * OpenAI reasoning models (gpt-5 and gpt-6 families, o1/o3/o4) reject an
+   * explicit `temperature`. Detected from the resolved `openai/<model>`
+   * identifier with the shared predicate the providers use.
    */
   private isOpenAiReasoningModel(): boolean {
     if (!this.modelName.startsWith('openai/')) return false;
-    const name = this.modelName.slice('openai/'.length);
-    return (
-      name.startsWith('gpt-5') ||
-      name === 'o1' ||
-      name.startsWith('o1-') ||
-      name === 'o3' ||
-      name.startsWith('o3-') ||
-      name === 'o4' ||
-      name.startsWith('o4-')
-    );
+    return isOpenAIReasoningModel(this.modelName);
   }
 
   /**

@@ -1,3 +1,4 @@
+import { isOpenAIReasoningModel } from './openai-models';
 import type {
   AnthropicConfig,
   AzureOpenAIConfig,
@@ -169,10 +170,6 @@ function cacheConfig(request: GenerateRequest): PromptCache | undefined {
   const config = request.config as (GenerateRequest['config'] & { cache?: PromptCache }) | undefined;
   const cache = config?.cache;
   return cache && typeof cache === 'object' ? cache : undefined;
-}
-
-function isOpenAIReasoningModel(model: string): boolean {
-  return model.startsWith('gpt-5') || /^(o1|o3|o4)(-|$)/.test(model);
 }
 
 function responseFormatForChat(request: GenerateRequest): JsonObject | undefined {
