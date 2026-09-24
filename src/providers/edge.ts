@@ -1,4 +1,4 @@
-import { isOpenAIReasoningModel } from './openai-models';
+import { isOpenAIReasoningModel } from './openai-models.js';
 import type {
   AnthropicConfig,
   AzureOpenAIConfig,

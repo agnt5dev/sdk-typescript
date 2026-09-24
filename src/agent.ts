@@ -1,4 +1,4 @@
-import { isOpenAIReasoningModel } from './providers/openai-models';
+import { isOpenAIReasoningModel } from './providers/openai-models.js';
 /**
  * Agent component for LLM-driven autonomous execution.
  *

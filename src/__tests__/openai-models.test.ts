@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isOpenAIReasoningModel } from '../providers/openai-models';
+import { isOpenAIReasoningModel } from '../providers/openai-models.js';
 
 describe('isOpenAIReasoningModel', () => {
   it('matches the gpt-5 and gpt-6 families and the o-series, with or without the provider prefix', () => {
