@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- The gpt-6 family is treated as OpenAI reasoning models, like gpt-5 and the o-series: the providers send no `temperature` or `top_p` and use `max_completion_tokens`, and an Agent drops its default temperature for them. gpt-6 rejects both with a 400, so every TypeScript call to `gpt-6-luna` failed. The predicate now lives in one place, `providers/openai-models.ts` (AGNT5-1302).
+
 ## [0.10.4] - 2026-09-22
 
 ### Fixed
