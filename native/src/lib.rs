@@ -2351,3 +2351,11 @@ mod tests {
         assert_eq!(location.format.as_deref(), Some("city"));
     }
 }
+
+/// Execute SDK-core's bounded deterministic JSON assertion scorer.
+#[napi]
+pub fn structured_assertions(input_json: String) -> napi::Result<String> {
+    let input: serde_json::Value =
+        serde_json::from_str(&input_json).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    Ok(agnt5_sdk_core::eval::structured_assertions(&input).to_string())
+}

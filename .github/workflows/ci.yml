@@ -68,8 +68,11 @@ jobs:
       - name: Smoke test packed SDK in workerd
         run: npm run test:workerd
 
-      - name: Check native Rust module
-        run: cargo check --manifest-path native/Cargo.toml --locked
+      - name: Build native Rust module
+        run: npx napi build --platform --manifest-path native/Cargo.toml --output-dir .
+
+      - name: Test SDK-core assertion contract through native bindings
+        run: npx vitest run src/__tests__/structured-assertions.test.ts
 
       - name: Show sccache stats
         if: always()

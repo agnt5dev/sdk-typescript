@@ -387,6 +387,7 @@ export {
   runScorer,
   exactMatch,
   contains,
+  structuredAssertions,
   jsonValid,
   jsonSchema,
   numericRange,
