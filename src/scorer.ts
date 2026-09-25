@@ -7,6 +7,7 @@
 
 import { randomUUID } from 'crypto';
 import Ajv from 'ajv';
+import { loadNativeBindings } from '#native-loader';
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -128,6 +129,7 @@ export interface ScorerConfig {
 }
 
 export const BUILTIN_DETERMINISTIC_SCORER_NAMES = [
+  'structured_assertions',
   'exact_match',
   'contains',
   'regex_match',
@@ -1689,3 +1691,16 @@ function eventTypeOf(event: TraceEvent): string {
 function eventIdOf(event: TraceEvent): string {
   return event.eventId || (event as any).event_id || '';
 }
+
+/** Execute the SDK-core assertion scorer locally (Node/native worker surface). */
+export function structuredAssertions(request: ScorerRequest): ScorerResult {
+  const native = loadNativeBindings();
+  return new ScorerResult(JSON.parse(native.structuredAssertions(JSON.stringify(request))));
+}
+ScorerRegistry.registerBuiltin({
+  name: 'structured_assertions',
+  handler: (_ctx, req) => structuredAssertions(req),
+  description: 'Bounded assertions over JSON',
+  scope: 'item',
+  isAsync: false,
+});
