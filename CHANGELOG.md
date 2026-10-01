@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-10-01
+
+### Fixed
+
+- Use core 0.3.5, which parses JSON and JSON-schema output into the structured object for non-streaming OpenAI responses (AGNT5-1371, AGNT5-1416).
+- `ctx.logger` calls with number, boolean, array, object or null attributes no longer fail the run. Every logger now JSON-encodes non-string attribute values before handing them to the native bridge, and a record the bridge rejects is dropped with a one-time warning instead of escaping into the handler (AGNT5-1416).
+- `LM.generate` with a `json` or `json_schema` `responseFormat` now returns the parsed object in `structuredOutput` when the provider leaves it unset, by parsing the response text (a single surrounding markdown code fence is unwrapped). This also applies to streamed finals and to durable replay of results recorded before this fix. Text that is not JSON leaves `structuredOutput` undefined (AGNT5-1416).
+
 ## [0.10.5] - 2026-09-25
 
 - Add SDK-core structured assertions to Node scorer APIs and automatic native worker routing.
