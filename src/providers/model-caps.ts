@@ -20,7 +20,8 @@ function bareModel(model: string): string {
 
 /**
  * Claude models that reject `temperature` and `top_p` with a 400: everything
- * after Opus 4.6 / Sonnet 4.6 / Haiku 4.5, including Fable. New or
+ * after Opus 4.6 / Sonnet 4.6 / Haiku 4.5 (the cutoff is per family),
+ * including Fable. New or
  * unrecognised Claude models count as rejecting, since dropping a sampling
  * parameter degrades quietly while sending one fails the call (AGNT5-1403).
  */
@@ -29,6 +30,7 @@ export function claudeRejectsSamplingParams(model: string): boolean {
   if (!name.startsWith('claude-')) return false;
 
   const version: number[] = [];
+  let family: string | undefined;
   for (const token of name.slice('claude-'.length).split(/[-.]/)) {
     if (/^\d{1,2}$/.test(token)) {
       version.push(Number(token));
@@ -36,11 +38,15 @@ export function claudeRejectsSamplingParams(model: string): boolean {
     }
     if (version.length === 0 && !CLAUDE_FAMILIES.has(token)) return true;
     if (version.length > 0) break;
+    family = token;
   }
 
   if (version.length === 0) return true;
-  if (version.length === 1) return version[0] > 4;
-  return version[0] > 4 || (version[0] === 4 && version[1] > 6);
+  // Newest accepting version per family: Haiku 4.5, Opus/Sonnet 4.6.
+  // Version-first ids (claude-3-5-haiku) are all 3.x or older.
+  const lastMinor = family === 'haiku' ? 5 : 6;
+  const minor = version[1] ?? 0;
+  return version[0] > 4 || (version[0] === 4 && minor > lastMinor);
 }
 
 /** Default output budget for a Claude model; thinking counts toward it. */

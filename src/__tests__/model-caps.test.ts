@@ -19,6 +19,8 @@ describe('model caps', () => {
     'bedrock/us-east-1/us.anthropic.claude-opus-4-7-20260115-v1:0',
     'claude-opus-4-7@20260115',
     'anthropic/claude-newfamily-1',
+    'anthropic/claude-haiku-4-6',
+    'claude-haiku-5',
   ])('%s rejects sampling parameters', (model) => {
     expect(rejectsSamplingParams(model)).toBe(true);
   });
@@ -35,6 +37,7 @@ describe('model caps', () => {
     'bedrock/us-west-2/anthropic.claude-3-5-sonnet-20241022-v2:0',
     'claude-2.1',
     'claude-instant-1.2',
+    'claude-3-5-haiku-20241022',
   ])('%s accepts sampling parameters', (model) => {
     expect(rejectsSamplingParams(model)).toBe(false);
   });
