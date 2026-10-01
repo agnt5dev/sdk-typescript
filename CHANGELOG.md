@@ -13,10 +13,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - The gpt-6 family is treated as OpenAI reasoning models, like gpt-5 and the o-series: the providers send no `temperature` or `top_p` and use `max_completion_tokens`, and an Agent drops its default temperature for them. gpt-6 rejects both with a 400, so every TypeScript call to `gpt-6-luna` failed. The predicate now lives in one place, `providers/openai-models.ts` (AGNT5-1302).
 - An Agent on Claude Opus 4.7 and later, Sonnet 5, Opus 5 or Fable no longer sends its default temperature, and the edge Anthropic provider drops `temperature`/`top_p` for them; these models reject both with a 400. The edge provider's default `max_tokens` is 16384 for them (4096 for older Claude) since thinking counts toward it. Rules live in `providers/model-caps.ts`, mirroring sdk-core (AGNT5-1403).
 - An unknown `reasoningEffort` value is rejected instead of silently becoming `medium` on the native path (AGNT5-1456).
+- The gpt-6 family is treated as OpenAI reasoning models, like gpt-5 and the o-series: the providers send no `temperature` or `top_p` and use `max_completion_tokens`, and an Agent drops its default temperature for them. gpt-6 rejects both with a 400, so every TypeScript call to `gpt-6-luna` failed. The predicate now lives in one place, `providers/openai-models.ts`.
+- An Agent on Claude Opus 4.7 and later, Sonnet 5, Opus 5 or Fable no longer sends its default temperature, and the edge Anthropic provider drops `temperature`/`top_p` for them; these models reject both with a 400. The edge provider's default `max_tokens` is 16384 for them (4096 for older Claude) since thinking counts toward it. Rules live in `providers/model-caps.ts`, mirroring sdk-core.
+- An unknown `reasoningEffort` value is rejected instead of silently becoming `medium` on the native path.
 
 ### Added
 
-- `reasoningEffort: 'none' | 'low'`. gpt-6 accepts none/low/medium/high and rejects minimal; gpt-5 accepts minimal (AGNT5-1456).
+- `reasoningEffort: 'none' | 'low'`. gpt-6 accepts none/low/medium/high and rejects minimal; gpt-5 accepts minimal.
 
 ## [0.10.6] - 2026-10-01
 
