@@ -5022,3 +5022,7 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "agnt5-sdk-core"
+version = "0.3.6"

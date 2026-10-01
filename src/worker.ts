@@ -38,7 +38,14 @@ import {
 import type { AgentEvent } from './events.js';
 import { loadNativeBindings, tryLoadNativeBindings } from '#native-loader';
 import { autoEnable as autoEnableCapture } from './integrations/index.js';
-import { ContextLogger, currentTraceCorrelation, isLogLevelEnabled, sendNativeLog } from './logging.js';
+import {
+  ContextLogger,
+  currentTraceCorrelation,
+  isLogLevelEnabled,
+  parseTraceparent,
+  sendNativeLog,
+} from './logging.js';
+import { finishSpan, runInSpan, Span, withSpan } from './tracing.js';
 import type { LogLevel } from './logging.js';
 import {
   executePromptWorkerInput,
@@ -782,6 +789,14 @@ class SimpleContext implements Context {
     throw new ConfigurationError('ctx.waitForSignal is only supported by workerless workflows');
   }
 
+  /** Run a step body inside a `workflow.step.<name>` span. Replays don't get one. */
+  private runStepSpan<T>(stepName: string, fn: () => T | Promise<T>): Promise<T> {
+    return withSpan(`workflow.step.${stepName}`, () => fn(), {
+      componentType: 'step',
+      attributes: { run_id: this.runId, step_name: stepName },
+    });
+  }
+
   /**
    * Execute a durable step with checkpointing.
    *
@@ -824,7 +839,7 @@ class SimpleContext implements Context {
         }
         const admitted = decision;
         return runWithActivation(admitted, () =>
-          this.runWithCorrelation(admitted.activationId, fn));
+          this.runWithCorrelation(admitted.activationId, () => this.runStepSpan(stepName, fn)));
       }, {
         encodeOutput: encodeActivationJson,
         decodeOutput: value => decodeActivationJson<T>(value),
@@ -879,7 +894,7 @@ class SimpleContext implements Context {
 
     // Execute the step
     const startMs = Date.now();
-    const result = await fn();
+    const result = await this.runStepSpan(stepName, fn);
     const durationMs = Date.now() - startMs;
 
     // Cache locally
@@ -1101,6 +1116,21 @@ export class Worker {
     const abortController = new AbortController();
     this.inflight.set(runId, abortController);
 
+    // The run's root span, parented to the dispatch traceparent so the run,
+    // its steps, tools and LM calls form one trace (AGNT5-1320). Project,
+    // workspace and deployment ids come from the worker's telemetry identity.
+    const runSpan = new Span(
+      `${message.componentType}.${message.componentName}`,
+      message.componentType,
+      parseTraceparent(message.metadata?.traceparent) ?? undefined,
+      {
+        run_id: runId,
+        'agnt5.invocation.id': message.invocationId,
+        'agnt5.attempt': message.metadata?.attempt || '0',
+      },
+    );
+    let runError: unknown;
+
     return Promise.resolve(runWithContext(
       {
         runId,
@@ -1111,7 +1141,7 @@ export class Worker {
         metadata: message.metadata,
         runtime,
       },
-      async () => {
+      () => runInSpan(runSpan, async () => {
         // Create EventEmitter wired to NAPI worker for event emission
         // sdk-core stamps pull_completion_lifecycle_v1 only on non-streaming
         // pull assignments whose session negotiated the capability.
@@ -1521,6 +1551,7 @@ export class Worker {
             eventType: 'run.completed',
           });
         } catch (error) {
+          runError = error;
           if (error instanceof DurableSleepSuspensionError) {
             return JSON.stringify({
               invocationId: message.invocationId,
@@ -1581,6 +1612,8 @@ export class Worker {
           // authored run.cancelled as the terminal event, so do NOT emit
           // run.failed — return cleanly with no error.
           if (abortController.signal.aborted) {
+            runError = undefined;
+            runSpan.setAttribute('agnt5.cancelled', 'true');
             console.log(`🛑 Invocation cancelled: ${message.componentName} (run ${runCid})`);
             return JSON.stringify({
               invocationId: message.invocationId,
@@ -1635,8 +1668,9 @@ export class Worker {
             componentType: message.componentType,
             componentName: message.componentName,
           });
+          finishSpan(runSpan, runError);
         }
-      },
+      }),
     )).finally(() => {
       this.inflight.delete(runId);
     });

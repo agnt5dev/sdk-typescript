@@ -9,6 +9,7 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import { randomUUID } from 'crypto';
 import { getLoadedNativeBindings } from '#native-loader';
+import { DurableSleepSuspensionError, WaitingForUserInputError } from './errors.js';
 
 // ─── NAPI binding loader ─────────────────────────────────────────────
 
@@ -28,6 +29,30 @@ const spanStorage = new AsyncLocalStorage<SpanInfo>();
 /** Get the current span info (if inside a span scope) */
 export function getCurrentSpanInfo(): SpanInfo | undefined {
   return spanStorage.getStore();
+}
+
+/**
+ * Run `fn` with `span` as the current span, so nested spans, LM calls and log
+ * records parent to it.
+ */
+export function runInSpan<T>(span: Span, fn: () => T): T {
+  return spanStorage.run({ traceId: span.traceId, spanId: span.spanId }, fn);
+}
+
+/**
+ * Close `span` with the outcome of the work it covered.
+ *
+ * A durable sleep or a wait for user input unwinds by throwing, but the run is
+ * paused, not failed, so it is marked `agnt5.suspended` instead of as an error
+ * (matching the Go SDK).
+ */
+export function finishSpan(span: Span, error?: unknown): void {
+  if (error instanceof WaitingForUserInputError || error instanceof DurableSleepSuspensionError) {
+    span.setAttribute('agnt5.suspended', 'true');
+  } else if (error !== undefined) {
+    span.recordException(error instanceof Error ? error : new Error(String(error)));
+  }
+  span.end();
 }
 
 // ─── Span class ──────────────────────────────────────────────────────
@@ -171,15 +196,12 @@ export async function withSpan<T>(
     options?.attributes,
   );
 
-  const spanInfo: SpanInfo = { traceId: span.traceId, spanId: span.spanId };
-
   try {
-    const result = await spanStorage.run(spanInfo, () => fn(span));
-    span.end();
+    const result = await runInSpan(span, () => fn(span));
+    finishSpan(span);
     return result;
   } catch (error) {
-    span.recordException(error as Error);
-    span.end();
+    finishSpan(span, error);
     throw error;
   }
 }

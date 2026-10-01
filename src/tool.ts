@@ -14,6 +14,7 @@ import type {
 } from './types.js';
 import type { ContextImpl } from './context.js';
 import { ActivationError, ActivationErrorCode, ConfigurationError } from './errors.js';
+import { withSpan } from './tracing.js';
 import {
   ActivationKind,
   ActivationRecoveryPolicy,
@@ -176,7 +177,14 @@ export class Tool<TInput = any, TOutput = any> {
     return this.invokeHandler(ctx, args);
   }
 
-  private async invokeHandler(ctx: Context, args: Record<string, any>): Promise<TOutput> {
+  private invokeHandler(ctx: Context, args: Record<string, any>): Promise<TOutput> {
+    return withSpan(`tool.${this.name}`, () => this.runHandler(ctx, args), {
+      componentType: 'tool',
+      attributes: { run_id: ctx.runId, 'tool.name': this.name },
+    });
+  }
+
+  private async runHandler(ctx: Context, args: Record<string, any>): Promise<TOutput> {
     if (this.confirmation) {
       ctx.logger.warn(
         `Tool '${this.name}' requires confirmation; no approval handler is configured`

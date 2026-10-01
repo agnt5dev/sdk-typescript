@@ -149,7 +149,7 @@ function validId(value: unknown, shape: RegExp): string | null {
  * context. Extra trailing fields are tolerated — the spec allows a future
  * version to append them, and the first four are positionally fixed.
  */
-function parseTraceparent(value: unknown): { traceId: string; spanId: string } | null {
+export function parseTraceparent(value: unknown): { traceId: string; spanId: string } | null {
   if (typeof value !== 'string') return null;
   const parts = value.split('-');
   if (parts.length < 4) return null;
@@ -185,9 +185,13 @@ export function currentTraceCorrelation(): {
   traceId: string | null;
   spanId: string | null;
 } {
+  // A log-only span (no native bindings or telemetry) carries random UUIDs
+  // that no backend knows, so it must not displace the dispatch traceparent.
   const span = getCurrentSpanInfo();
-  if (span) {
-    return { traceId: span.traceId, spanId: span.spanId };
+  const spanTraceId = validId(span?.traceId, HEX_32);
+  const spanSpanId = validId(span?.spanId, HEX_16);
+  if (spanTraceId && spanSpanId) {
+    return { traceId: spanTraceId, spanId: spanSpanId };
   }
 
   const metadata = getCurrentContext()?.metadata;

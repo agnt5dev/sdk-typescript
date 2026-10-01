@@ -1,0 +1,172 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+/**
+ * TypeScript runs must record spans for the run, its steps, functions and
+ * tools (AGNT5-1320).
+ *
+ * The worker used to open no span on the dispatch path, so a TypeScript run's
+ * trace came back with zero spans even though its logs carried the trace id.
+ * These tests mock the native `Span` binding and pin which spans are opened,
+ * how they nest under the dispatch traceparent, and how failures and
+ * suspensions are recorded.
+ */
+
+type RecordedSpan = {
+  name: string;
+  componentType: string;
+  parentTraceId: string | null;
+  parentSpanId: string | null;
+  attributes: Record<string, string>;
+  traceId: string;
+  spanId: string;
+  error: string | null;
+  ended: boolean;
+};
+
+const spans: RecordedSpan[] = [];
+
+class FakeNativeSpan {
+  constructor(readonly record: RecordedSpan) {}
+  get traceId() { return this.record.traceId; }
+  get spanId() { return this.record.spanId; }
+  setAttribute(key: string, value: string) { this.record.attributes[key] = value; }
+  recordError(message: string) { this.record.error = message; }
+  end() { this.record.ended = true; }
+
+  static create(
+    name: string,
+    componentType: string,
+    parentTraceId: string | null,
+    parentSpanId: string | null,
+    attributes: Record<string, string> | null,
+  ) {
+    const record: RecordedSpan = {
+      name,
+      componentType,
+      parentTraceId,
+      parentSpanId,
+      attributes: { ...(attributes ?? {}) },
+      traceId: parentTraceId ?? 'f'.repeat(32),
+      spanId: (spans.length + 1).toString(16).padStart(16, '0'),
+      error: null,
+      ended: false,
+    };
+    spans.push(record);
+    return new FakeNativeSpan(record);
+  }
+}
+
+const bindings = { Span: FakeNativeSpan, logFromTypescript: vi.fn() };
+vi.mock('#native-loader', () => ({
+  getLoadedNativeBindings: () => bindings,
+  tryLoadNativeBindings: () => bindings,
+  loadNativeBindings: () => bindings,
+}));
+
+const { Worker } = await import('../worker.js');
+const { FunctionRegistry, fn } = await import('../function.js');
+const { WorkflowRegistry, workflow } = await import('../workflow.js');
+const { ToolRegistry, tool } = await import('../tool.js');
+
+const RUN_ID = '01a05cd2-7c90-7412-a9ee-81e2d128c54c';
+const TRACE_ID = '01a05cd2591f7be08bb33d7df5f1de07';
+const DISPATCH_SPAN_ID = 'd8e314d6ce264a7b';
+
+async function dispatchWorkflow(name: string) {
+  const worker = new Worker('orders', { serviceVersion: '0.1.0' });
+  const response = await (worker as any).processMessage({
+    invocationId: RUN_ID,
+    componentName: name,
+    componentType: 'workflow',
+    inputJson: JSON.stringify({ orderId: 'o-1', sku: 'sku-1' }),
+    metadata: { run_id: RUN_ID, traceparent: `00-${TRACE_ID}-${DISPATCH_SPAN_ID}-01` },
+  });
+  return JSON.parse(response);
+}
+
+function span(name: string): RecordedSpan {
+  const found = spans.find((s) => s.name === name);
+  if (!found) throw new Error(`no span named ${name}; got ${spans.map((s) => s.name).join(', ')}`);
+  return found;
+}
+
+describe('worker run spans', () => {
+  beforeEach(() => {
+    spans.length = 0;
+    FunctionRegistry.clear();
+    WorkflowRegistry.clear();
+    ToolRegistry.clear();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  function registerOrderWorkflow(name: string, inventoryDown: boolean) {
+    const validateOrder = fn('validate_order').run(async (_ctx, order: { orderId: string }) => ({
+      valid: true,
+      orderId: order.orderId,
+    }));
+    const lookupInventory = tool('lookup_inventory', { description: 'Stock lookup' }, async () => {
+      if (inventoryDown) throw new Error('inventory service unavailable');
+      return { available: 3 };
+    });
+    workflow(name, async (ctx, order: { orderId: string; sku: string }) => {
+      await validateOrder(ctx, order);
+      return await ctx.step('check_stock', () => lookupInventory(ctx, { sku: order.sku }));
+    });
+  }
+
+  it('records a failed tool under its step, inside a failed run span', async () => {
+    registerOrderWorkflow('fulfil_order_outage', true);
+
+    const response = await dispatchWorkflow('fulfil_order_outage');
+    expect(response.eventType).toBe('run.failed');
+
+    const run = span('workflow.fulfil_order_outage');
+    expect(run.parentTraceId).toBe(TRACE_ID);
+    expect(run.parentSpanId).toBe(DISPATCH_SPAN_ID);
+    expect(run.attributes.run_id).toBe(RUN_ID);
+    expect(run.error).toBe('inventory service unavailable');
+
+    const validate = span('function.validate_order');
+    expect(validate.parentSpanId).toBe(run.spanId);
+    expect(validate.error).toBeNull();
+
+    const step = span('workflow.step.check_stock');
+    expect(step.parentSpanId).toBe(run.spanId);
+    expect(step.error).toBe('inventory service unavailable');
+
+    const lookup = span('tool.lookup_inventory');
+    expect(lookup.parentSpanId).toBe(step.spanId);
+    expect(lookup.attributes.run_id).toBe(RUN_ID);
+    expect(lookup.error).toBe('inventory service unavailable');
+
+    for (const s of spans) expect(s.traceId).toBe(TRACE_ID);
+    expect(spans.every((s) => s.ended)).toBe(true);
+  });
+
+  it('records a healthy run without errors', async () => {
+    registerOrderWorkflow('fulfil_order', false);
+
+    const response = await dispatchWorkflow('fulfil_order');
+    expect(response.eventType).toBe('run.completed');
+
+    expect(spans.map((s) => s.name)).toEqual([
+      'workflow.fulfil_order',
+      'function.validate_order',
+      'workflow.step.check_stock',
+      'tool.lookup_inventory',
+    ]);
+    expect(spans.every((s) => s.ended && s.error === null)).toBe(true);
+  });
+
+  it('marks a run paused for user input as suspended, not failed', async () => {
+    workflow('approve_order', async (ctx) => ctx.waitForUser('Approve?'));
+
+    const response = await dispatchWorkflow('approve_order');
+    expect(response.eventType).toBe('workflow.paused');
+
+    const run = span('workflow.approve_order');
+    expect(run.error).toBeNull();
+    expect(run.attributes['agnt5.suspended']).toBe('true');
+    expect(run.ended).toBe(true);
+  });
+});

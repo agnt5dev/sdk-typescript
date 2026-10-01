@@ -1876,13 +1876,16 @@ impl Span {
         };
 
         let metadata = attributes.unwrap_or_default();
+        // agnt5.run.id is stamped from this argument, so take it from the
+        // caller's attributes rather than leaving it empty (AGNT5-1320).
+        let run_id = metadata.get("run_id").cloned().unwrap_or_default();
 
         let span = agnt5_sdk_core::create_component_span(
             &name,
             &comp_type,
             "", // service_name — set via init_telemetry global
             "", // worker_id
-            "", // run_id
+            &run_id,
             parent_context,
             Some(&metadata),
         );
