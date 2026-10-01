@@ -62,6 +62,23 @@ describe('Agent', () => {
     expect(request.config?.cache).toEqual({ enabled: true, ttl: '1h' });
   });
 
+  it('drops the default temperature for Claude models that reject it (AGNT5-1403)', () => {
+    const request = (modelName: string, temperature?: number) => {
+      const mockModel = new MockLanguageModel([{ text: 'ok', finishReason: 'stop' }]);
+      const agent = new Agent({
+        name: 'claude-agent',
+        model: mockModel,
+        instructions: 'Answer briefly.',
+        modelName,
+        ...(temperature !== undefined ? { temperature } : {}),
+      });
+      return (agent as any).buildModelRequest([{ role: 'user', content: 'hi' }], []) as GenerateRequest;
+    };
+    expect(request('anthropic/claude-opus-5').config?.temperature).toBeUndefined();
+    expect(request('anthropic/claude-sonnet-5').config?.temperature).toBeUndefined();
+    expect(request('anthropic/claude-haiku-4-5').config?.temperature).toBe(0.7);
+  });
+
   it('drops the default temperature for gpt-6 models, as for gpt-5, unless set explicitly (AGNT5-1302)', () => {
     const request = (modelName: string, temperature?: number) => {
       const mockModel = new MockLanguageModel([{ text: 'ok', finishReason: 'stop' }]);

@@ -1,3 +1,4 @@
+import { claudeDefaultMaxTokens, claudeRejectsSamplingParams } from './model-caps.js';
 import { isOpenAIReasoningModel } from './openai-models.js';
 import type {
   AnthropicConfig,
@@ -843,13 +844,15 @@ class AnthropicEdgeProvider implements EdgeLanguageModel {
           ? undefined
           : { type: request.toolChoice.choiceType }
     );
+    const rejectsSampling = claudeRejectsSamplingParams(request.model);
     return compact({
       model: modelWithoutProvider(request.model, 'anthropic'),
       system,
       messages: anthropicMessages(request.messages ?? []),
-      max_tokens: request.config?.maxOutputTokens ?? 4096,
-      temperature: request.config?.temperature,
-      top_p: request.config?.topP,
+      max_tokens: request.config?.maxOutputTokens ?? claudeDefaultMaxTokens(request.model),
+      // Claude after Opus 4.6 / Sonnet 4.6 rejects sampling parameters (AGNT5-1403).
+      temperature: rejectsSampling ? undefined : request.config?.temperature,
+      top_p: rejectsSampling ? undefined : request.config?.topP,
       tools: tools.length ? tools : undefined,
       tool_choice: toolChoice,
       stream: stream || undefined,
