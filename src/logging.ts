@@ -149,13 +149,34 @@ function validId(value: unknown, shape: RegExp): string | null {
  * context. Extra trailing fields are tolerated — the spec allows a future
  * version to append them, and the first four are positionally fixed.
  */
-export function parseTraceparent(value: unknown): { traceId: string; spanId: string } | null {
+export function parseTraceparent(
+  value: unknown,
+): { traceId: string; spanId: string; sampled: boolean } | null {
   if (typeof value !== 'string') return null;
   const parts = value.split('-');
   if (parts.length < 4) return null;
   const traceId = validId(parts[1], HEX_32);
   const spanId = validId(parts[2], HEX_16);
-  return traceId && spanId ? { traceId, spanId } : null;
+  // Bit 0 of trace-flags is the caller's sampling decision.
+  const flags = Number.parseInt(parts[3], 16);
+  const sampled = Number.isNaN(flags) ? true : (flags & 0x01) === 0x01;
+  return traceId && spanId ? { traceId, spanId, sampled } : null;
+}
+
+/**
+ * The upstream span a dispatch should continue: the W3C `traceparent` the
+ * gateway stamps, or the loose `trace_id` / `span_id` pair the OSS dispatch
+ * path sets instead. Null when neither is complete.
+ */
+export function dispatchTraceParent(
+  metadata: Record<string, string> | undefined,
+): { traceId: string; spanId: string; sampled: boolean } | null {
+  if (!metadata) return null;
+  const traceparent = parseTraceparent(metadata.traceparent);
+  if (traceparent) return traceparent;
+  const traceId = validId(metadata.trace_id, HEX_32);
+  const spanId = validId(metadata.span_id, HEX_16);
+  return traceId && spanId ? { traceId, spanId, sampled: true } : null;
 }
 
 /**
@@ -198,7 +219,7 @@ export function currentTraceCorrelation(): {
   if (!metadata) return { traceId: null, spanId: null };
 
   const traceparent = parseTraceparent(metadata.traceparent);
-  if (traceparent) return traceparent;
+  if (traceparent) return { traceId: traceparent.traceId, spanId: traceparent.spanId };
 
   // A span id without a trace id points nowhere, so it is dropped with it.
   const traceId = validId(metadata.trace_id, HEX_32);

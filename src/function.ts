@@ -191,6 +191,7 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
           withSpan(`function.${handlerName}`, () => handler(ctx, ...args), {
             componentType: 'function',
             attributes: { run_id: ctx.runId, handler_name: handlerName },
+            followAsyncIterable: true,
           });
         const result = hasTaskLocalCorrelation
           ? await anyCtx.runWithCorrelation(fnCid, invokeHandler)

@@ -21,6 +21,7 @@ type RecordedSpan = {
   spanId: string;
   error: string | null;
   ended: boolean;
+  sampled: boolean | undefined;
 };
 
 const spans: RecordedSpan[] = [];
@@ -39,8 +40,10 @@ class FakeNativeSpan {
     parentTraceId: string | null,
     parentSpanId: string | null,
     attributes: Record<string, string> | null,
+    sampled?: boolean,
   ) {
     const record: RecordedSpan = {
+      sampled,
       name,
       componentType,
       parentTraceId,
@@ -67,22 +70,31 @@ const { Worker } = await import('../worker.js');
 const { FunctionRegistry, fn } = await import('../function.js');
 const { WorkflowRegistry, workflow } = await import('../workflow.js');
 const { ToolRegistry, tool } = await import('../tool.js');
+const { EventEmitter } = await import('../event-emitter.js');
+const { SuspensionRequestedError } = await import('../errors.js');
+const { Span, finishSpan, withSpan } = await import('../tracing.js');
 
 const RUN_ID = '01a05cd2-7c90-7412-a9ee-81e2d128c54c';
 const TRACE_ID = '01a05cd2591f7be08bb33d7df5f1de07';
 const DISPATCH_SPAN_ID = 'd8e314d6ce264a7b';
 
-async function dispatchWorkflow(name: string) {
+async function dispatch(
+  name: string,
+  componentType = 'workflow',
+  metadata: Record<string, string> = { traceparent: `00-${TRACE_ID}-${DISPATCH_SPAN_ID}-01` },
+) {
   const worker = new Worker('orders', { serviceVersion: '0.1.0' });
   const response = await (worker as any).processMessage({
     invocationId: RUN_ID,
     componentName: name,
-    componentType: 'workflow',
+    componentType,
     inputJson: JSON.stringify({ orderId: 'o-1', sku: 'sku-1' }),
-    metadata: { run_id: RUN_ID, traceparent: `00-${TRACE_ID}-${DISPATCH_SPAN_ID}-01` },
+    metadata: { run_id: RUN_ID, ...metadata },
   });
   return JSON.parse(response);
 }
+
+const dispatchWorkflow = (name: string) => dispatch(name);
 
 function span(name: string): RecordedSpan {
   const found = spans.find((s) => s.name === name);
@@ -168,5 +180,81 @@ describe('worker run spans', () => {
     expect(run.error).toBeNull();
     expect(run.attributes['agnt5.suspended']).toBe('true');
     expect(run.ended).toBe(true);
+  });
+
+  it('keeps an unsampled trace unsampled', async () => {
+    registerOrderWorkflow('fulfil_unsampled', false);
+
+    await dispatch('fulfil_unsampled', 'workflow', {
+      traceparent: `00-${TRACE_ID}-${DISPATCH_SPAN_ID}-00`,
+    });
+
+    expect(spans.length).toBe(4);
+    expect(spans.every((s) => s.sampled === false)).toBe(true);
+  });
+
+  it('continues the loose trace_id / span_id the OSS dispatch path sets', async () => {
+    registerOrderWorkflow('fulfil_oss', false);
+
+    await dispatch('fulfil_oss', 'workflow', { trace_id: TRACE_ID, span_id: DISPATCH_SPAN_ID });
+
+    const run = span('workflow.fulfil_oss');
+    expect(run.parentTraceId).toBe(TRACE_ID);
+    expect(run.parentSpanId).toBe(DISPATCH_SPAN_ID);
+  });
+
+  it('records a top-level tool dispatch once', async () => {
+    tool('lookup_stock', { description: 'Stock lookup' }, async () => ({ available: 3 }));
+
+    await dispatch('lookup_stock', 'tool');
+
+    expect(spans.map((s) => s.name)).toEqual(['tool.lookup_stock']);
+  });
+
+  it('traces a tool called with positional arguments', async () => {
+    const reserve = tool('reserve', { description: 'Reserve stock' }, (async (_ctx: unknown, sku: string) => sku) as any);
+    workflow('reserve_order', async (ctx) => (reserve as any)(ctx, 'sku-1'));
+
+    await dispatch('reserve_order');
+
+    expect(span('tool.reserve').parentSpanId).toBe(span('workflow.reserve_order').spanId);
+  });
+
+  it('ends the run span when flushing events fails', async () => {
+    registerOrderWorkflow('fulfil_flush', false);
+    const flush = vi.spyOn(EventEmitter.prototype, 'flush').mockRejectedValue(new Error('transport down'));
+
+    await expect(dispatch('fulfil_flush')).rejects.toThrow('transport down');
+
+    expect(span('workflow.fulfil_flush').ended).toBe(true);
+    flush.mockRestore();
+  });
+
+  it('keeps a function span open while its stream is consumed', async () => {
+    const produce = fn('produce').run(async function* () {
+      yield 1;
+      await withSpan('inside', async () => {});
+      yield 2;
+    } as any);
+    workflow('stream_order', async (ctx) => {
+      const out: number[] = [];
+      for await (const n of (await produce(ctx)) as any) out.push(n);
+      return out;
+    });
+
+    const response = await dispatch('stream_order');
+
+    expect(JSON.parse(response.outputJson)).toEqual([1, 2]);
+    const fnSpan = span('function.produce');
+    expect(span('inside').parentSpanId).toBe(fnSpan.spanId);
+    expect(fnSpan.ended).toBe(true);
+  });
+
+  it('marks a workerless suspension as suspended, not failed', () => {
+    const s = new Span('tool.wait', 'tool');
+    finishSpan(s, new SuspensionRequestedError({ runId: RUN_ID, reason: 'sleep' }));
+    const recorded = spans[spans.length - 1];
+    expect(recorded.error).toBeNull();
+    expect(recorded.attributes['agnt5.suspended']).toBe('true');
   });
 });

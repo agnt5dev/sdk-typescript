@@ -42,7 +42,7 @@ import {
   ContextLogger,
   currentTraceCorrelation,
   isLogLevelEnabled,
-  parseTraceparent,
+  dispatchTraceParent,
   sendNativeLog,
 } from './logging.js';
 import { finishSpan, runInSpan, Span, withSpan } from './tracing.js';
@@ -1122,7 +1122,7 @@ export class Worker {
     const runSpan = new Span(
       `${message.componentType}.${message.componentName}`,
       message.componentType,
-      parseTraceparent(message.metadata?.traceparent) ?? undefined,
+      dispatchTraceParent(message.metadata) ?? undefined,
       {
         run_id: runId,
         'agnt5.invocation.id': message.invocationId,
@@ -1468,7 +1468,8 @@ export class Worker {
               }));
 
               try {
-                result = await tool.invoke(ctx, inputData);
+                // The run span is already `tool.<name>`; don't open a second one.
+                result = await tool.invoke(ctx, inputData, undefined, { span: false });
                 const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
 
                 // ── tool.completed ──
@@ -1662,13 +1663,17 @@ export class Worker {
           // Pull dispatches return their terminal outcome through CompleteJob,
           // so they do not emit run.completed/run.failed through EventEmitter.
           // Flush any trailing component/session lifecycle batch first.
-          await emitter.flush();
-          recordWorkerMemory({
-            phase: 'after',
-            componentType: message.componentType,
-            componentName: message.componentName,
-          });
-          finishSpan(runSpan, runError);
+          try {
+            await emitter.flush();
+            recordWorkerMemory({
+              phase: 'after',
+              componentType: message.componentType,
+              componentName: message.componentName,
+            });
+          } finally {
+            // End the run span even when flushing fails, or it is never exported.
+            finishSpan(runSpan, runError);
+          }
         }
       }),
     )).finally(() => {

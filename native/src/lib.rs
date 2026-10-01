@@ -1851,6 +1851,7 @@ impl Span {
         parent_trace_id: Option<String>,
         parent_span_id: Option<String>,
         attributes: Option<HashMap<String, String>>,
+        sampled: Option<bool>,
     ) -> Self {
         let comp_type = component_type.unwrap_or_else(|| "operation".to_string());
 
@@ -1860,10 +1861,18 @@ impl Span {
                 let trace_id = TraceId::from_hex(tid).unwrap_or(TraceId::INVALID);
                 let span_id = SpanId::from_hex(sid).unwrap_or(SpanId::INVALID);
                 if trace_id != TraceId::INVALID && span_id != SpanId::INVALID {
+                    // Keep the caller's sampling decision: the default
+                    // parent-based sampler then drops an unsampled trace
+                    // instead of exporting part of it.
+                    let flags = if sampled.unwrap_or(true) {
+                        TraceFlags::SAMPLED
+                    } else {
+                        TraceFlags::default()
+                    };
                     let span_context = SpanContext::new(
                         trace_id,
                         span_id,
-                        TraceFlags::SAMPLED,
+                        flags,
                         true, // is_remote
                         TraceState::default(),
                     );
