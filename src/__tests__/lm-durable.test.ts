@@ -192,6 +192,81 @@ describe('LM durable activation', () => {
     expect(transport.completeRequests).toHaveLength(0);
   });
 
+  it('records and returns structured output recovered from text (AGNT5-1416)', async () => {
+    generate.mockClear();
+    const transport = new ModelActivationTransport();
+    const context = durableContext(transport);
+    generate.mockImplementationOnce(async request => ({
+      id: 'response-json',
+      model: request.model,
+      text: '{"city":"Paris"}',
+      usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+      finishReason: 'stop',
+    }));
+
+    const response = await runWithContext(
+      { runId: context.runId, executionContext: context },
+      () => LM.openai().generate({
+        model: 'openai/gpt-4o-mini',
+        messages: [{ role: 'user', content: 'city?' }],
+        config: { responseFormat: { formatType: 'json_schema', schemaName: 'city', schema: '{}' } },
+      }),
+    );
+
+    expect(response.structuredOutput).toEqual({ city: 'Paris' });
+    expect(transport.completeRequests).toHaveLength(1);
+    const recorded = JSON.parse(new TextDecoder().decode(transport.completeRequests[0].output));
+    expect(recorded.structuredOutput).toEqual({ city: 'Paris' });
+  });
+
+  it('recovers structured output on replay of a final recorded without it (AGNT5-1416)', async () => {
+    generate.mockClear();
+    const transport = new ModelActivationTransport({
+      id: 'response-replay',
+      model: 'openai/gpt-4o-mini',
+      text: '{"city":"Paris"}',
+      usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+      finishReason: 'stop',
+    });
+    const context = durableContext(transport);
+
+    const response = await runWithContext(
+      { runId: context.runId, executionContext: context },
+      () => LM.openai().generate({
+        model: 'openai/gpt-4o-mini',
+        messages: [{ role: 'user', content: 'city?' }],
+        config: { responseFormat: { formatType: 'json', schemaName: 'city' } },
+      }),
+    );
+
+    expect(response.structuredOutput).toEqual({ city: 'Paris' });
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('recovers structured output on a replayed stream final (AGNT5-1416)', async () => {
+    stream.mockClear();
+    const transport = new ModelActivationTransport({
+      id: 'response-replay',
+      model: 'openai/gpt-4o-mini',
+      text: '{"city":"Paris"}',
+      finishReason: 'stop',
+    });
+    const context = durableContext(transport);
+    const chunks: any[] = [];
+
+    await runWithContext(
+      { runId: context.runId, executionContext: context },
+      () => LM.openai().stream({
+        model: 'openai/gpt-4o-mini',
+        messages: [{ role: 'user', content: 'city?' }],
+        config: { responseFormat: { formatType: 'json_schema', schemaName: 'city', schema: '{}' } },
+      }, chunk => chunks.push(chunk)),
+    );
+
+    expect(chunks.at(-1)?.response?.structuredOutput).toEqual({ city: 'Paris' });
+    expect(stream).not.toHaveBeenCalled();
+  });
+
   it('withholds a stream final until durable completion is accepted', async () => {
     stream.mockClear();
     const transport = new ModelActivationTransport();

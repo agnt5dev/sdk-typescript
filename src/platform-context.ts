@@ -8,7 +8,7 @@ import type { HITLInputType, HITLOption } from './errors.js';
 import { loadNativeBindings, tryLoadNativeBindings } from '#native-loader';
 import { emptyRuntimeContext } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
-import { isLogLevelEnabled } from './logging.js';
+import { isLogLevelEnabled, sendNativeLog } from './logging.js';
 
 function validateSleepDuration(durationMs: number): void {
   if (!Number.isSafeInteger(durationMs) || durationMs < 0) {
@@ -191,26 +191,26 @@ export class PlatformContext implements Context {
         if (!isLogLevelEnabled('INFO')) return;
         console.log(`[INFO] ${message}`, meta || '');
         this.span.addEvent('log.info', { message, ...meta });
-        native?.logFromTypescript('INFO', message, runId, null, null, meta ?? null);
+        sendNativeLog(native?.logFromTypescript, 'INFO', message, runId, null, null, meta);
       },
       error: (message: string, meta?: Record<string, any>) => {
         if (!isLogLevelEnabled('ERROR')) return;
         console.error(`[ERROR] ${message}`, meta || '');
         this.span.addEvent('log.error', { message, ...meta });
         this.span.recordError(message);
-        native?.logFromTypescript('ERROR', message, runId, null, null, meta ?? null);
+        sendNativeLog(native?.logFromTypescript, 'ERROR', message, runId, null, null, meta);
       },
       warn: (message: string, meta?: Record<string, any>) => {
         if (!isLogLevelEnabled('WARN')) return;
         console.warn(`[WARN] ${message}`, meta || '');
         this.span.addEvent('log.warn', { message, ...meta });
-        native?.logFromTypescript('WARN', message, runId, null, null, meta ?? null);
+        sendNativeLog(native?.logFromTypescript, 'WARN', message, runId, null, null, meta);
       },
       debug: (message: string, meta?: Record<string, any>) => {
         if (!isLogLevelEnabled('DEBUG')) return;
         console.debug(`[DEBUG] ${message}`, meta || '');
         this.span.addEvent('log.debug', { message, ...meta });
-        native?.logFromTypescript('DEBUG', message, runId, null, null, meta ?? null);
+        sendNativeLog(native?.logFromTypescript, 'DEBUG', message, runId, null, null, meta);
       },
     };
   }
