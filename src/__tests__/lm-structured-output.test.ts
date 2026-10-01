@@ -57,4 +57,41 @@ describe('LM structured output', () => {
     expect(response.structuredOutput).toBe('not-json');
     expect(response.toolCalls?.[0]?.providerData).toBe('opaque-provider-token');
   });
+
+  describe('fallback when the binding drops structuredOutput (AGNT5-1416)', () => {
+    async function generateWith(text: string, formatType: 'text' | 'json' | 'json_schema') {
+      generate.mockResolvedValue({
+        id: 'response-fallback',
+        model: 'anthropic/claude-haiku-4-5',
+        text,
+      });
+      const { LM } = await import('../lm.js');
+      return LM.anthropic({ apiKey: 'test-key' }).generate({
+        model: 'anthropic/claude-haiku-4-5',
+        messages: [{ role: 'user', content: 'Return a city.' }],
+        config: { responseFormat: { formatType, schemaName: 'city', schema: '{}' } },
+      });
+    }
+
+    it('parses the text for a json_schema request', async () => {
+      const response = await generateWith('{"city":"Paris"}', 'json_schema');
+      expect(response.structuredOutput).toEqual({ city: 'Paris' });
+    });
+
+    it('parses the text for a json request, unwrapping a code fence', async () => {
+      const response = await generateWith('```json\n{"city":"Paris"}\n```', 'json');
+      expect(response.structuredOutput).toEqual({ city: 'Paris' });
+    });
+
+    it('leaves structuredOutput undefined when the text is not JSON', async () => {
+      const response = await generateWith('Paris, probably.', 'json_schema');
+      expect(response.structuredOutput).toBeUndefined();
+      expect(response.text).toBe('Paris, probably.');
+    });
+
+    it('does not parse text when no JSON format was requested', async () => {
+      const response = await generateWith('{"city":"Paris"}', 'text');
+      expect(response.structuredOutput).toBeUndefined();
+    });
+  });
 });

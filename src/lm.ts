@@ -531,16 +531,46 @@ function parseJsonIfPossible(value: unknown): unknown {
   }
 }
 
-function normalizeNativeResponse(response: GenerateResponse): GenerateResponse {
+const WHOLE_CODE_FENCE = /^```[a-zA-Z]*\s*\n([\s\S]*?)\n?```$/;
+
+/**
+ * Recover structured output from the response text when the binding dropped it.
+ *
+ * A json / json_schema request is a promise of a parsed object, but some
+ * sdk-core providers leave `structuredOutput` unset (AGNT5-1416). The text is
+ * parsed as JSON, unwrapping a single surrounding markdown code fence; text
+ * that is not JSON leaves the field undefined rather than failing the call.
+ */
+function withStructuredOutputFallback(
+  response: GenerateResponse,
+  responseFormat: ResponseFormatOption | undefined,
+): GenerateResponse {
+  if (response.structuredOutput !== undefined && response.structuredOutput !== null) return response;
+  const formatType = responseFormat?.formatType;
+  if (formatType !== 'json' && formatType !== 'json_schema') return response;
+  const text = response.text?.trim();
+  if (!text) return response;
+  const body = WHOLE_CODE_FENCE.exec(text)?.[1] ?? text;
+  try {
+    return { ...response, structuredOutput: JSON.parse(body) };
+  } catch {
+    return response;
+  }
+}
+
+function normalizeNativeResponse(
+  response: GenerateResponse,
+  responseFormat?: ResponseFormatOption,
+): GenerateResponse {
   const toolCalls = response.toolCalls?.map((call: ToolCall & { providerData?: unknown }) => ({
     ...call,
     providerData: parseJsonIfPossible(call.providerData),
   }));
-  return {
+  return withStructuredOutputFallback({
     ...response,
     toolCalls,
     structuredOutput: parseJsonIfPossible(response.structuredOutput),
-  };
+  }, responseFormat);
 }
 
 /** Plaintext record input for a model activation (bounded by the request builder). */
@@ -846,7 +876,7 @@ export class LM {
       config: normalizeGenerationConfigForNative(request.config, this.providerName),
       model,
     });
-    return normalizeNativeResponse(response);
+    return normalizeNativeResponse(response, request.config?.responseFormat);
   }
 
   private async generateDurable(
@@ -898,7 +928,9 @@ export class LM {
       }),
       completionEvidence: modelTerminalEvidence,
     });
-    return response.result;
+    // A replayed final recorded before the fallback existed can lack
+    // structuredOutput; recover it the same way the first call would.
+    return withStructuredOutputFallback(response.result, request.config?.responseFormat);
   }
 
   /** Create a Google Gemini explicit context cache. */
@@ -981,7 +1013,7 @@ export class LM {
       config: normalizeGenerationConfigForNative(request.config, this.providerName),
       model,
     }, (chunk: StreamChunk) => callback(chunk.chunkType === 'completed' && chunk.response
-      ? { ...chunk, response: normalizeNativeResponse(chunk.response) }
+      ? { ...chunk, response: normalizeNativeResponse(chunk.response, request.config?.responseFormat) }
       : chunk));
   }
 
@@ -1017,7 +1049,10 @@ export class LM {
           decision.attempt,
         );
       }
-      const replayed = decodeDurableModelResponse(decision.replayOutput);
+      const replayed = withStructuredOutputFallback(
+        decodeDurableModelResponse(decision.replayOutput),
+        request.config?.responseFormat,
+      );
       if (replayed.text) callback({ chunkType: 'delta', content: replayed.text });
       callback({ chunkType: 'completed', response: replayed });
       return;

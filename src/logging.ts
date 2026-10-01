@@ -55,6 +55,80 @@ function getNativeLogFn() {
     : null;
 }
 
+// ─── Native attribute encoding ───────────────────────────────────────
+
+/** Signature of the NAPI `logFromTypescript` bridge. */
+type NativeLogFn = (
+  level: string,
+  message: string,
+  runId: string | null,
+  traceId: string | null,
+  spanId: string | null,
+  attributes: Record<string, string> | null,
+) => void;
+
+function attrToString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'bigint') return value.toString();
+  if (value instanceof Error) return `${value.name}: ${value.message}`;
+  try {
+    const json = JSON.stringify(value);
+    // JSON.stringify returns undefined for functions and symbols.
+    return json === undefined ? String(value) : json;
+  } catch {
+    // Circular structures and throwing toJSON implementations.
+    return String(value);
+  }
+}
+
+/**
+ * Encode log metadata for the NAPI bridge, which only accepts string values.
+ *
+ * Handing it a number, boolean, array, object or null fails the whole native
+ * call, and with it the run (AGNT5-1416). Strings pass through, everything
+ * else is JSON-encoded, and `undefined` entries are dropped as JSON would.
+ * Returns null when nothing is left so the bridge receives "no attributes".
+ */
+export function toNativeLogAttrs(
+  meta: Record<string, unknown> | null | undefined,
+): Record<string, string> | null {
+  if (!meta) return null;
+  const attrs: Record<string, string> = {};
+  for (const [key, value] of Object.entries(meta)) {
+    if (value === undefined) continue;
+    attrs[key] = attrToString(value);
+  }
+  return Object.keys(attrs).length > 0 ? attrs : null;
+}
+
+let _nativeLogFailureReported = false;
+
+/**
+ * Hand a record to the NAPI bridge without letting a bridge failure escape.
+ *
+ * Logging is best-effort: a rejected record is dropped, and the first failure
+ * per process is reported on the console so it is not silent.
+ */
+export function sendNativeLog(
+  logFn: NativeLogFn | null | undefined,
+  level: LogLevel,
+  message: string,
+  runId: string | null,
+  traceId: string | null,
+  spanId: string | null,
+  meta: Record<string, unknown> | null | undefined,
+): void {
+  if (!logFn) return;
+  try {
+    logFn(level, message, runId, traceId, spanId, toNativeLogAttrs(meta));
+  } catch (err) {
+    if (!_nativeLogFailureReported) {
+      _nativeLogFailureReported = true;
+      console.warn('[agnt5] dropping log record the native bridge rejected:', err);
+    }
+  }
+}
+
 // ─── Trace correlation ───────────────────────────────────────────────
 
 const HEX_32 = /^[0-9a-f]{32}$/i;
@@ -209,13 +283,7 @@ export class ContextLogger implements Logger {
     if (!shouldLog(level)) return;
 
     // Merge meta into string attrs
-    const attrs: Record<string, string> = { ...this._defaultAttrs };
-    if (meta) {
-      for (const [k, v] of Object.entries(meta)) {
-        attrs[k] = typeof v === 'string' ? v : JSON.stringify(v);
-      }
-    }
-    const attrOrNull = Object.keys(attrs).length > 0 ? attrs : null;
+    const attrOrNull = toNativeLogAttrs({ ...this._defaultAttrs, ...meta });
 
     // Try NAPI first
     const nativeLog = getNativeLogFn();
@@ -224,7 +292,8 @@ export class ContextLogger implements Logger {
       // trace so the record is correlatable (AGNT5-1073) and its run id so the
       // record is attributable to that run (AGNT5-1070).
       const ambient = currentTraceCorrelation();
-      nativeLog(
+      sendNativeLog(
+        nativeLog,
         level,
         `${this._name}: ${message}`,
         this._runId ?? currentRunId(),

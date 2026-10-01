@@ -13,7 +13,7 @@ import type { HITLInputType, HITLOption } from './errors.js';
 import { existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { currentTraceCorrelation, isLogLevelEnabled } from './logging.js';
+import { currentTraceCorrelation, isLogLevelEnabled, sendNativeLog } from './logging.js';
 import type { LogLevel } from './logging.js';
 import { getLoadedNativeBindings } from '#native-loader';
 import {
@@ -340,7 +340,7 @@ export class ContextImpl implements Context {
     // uncorrelated from its trace (AGNT5-1073).
     const emit = (level: LogLevel, message: string, meta?: Record<string, any>) => {
       const { traceId, spanId } = currentTraceCorrelation();
-      logFn?.(level, message, runId, traceId, spanId, (meta as Record<string, string>) ?? null);
+      sendNativeLog(logFn, level, message, runId, traceId, spanId, meta);
     };
     return {
       info: (message: string, meta?: Record<string, any>) => {

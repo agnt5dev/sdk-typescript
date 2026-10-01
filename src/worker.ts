@@ -38,7 +38,7 @@ import {
 import type { AgentEvent } from './events.js';
 import { loadNativeBindings, tryLoadNativeBindings } from '#native-loader';
 import { autoEnable as autoEnableCapture } from './integrations/index.js';
-import { ContextLogger, currentTraceCorrelation, isLogLevelEnabled } from './logging.js';
+import { ContextLogger, currentTraceCorrelation, isLogLevelEnabled, sendNativeLog } from './logging.js';
 import type { LogLevel } from './logging.js';
 import {
   executePromptWorkerInput,
@@ -579,13 +579,17 @@ class SimpleContext implements Context {
     // uncorrelated from its trace (AGNT5-1073).
     const emit = (level: LogLevel, message: string, meta?: Record<string, any>) => {
       const { traceId, spanId } = currentTraceCorrelation();
-      tryLoadNativeBindings()?.logFromTypescript(
+      // The bridge only accepts string attributes; sendNativeLog encodes the
+      // rest and never lets a rejected record fail the run (AGNT5-1416). The
+      // journal event keeps the caller's raw types.
+      sendNativeLog(
+        tryLoadNativeBindings()?.logFromTypescript,
         level,
         message,
         runId,
         traceId,
         spanId,
-        meta ?? null,
+        meta,
       );
       this._emitLog(level, message, meta);
     };
