@@ -614,6 +614,30 @@ describe('Built-in scorers', () => {
     expect(prompt.indexOf('"answer"')).toBeLessThan(prompt.indexOf('"label"'));
     expect(prompt.indexOf('"label"')).toBeLessThan(prompt.indexOf('"score"'));
     expect(prompt).toContain('a longer output that gives the same answer is fully correct');
+    // Reference-free judging is supported, so the prompt must not assume a reference.
+    expect(prompt).toContain('when no expected output is given, check whether the output correctly');
+  });
+
+  it('correctness: a failed judge call stays an error, not an invalid label', async () => {
+    const result = await correctness(
+      { input: 'What is 2+2?', output: '4', expected: '4', config: {} },
+      {
+        runId: 'run-1',
+        correlationId: 'corr-1',
+        attempt: 0,
+        log: () => {},
+        llmJudgeLm: {
+          generate: async () => {
+            throw new Error('429 rate limited');
+          },
+        },
+      } as any,
+    );
+
+    expect(result.label).toBe('error');
+    expect(result.passed).toBe(false);
+    expect(result.explanation).toBe('LLM call failed: 429 rate limited');
+    expect(result.metadata?.judge_preset).toBe('correctness');
   });
 
   it.each([

@@ -546,7 +546,7 @@ Respond ONLY with the JSON object, no other text.`;
  * long, right answers partial or fail for their length. Keep it identical to
  * the Python SDK's.
  */
-export const CORRECTNESS_JUDGE_SYSTEM_PROMPT = `You are an expert evaluator. Your task is to check whether the output gives the same answer as the expected output, following the provided criteria. The expected output is a short reference answer; a longer output that gives the same answer is fully correct, however much it adds around that answer.
+export const CORRECTNESS_JUDGE_SYSTEM_PROMPT = `You are an expert evaluator. Your task is to check whether the output gives the same answer as the expected output, following the provided criteria; when no expected output is given, check whether the output correctly answers the input. The expected output is a short reference answer; a longer output that gives the same answer is fully correct, however much it adds around that answer.
 
 Respond with a JSON object containing:
 - "answer": the answer the output gives, quoted in a few words
