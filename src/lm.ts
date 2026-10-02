@@ -107,7 +107,8 @@ export interface StreamChunk {
   response?: GenerateResponse;
 }
 
-export type ReasoningEffort = 'minimal' | 'medium' | 'high';
+/** gpt-6 takes none/low/medium/high and rejects minimal; gpt-5 takes minimal. */
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high';
 export type Modality = 'text' | 'audio' | 'image';
 export type BuiltInTool = 'web_search' | 'code_interpreter' | 'file_search' | 'web_fetch';
 

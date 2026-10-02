@@ -114,6 +114,73 @@ describe('LM edge fallback', () => {
     });
   });
 
+  it('sends new Claude models no sampling parameters and room to think (AGNT5-1403)', async () => {
+    const body = async (model: string, config: Record<string, unknown>) => {
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+        id: 'msg_1', type: 'message', role: 'assistant', model,
+        content: [{ type: 'text', text: '391' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }), { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      await LM.anthropic({ apiKey: 'anthropic-key' }).generate({
+        model,
+        messages: [{ role: 'user', content: 'What is 17 x 23?' }],
+        config,
+      });
+      return JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    };
+
+    const opus = await body('anthropic/claude-opus-5', { temperature: 0.7, topP: 0.9 });
+    expect(opus.temperature).toBeUndefined();
+    expect(opus.top_p).toBeUndefined();
+    expect(opus.max_tokens).toBe(16_384);
+
+    const haiku = await body('anthropic/claude-haiku-4-5', { temperature: 0.7, topP: 0.9 });
+    expect(haiku.temperature).toBe(0.7);
+    expect(haiku.top_p).toBe(0.9);
+    expect(haiku.max_tokens).toBe(4_096);
+
+    expect((await body('anthropic/claude-opus-5', { maxOutputTokens: 512 })).max_tokens).toBe(512);
+  });
+
+  it('sends gpt-6 models no sampling parameters, like gpt-5 (AGNT5-1302)', async () => {
+    // Responses API: temperature and top_p are dropped; the token limit stays.
+    let fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      id: 'resp_6', model: 'gpt-6-luna', status: 'completed',
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'ok' }] }],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await LM.openai({ apiKey: 'edge-key' }).generate({
+      model: 'openai/gpt-6-luna',
+      messages: [{ role: 'user', content: 'Say hello.' }],
+      config: { temperature: 0.7, topP: 0.9, maxOutputTokens: 64 },
+    });
+    let body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(body.model).toBe('gpt-6-luna');
+    expect(body.temperature).toBeUndefined();
+    expect(body.top_p).toBeUndefined();
+    expect(body.max_output_tokens).toBe(64);
+
+    // Chat Completions (Azure): max_completion_tokens replaces max_tokens as well.
+    fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      id: 'chat_6', model: 'gpt-6-luna', choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await LM.azure({ apiKey: 'edge-key', endpoint: 'https://example.openai.azure.com' }).generate({
+      model: 'azure/gpt-6-luna',
+      messages: [{ role: 'user', content: 'Say hello.' }],
+      config: { temperature: 0.7, topP: 0.9, maxOutputTokens: 64 },
+    });
+    body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(body.temperature).toBeUndefined();
+    expect(body.top_p).toBeUndefined();
+    expect(body.max_tokens).toBeUndefined();
+    expect(body.max_completion_tokens).toBe(64);
+  });
+
   it('accumulates streamed OpenAI-compatible tool-call argument deltas', async () => {
     const events = [
       { id: 'chat_123', model: 'custom-model', created: 1, choices: [{ index: 0, delta: { content: 'Checking ' } }] },

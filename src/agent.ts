@@ -1,3 +1,4 @@
+import { rejectsSamplingParams } from './providers/model-caps.js';
 /**
  * Agent component for LLM-driven autonomous execution.
  *
@@ -844,21 +845,12 @@ export class Agent {
   }
 
   /**
-   * OpenAI reasoning models (gpt-5*, o1/o3/o4 families) reject an explicit
-   * `temperature`. Detected from the resolved `openai/<model>` identifier.
+   * Models that reject an explicit `temperature` with a 400: OpenAI reasoning
+   * models (gpt-5 and later, o-series) and Claude after Opus 4.6 / Sonnet 4.6.
+   * Uses the shared predicate the providers use.
    */
-  private isOpenAiReasoningModel(): boolean {
-    if (!this.modelName.startsWith('openai/')) return false;
-    const name = this.modelName.slice('openai/'.length);
-    return (
-      name.startsWith('gpt-5') ||
-      name === 'o1' ||
-      name.startsWith('o1-') ||
-      name === 'o3' ||
-      name.startsWith('o3-') ||
-      name === 'o4' ||
-      name.startsWith('o4-')
-    );
+  private rejectsSamplingParams(): boolean {
+    return rejectsSamplingParams(this.modelName);
   }
 
   /**
@@ -868,7 +860,7 @@ export class Agent {
    */
   private temperatureForRequest(): number | undefined {
     if (this.temperatureExplicit) return this.temperature;
-    if (this.isOpenAiReasoningModel()) return undefined;
+    if (this.rejectsSamplingParams()) return undefined;
     return this.temperature;
   }
 

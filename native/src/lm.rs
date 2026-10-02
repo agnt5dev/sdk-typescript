@@ -503,12 +503,20 @@ impl TryFrom<JsGenerationConfig> for GenerationConfig {
             ResponseFormat::default()
         };
 
-        let reasoning_effort = config.reasoning_effort.map(|effort| match effort.as_str() {
-            "minimal" => ReasoningEffort::Minimal,
-            "medium" => ReasoningEffort::Medium,
-            "high" => ReasoningEffort::High,
-            _ => ReasoningEffort::Medium,
-        });
+        // An unknown value used to become `medium` silently; reject it instead.
+        let reasoning_effort = config
+            .reasoning_effort
+            .map(|effort| match effort.as_str() {
+                "none" => Ok(ReasoningEffort::None),
+                "minimal" => Ok(ReasoningEffort::Minimal),
+                "low" => Ok(ReasoningEffort::Low),
+                "medium" => Ok(ReasoningEffort::Medium),
+                "high" => Ok(ReasoningEffort::High),
+                other => Err(Error::from_reason(format!(
+                    "Unknown reasoningEffort: {other} (expected none, minimal, low, medium or high)"
+                ))),
+            })
+            .transpose()?;
 
         let modalities = config.modalities.map(|mods| {
             mods.iter()
