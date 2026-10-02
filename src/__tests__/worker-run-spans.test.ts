@@ -307,4 +307,73 @@ describe('worker run spans', () => {
     expect(span('cleanup').parentSpanId).toBe(fnSpan.spanId);
     expect(fnSpan.ended).toBe(true);
   });
+
+  it.each([
+    `zz-${TRACE_ID}-${DISPATCH_SPAN_ID}-01`,
+    `ff-${TRACE_ID}-${DISPATCH_SPAN_ID}-01`,
+    `00-${TRACE_ID}-${DISPATCH_SPAN_ID}-01-extra`,
+  ])('ignores an invalid traceparent version: %s', async (traceparent) => {
+    registerOrderWorkflow('fulfil_bad_version', false);
+
+    await dispatch('fulfil_bad_version', 'workflow', { traceparent });
+
+    expect(span('workflow.fulfil_bad_version').parentTraceId).toBeNull();
+  });
+
+  it('records a flush failure over a suspension', async () => {
+    workflow('approve_then_flush_fails', async (ctx) => ctx.waitForUser('Approve?'));
+    const flush = vi.spyOn(EventEmitter.prototype, 'flush').mockRejectedValue(new Error('transport down'));
+
+    await expect(dispatch('approve_then_flush_fails')).rejects.toThrow('transport down');
+
+    const run = span('workflow.approve_then_flush_fails');
+    expect(run.error).toBe('transport down');
+    expect(run.attributes['agnt5.suspended']).toBeUndefined();
+    flush.mockRestore();
+  });
+
+  it('lets a stream handle an injected error inside its span', async () => {
+    const produce = fn('produce_recovers').run(async function* () {
+      try {
+        yield 1;
+      } catch {
+        await withSpan('recovered', async () => {});
+        yield 2;
+      }
+    } as any);
+    workflow('inject_error', async (ctx) => {
+      const iterator = ((await produce(ctx)) as any)[Symbol.asyncIterator]();
+      await iterator.next();
+      const step = await iterator.throw(new Error('consumer error'));
+      await iterator.next();
+      return step.value;
+    });
+
+    const response = await dispatch('inject_error');
+
+    expect(JSON.parse(response.outputJson)).toBe(2);
+    const fnSpan = span('function.produce_recovers');
+    expect(span('recovered').parentSpanId).toBe(fnSpan.spanId);
+    expect(fnSpan.error).toBeNull();
+    expect(fnSpan.ended).toBe(true);
+  });
+
+  it('ends a function span when its stream cannot be iterated', async () => {
+    const broken = fn('broken_stream').run((async () => ({
+      [Symbol.asyncIterator]() {
+        throw new Error('no iterator');
+      },
+    })) as any);
+    workflow('broken_order', async (ctx) => {
+      for await (const _ of (await broken(ctx)) as any) {
+        // unreachable
+      }
+    });
+
+    await dispatch('broken_order');
+
+    const fnSpan = span('function.broken_stream');
+    expect(fnSpan.ended).toBe(true);
+    expect(fnSpan.error).toBe('no iterator');
+  });
 });
