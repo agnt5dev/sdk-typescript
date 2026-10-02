@@ -583,12 +583,15 @@ pub struct JsGenerateRequest {
     pub parent_trace_id: Option<String>,
     /// Current span's span id (hex).
     pub parent_span_id: Option<String>,
+    /// Current span's sampling decision; unset means sampled.
+    pub parent_sampled: Option<bool>,
 }
 
 /// Remote parent context for an LM span, or None unless both ids are valid.
 fn parent_otel_context(
     trace_id: Option<&str>,
     span_id: Option<&str>,
+    sampled: Option<bool>,
 ) -> Option<opentelemetry::Context> {
     use opentelemetry::trace::{
         SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
@@ -598,13 +601,12 @@ fn parent_otel_context(
     if trace_id == TraceId::INVALID || span_id == SpanId::INVALID {
         return None;
     }
-    let span_context = SpanContext::new(
-        trace_id,
-        span_id,
-        TraceFlags::SAMPLED,
-        true,
-        TraceState::default(),
-    );
+    let flags = if sampled.unwrap_or(true) {
+        TraceFlags::SAMPLED
+    } else {
+        TraceFlags::default()
+    };
+    let span_context = SpanContext::new(trace_id, span_id, flags, true, TraceState::default());
     Some(opentelemetry::Context::new().with_remote_span_context(span_context))
 }
 
@@ -648,6 +650,7 @@ impl TryFrom<JsGenerateRequest> for GenerateRequest {
             otel_context: parent_otel_context(
                 req.parent_trace_id.as_deref(),
                 req.parent_span_id.as_deref(),
+                req.parent_sampled,
             ),
         })
     }

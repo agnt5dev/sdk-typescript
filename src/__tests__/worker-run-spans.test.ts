@@ -78,12 +78,15 @@ const RUN_ID = '01a05cd2-7c90-7412-a9ee-81e2d128c54c';
 const TRACE_ID = '01a05cd2591f7be08bb33d7df5f1de07';
 const DISPATCH_SPAN_ID = 'd8e314d6ce264a7b';
 
+let currentWorker: any;
+
 async function dispatch(
   name: string,
   componentType = 'workflow',
   metadata: Record<string, string> = { traceparent: `00-${TRACE_ID}-${DISPATCH_SPAN_ID}-01` },
 ) {
   const worker = new Worker('orders', { serviceVersion: '0.1.0' });
+  currentWorker = worker;
   const response = await (worker as any).processMessage({
     invocationId: RUN_ID,
     componentName: name,
@@ -226,7 +229,9 @@ describe('worker run spans', () => {
 
     await expect(dispatch('fulfil_flush')).rejects.toThrow('transport down');
 
-    expect(span('workflow.fulfil_flush').ended).toBe(true);
+    const run = span('workflow.fulfil_flush');
+    expect(run.ended).toBe(true);
+    expect(run.error).toBe('transport down');
     flush.mockRestore();
   });
 
@@ -256,5 +261,50 @@ describe('worker run spans', () => {
     const recorded = spans[spans.length - 1];
     expect(recorded.error).toBeNull();
     expect(recorded.attributes['agnt5.suspended']).toBe('true');
+  });
+
+  it('ignores a traceparent with malformed flags', async () => {
+    registerOrderWorkflow('fulfil_bad_flags', false);
+
+    await dispatch('fulfil_bad_flags', 'workflow', {
+      traceparent: `00-${TRACE_ID}-${DISPATCH_SPAN_ID}-zz`,
+    });
+
+    expect(span('workflow.fulfil_bad_flags').parentTraceId).toBeNull();
+  });
+
+  it('marks work aborted by cancellation as cancelled, not failed', async () => {
+    const slow = tool('slow_lookup', { description: 'Slow lookup' }, async () => {
+      currentWorker.inflight.get(RUN_ID).abort();
+      throw new Error('The operation was aborted');
+    });
+    workflow('cancel_order', async (ctx) => slow(ctx, { sku: 'sku-1' }));
+
+    const response = await dispatch('cancel_order');
+
+    expect(response.eventType).toBe('run.cancelled');
+    const lookup = span('tool.slow_lookup');
+    expect(lookup.error).toBeNull();
+    expect(lookup.attributes['agnt5.cancelled']).toBe('true');
+  });
+
+  it('runs stream cleanup inside the function span when the consumer stops early', async () => {
+    const produce = fn('produce_early').run(async function* () {
+      try {
+        yield 1;
+        yield 2;
+      } finally {
+        await withSpan('cleanup', async () => {});
+      }
+    } as any);
+    workflow('early_stop', async (ctx) => {
+      for await (const n of (await produce(ctx)) as any) return n;
+    });
+
+    await dispatch('early_stop');
+
+    const fnSpan = span('function.produce_early');
+    expect(span('cleanup').parentSpanId).toBe(fnSpan.spanId);
+    expect(fnSpan.ended).toBe(true);
   });
 });

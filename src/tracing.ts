@@ -9,6 +9,7 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import { randomUUID } from 'crypto';
 import { getLoadedNativeBindings } from '#native-loader';
+import { getCurrentContext } from './async-context.js';
 import {
   DurableSleepSuspensionError,
   SuspensionRequestedError,
@@ -62,10 +63,20 @@ export function finishSpan(span: Span, error?: unknown): void {
     error instanceof SuspensionRequestedError
   ) {
     span.setAttribute('agnt5.suspended', 'true');
+  } else if (error !== undefined && runWasCancelled()) {
+    // Work aborted by a CancelExecution unwinds with an error, but the run
+    // was cancelled, not failed.
+    span.setAttribute('agnt5.cancelled', 'true');
   } else if (error !== undefined) {
     span.recordException(error instanceof Error ? error : new Error(String(error)));
   }
   span.end();
+}
+
+/** Whether the ambient run's cancellation signal has fired. */
+function runWasCancelled(): boolean {
+  const execution = getCurrentContext()?.executionContext as { signal?: AbortSignal } | undefined;
+  return execution?.signal?.aborted === true;
 }
 
 // ─── Span class ──────────────────────────────────────────────────────
@@ -262,8 +273,17 @@ function traceAsyncIterable<T>(span: Span, source: AsyncIterable<T>): AsyncItera
           }
         },
         async return(value?: any) {
-          finish();
-          return iterator.return ? iterator.return(value) : { done: true, value };
+          // Run the generator's cleanup inside the span before ending it.
+          try {
+            const step = iterator.return
+              ? await runInSpan(span, () => iterator.return!(value))
+              : { done: true as const, value };
+            finish();
+            return step;
+          } catch (error) {
+            finish(error);
+            throw error;
+          }
         },
         async throw(error?: unknown) {
           finish(error);

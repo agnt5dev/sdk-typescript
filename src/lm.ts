@@ -655,9 +655,15 @@ async function modelStreamInterruptionEvidence(options: {
 }
 
 /** The current span as the native LM span's parent, so LM calls join the run's trace. */
-function nativeSpanParent(): { parentTraceId?: string; parentSpanId?: string } {
+function nativeSpanParent(): {
+  parentTraceId?: string;
+  parentSpanId?: string;
+  parentSampled?: boolean;
+} {
   const span = getCurrentSpanInfo();
-  return span ? { parentTraceId: span.traceId, parentSpanId: span.spanId } : {};
+  return span
+    ? { parentTraceId: span.traceId, parentSpanId: span.spanId, parentSampled: span.sampled ?? true }
+    : {};
 }
 
 // ============================================================================

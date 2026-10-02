@@ -1664,7 +1664,13 @@ export class Worker {
           // so they do not emit run.completed/run.failed through EventEmitter.
           // Flush any trailing component/session lifecycle batch first.
           try {
-            await emitter.flush();
+            try {
+              await emitter.flush();
+            } catch (flushError) {
+              // A run whose events could not be delivered did not succeed.
+              runError ??= flushError;
+              throw flushError;
+            }
             recordWorkerMemory({
               phase: 'after',
               componentType: message.componentType,

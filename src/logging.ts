@@ -157,9 +157,9 @@ export function parseTraceparent(
   if (parts.length < 4) return null;
   const traceId = validId(parts[1], HEX_32);
   const spanId = validId(parts[2], HEX_16);
-  // Bit 0 of trace-flags is the caller's sampling decision.
-  const flags = Number.parseInt(parts[3], 16);
-  const sampled = Number.isNaN(flags) ? true : (flags & 0x01) === 0x01;
+  // trace-flags must be exactly two hex digits; bit 0 is the sampling decision.
+  if (!/^[0-9a-f]{2}$/i.test(parts[3])) return null;
+  const sampled = (Number.parseInt(parts[3], 16) & 0x01) === 0x01;
   return traceId && spanId ? { traceId, spanId, sampled } : null;
 }
 
