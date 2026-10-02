@@ -541,18 +541,19 @@ Respond with a JSON object containing:
 Respond ONLY with the JSON object, no other text.`;
 
 /**
- * System prompt for the evaluator presets and the `correctness` judge: the
- * judge returns a `pass` / `partial` / `fail` label that `choice_scores` maps
- * to a score. Exported from `eval.ts` as part of the public preset API.
+ * System prompt for the `correctness` judge. The judge quotes the output's
+ * answer before it labels it: without that step, small judge models marked
+ * long, right answers partial or fail for their length. Keep it identical to
+ * the Python SDK's.
  */
-export const EVALUATOR_SYSTEM_PROMPT = `You are an expert evaluator. Apply the named rubric exactly.
+export const CORRECTNESS_JUDGE_SYSTEM_PROMPT = `You are an expert evaluator. Your task is to check whether the output gives the same answer as the expected output, following the provided criteria. The expected output is a short reference answer; a longer output that gives the same answer is fully correct, however much it adds around that answer.
 
 Respond with a JSON object containing:
+- "answer": the answer the output gives, quoted in a few words
+- "label": exactly one of "pass", "partial", or "fail"
 - "score": a number between 0.0 and 1.0
 - "passed": boolean (true if score >= 0.7)
-- "label": exactly one of "pass", "partial", or "fail"
 - "explanation": brief explanation of your evaluation
-- "metadata": object with any useful evaluator notes
 
 Respond ONLY with the JSON object, no other text.`;
 
@@ -560,7 +561,7 @@ Respond ONLY with the JSON object, no other text.`;
  * The correctness rubric, shared by the built-in `correctness` judge and the
  * `Correctness` preset. It judges agreement with the reference answer, not
  * similarity to it: an answer that explains itself must not be marked
- * partial. Keep it identical to the Python and Go SDKs' rubric.
+ * partial. Keep it identical to the Python SDK's rubric.
  */
 export const CORRECTNESS_JUDGE_CRITERIA =
   'Evaluate whether the output\'s answer agrees with the expected output. The expected output is a reference answer: it says what the right answer is, not what the output must look like, so the output does not need to match its length, wording, or format. An output that gives the right answer and also explains it, shows working, or restates the question is fully correct and is a pass, not partial; for example, "3 + 4 = 7, because 3 and 4 make 7." is a pass against "7". Award partial only when the expected output has several required parts and the output leaves one out. Award fail when the answer is wrong, contradicts the expected output, or is missing. If there is no expected output, judge whether the output correctly answers the input.';
@@ -983,9 +984,10 @@ export async function correctness(
   } catch (e) {
     return judgeConfigError(`correctness field selector not found: ${(e as Error).message}`);
   }
-  // The judge picks a pass / partial / fail label, mapped to 1.0 / 0.5 / 0.0,
-  // the same way the Python `Correctness` preset judges. A bare 0-1 score let
-  // small judge models mark explained answers partial.
+  // The judge quotes the output's answer, then picks a pass / partial / fail
+  // label mapped to 1.0 / 0.5 / 0.0, the same way the Python SDK judges. With a
+  // bare 0-1 score and no quoted answer, small judge models marked explained
+  // answers partial.
   const result = await llmJudge({
     ...request,
     output,
@@ -994,7 +996,7 @@ export async function correctness(
       provider: cfg.provider ?? 'openai',
       model: cfg.model ?? 'gpt-4o-mini',
       criteria: CORRECTNESS_JUDGE_CRITERIA,
-      system_prompt: EVALUATOR_SYSTEM_PROMPT,
+      system_prompt: CORRECTNESS_JUDGE_SYSTEM_PROMPT,
       choice_scores: { ...CORRECTNESS_JUDGE_CHOICE_SCORES },
       include_input: cfg.include_input ?? true,
       temperature: cfg.temperature ?? 0.0,

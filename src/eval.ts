@@ -8,7 +8,6 @@
 import { RunError } from './errors.js';
 import {
   CORRECTNESS_JUDGE_CRITERIA,
-  EVALUATOR_SYSTEM_PROMPT,
   extractToolCallsFromEvents,
   toolCallNames,
   toolTrajectoryMatches,
@@ -414,8 +413,16 @@ export const EVALUATOR_OUTPUT_SCHEMA = {
   additionalProperties: true,
 };
 
-// Defined in scorer.ts, which the built-in `correctness` judge also uses.
-export { EVALUATOR_SYSTEM_PROMPT };
+export const EVALUATOR_SYSTEM_PROMPT = `You are an expert evaluator. Apply the named rubric exactly.
+
+Respond with a JSON object containing:
+- "score": a number between 0.0 and 1.0
+- "passed": boolean (true if score >= 0.7)
+- "label": exactly one of "pass", "partial", or "fail"
+- "explanation": brief explanation of your evaluation
+- "metadata": object with any useful evaluator notes
+
+Respond ONLY with the JSON object, no other text.`;
 
 export interface EvaluatorPresetConfig {
   model?: string;
