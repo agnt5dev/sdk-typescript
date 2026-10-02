@@ -26,8 +26,11 @@ import {
   toolTrajectoryExact,
   toolTrajectoryInOrder,
   toolTrajectoryMatches,
+  CORRECTNESS_JUDGE_CRITERIA,
+  CORRECTNESS_JUDGE_SYSTEM_PROMPT,
 } from '../scorer.js';
 import type { ScorerRequest } from '../scorer.js';
+import { Correctness } from '../eval.js';
 
 describe('ScorerResult', () => {
   it('should clamp score between 0 and 1', () => {
@@ -587,6 +590,92 @@ describe('Built-in scorers', () => {
 
     expect(result.passed).toBe(true);
     expect(result.metadata?.judge_preset).toBe('correctness');
+  });
+
+  it('correctness: the rubric judges agreement, not similarity', () => {
+    // One rubric for the built-in judge and the preset, identical to Python.
+    expect((new Correctness() as any).criteria).toBe(CORRECTNESS_JUDGE_CRITERIA);
+    expect(CORRECTNESS_JUDGE_CRITERIA.startsWith(
+      "Evaluate whether the output's answer agrees with the expected output.",
+    )).toBe(true);
+    expect(CORRECTNESS_JUDGE_CRITERIA).toContain('does not need to match its length, wording, or format');
+    expect(CORRECTNESS_JUDGE_CRITERIA).toContain('is fully correct and is a pass, not partial');
+    expect(CORRECTNESS_JUDGE_CRITERIA).toContain(
+      'Award partial only when the expected output has several required parts',
+    );
+    expect(CORRECTNESS_JUDGE_CRITERIA).toContain(
+      'Award fail when the answer is wrong, contradicts the expected output',
+    );
+    // The old rubric asked for a match and gave partial credit for anything else.
+    expect(CORRECTNESS_JUDGE_CRITERIA).not.toContain('matches the expected output');
+    // The judge quotes the output's answer before it labels it.
+    const prompt = CORRECTNESS_JUDGE_SYSTEM_PROMPT;
+    expect(prompt.indexOf('"answer"')).toBeGreaterThan(-1);
+    expect(prompt.indexOf('"answer"')).toBeLessThan(prompt.indexOf('"label"'));
+    expect(prompt.indexOf('"label"')).toBeLessThan(prompt.indexOf('"score"'));
+    expect(prompt).toContain('a longer output that gives the same answer is fully correct');
+    // Reference-free judging is supported, so the prompt must not assume a reference.
+    expect(prompt).toContain('when no expected output is given, check whether the output correctly');
+  });
+
+  it('correctness: a failed judge call stays an error, not an invalid label', async () => {
+    const result = await correctness(
+      { input: 'What is 2+2?', output: '4', expected: '4', config: {} },
+      {
+        runId: 'run-1',
+        correlationId: 'corr-1',
+        attempt: 0,
+        log: () => {},
+        llmJudgeLm: {
+          generate: async () => {
+            throw new Error('429 rate limited');
+          },
+        },
+      } as any,
+    );
+
+    expect(result.label).toBe('error');
+    expect(result.passed).toBe(false);
+    expect(result.explanation).toBe('LLM call failed: 429 rate limited');
+    expect(result.metadata?.judge_preset).toBe('correctness');
+  });
+
+  it.each([
+    ['pass', 1, true],
+    ['partial', 0.5, false],
+    ['fail', 0, false],
+  ])('correctness: scores the judge label %s', async (label, score, passed) => {
+    let messages: any[] = [];
+    const result = await correctness(
+      {
+        input: { message: 'Who was the first emperor of Rome?' },
+        output: { output: '**Augustus** was the first Roman emperor, from 27 BCE.' },
+        expected: { output: 'Augustus' },
+        config: {},
+      },
+      {
+        runId: 'run-1',
+        correlationId: 'corr-1',
+        attempt: 0,
+        log: () => {},
+        llmJudgeLm: {
+          generate: async (req: any) => {
+            messages = req.messages;
+            return { text: `{"answer":"Augustus","label":"${label}","explanation":"judged"}` };
+          },
+        },
+      } as any,
+    );
+
+    expect(messages[0].content).toBe(CORRECTNESS_JUDGE_SYSTEM_PROMPT);
+    expect(messages[1].content).toContain(CORRECTNESS_JUDGE_CRITERIA);
+    expect(messages[1].content).toContain('Choose exactly one label from: fail, partial, pass');
+    expect(result.score).toBe(score);
+    expect(result.passed).toBe(passed);
+    expect(result.label).toBe(label);
+    expect(result.metadata?.judge_preset).toBe('correctness');
+    expect(result.metadata?.selected_label).toBe(label);
+    expect(result.metadata?.answer).toBe('Augustus');
   });
 
   it('correctness: should allow reference-free judging', async () => {
