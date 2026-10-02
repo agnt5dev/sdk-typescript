@@ -155,6 +155,11 @@ export function parseTraceparent(
   if (typeof value !== 'string') return null;
   const parts = value.split('-');
   if (parts.length < 4) return null;
+  // Version is two hex digits and never `ff`; version 00 has exactly four
+  // fields, later versions may append more.
+  const version = parts[0].toLowerCase();
+  if (!/^[0-9a-f]{2}$/.test(version) || version === 'ff') return null;
+  if (version === '00' && parts.length !== 4) return null;
   const traceId = validId(parts[1], HEX_32);
   const spanId = validId(parts[2], HEX_16);
   // trace-flags must be exactly two hex digits; bit 0 is the sampling decision.

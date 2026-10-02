@@ -254,13 +254,19 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
 function traceAsyncIterable<T>(span: Span, source: AsyncIterable<T>): AsyncIterable<T> {
   return {
     [Symbol.asyncIterator](): AsyncIterator<T> {
-      const iterator = runInSpan(span, () => source[Symbol.asyncIterator]());
       let finished = false;
       const finish = (error?: unknown) => {
         if (finished) return;
         finished = true;
         finishSpan(span, error);
       };
+      let iterator: AsyncIterator<T>;
+      try {
+        iterator = runInSpan(span, () => source[Symbol.asyncIterator]());
+      } catch (error) {
+        finish(error);
+        throw error;
+      }
       return {
         async next(...args: [] | [unknown]) {
           try {
@@ -286,9 +292,20 @@ function traceAsyncIterable<T>(span: Span, source: AsyncIterable<T>): AsyncItera
           }
         },
         async throw(error?: unknown) {
-          finish(error);
-          if (iterator.throw) return iterator.throw(error);
-          throw error;
+          // The generator may handle the injected error and continue, so the
+          // span's outcome is whatever iterator.throw() does.
+          if (!iterator.throw) {
+            finish(error);
+            throw error;
+          }
+          try {
+            const step = await runInSpan(span, () => iterator.throw!(error));
+            if (step.done) finish();
+            return step;
+          } catch (thrown) {
+            finish(thrown);
+            throw thrown;
+          }
         },
       };
     },

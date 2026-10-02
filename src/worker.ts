@@ -1667,8 +1667,9 @@ export class Worker {
             try {
               await emitter.flush();
             } catch (flushError) {
-              // A run whose events could not be delivered did not succeed.
-              runError ??= flushError;
+              // A run whose events could not be delivered did not succeed,
+              // even if it was otherwise suspending.
+              runError = flushError;
               throw flushError;
             }
             recordWorkerMemory({
