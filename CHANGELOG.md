@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- TypeScript runs now record trace spans. The worker opened no span on the dispatch path, so a run's trace came back empty even though its logs carried the trace id. Each dispatch now opens a `<type>.<name>` run span parented to the dispatch `traceparent`, with `workflow.step.<name>`, `function.<name>` and `tool.<name>` child spans and LM spans parented to the current span. The run continues the dispatch `traceparent` (or the `trace_id`/`span_id` pair on the OSS path) and keeps its sampling decision. Failures are recorded on the spans; durable sleeps, waits for user input and workerless suspensions are marked `agnt5.suspended` instead. A nested function that returns a stream keeps its span open until the stream is consumed. Log records only take trace ids from spans with real OpenTelemetry ids, so log-only spans no longer displace the dispatch `traceparent`.
+
 ## [0.10.6] - 2026-10-01
 
 ### Fixed

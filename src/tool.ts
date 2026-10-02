@@ -14,6 +14,7 @@ import type {
 } from './types.js';
 import type { ContextImpl } from './context.js';
 import { ActivationError, ActivationErrorCode, ConfigurationError } from './errors.js';
+import { withSpan } from './tracing.js';
 import {
   ActivationKind,
   ActivationRecoveryPolicy,
@@ -52,6 +53,19 @@ export interface ToolInvokeOptions {
   toolCallId?: string;
   /** Agent iteration (1-based) that issued the call. */
   iteration?: number;
+  /**
+   * Open a `tool.<name>` span around the handler (default true). The worker
+   * turns it off for a top-level tool dispatch, whose run span already is one.
+   */
+  span?: boolean;
+}
+
+/** Run a tool body inside a `tool.<name>` span. */
+function traceTool<T>(name: string, ctx: Context, fn: () => T | Promise<T>): Promise<T> {
+  return withSpan(`tool.${name}`, () => fn(), {
+    componentType: 'tool',
+    attributes: { run_id: ctx?.runId ?? '', 'tool.name': name },
+  });
 }
 
 function sequentialToolKey(ctx: Context, toolName: string): string {
@@ -155,7 +169,7 @@ export class Tool<TInput = any, TOutput = any> {
             'tool activation executed without admitted authority',
           );
         }
-        return runWithActivation(decision, () => this.invokeHandler(ctx, args));
+        return runWithActivation(decision, () => this.invokeHandler(ctx, args, options?.span));
       }, {
         encodeOutput: value => {
           const encoded = JSON.stringify(value);
@@ -173,10 +187,19 @@ export class Tool<TInput = any, TOutput = any> {
       });
       return response.result;
     }
-    return this.invokeHandler(ctx, args);
+    return this.invokeHandler(ctx, args, options?.span);
   }
 
-  private async invokeHandler(ctx: Context, args: Record<string, any>): Promise<TOutput> {
+  private invokeHandler(
+    ctx: Context,
+    args: Record<string, any>,
+    span = true,
+  ): Promise<TOutput> {
+    if (!span) return this.runHandler(ctx, args);
+    return traceTool(this.name, ctx, () => this.runHandler(ctx, args));
+  }
+
+  private async runHandler(ctx: Context, args: Record<string, any>): Promise<TOutput> {
     if (this.confirmation) {
       ctx.logger.warn(
         `Tool '${this.name}' requires confirmation; no approval handler is configured`
@@ -374,8 +397,8 @@ export function tool<TInput = any, TOutput = any>(
       return toolInstance.invoke(ctx, args[0]);
     }
 
-    // Otherwise, direct call
-    return toolInstance.handler(ctx, ...args);
+    // Otherwise, direct call (positional or no arguments), traced like invoke().
+    return traceTool(name, ctx, () => (toolInstance.handler as any)(ctx, ...args));
   };
 
   // Attach tool instance for inspection

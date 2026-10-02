@@ -28,7 +28,8 @@ const { Worker } = await import('../worker.js');
 const { FunctionRegistry, fn } = await import('../function.js');
 const { ContextLogger, currentTraceCorrelation, setLogLevel } = await import('../logging.js');
 const { runWithContext } = await import('../async-context.js');
-const { withSpan } = await import('../tracing.js');
+const { runInSpan, withSpan } = await import('../tracing.js');
+type Span = import('../tracing.js').Span;
 
 const RUN_ID = '01a05cd2-591a-7f51-be2a-4d7d5e7cc1ba';
 const TRACE_ID = '01a05cd2591f7be08bb33d7df5f1de07';
@@ -110,12 +111,19 @@ describe('currentTraceCorrelation', () => {
   });
 
   it('prefers an active span, which carries both ids', async () => {
+    const span = { traceId: 'a'.repeat(32), spanId: 'b'.repeat(16) } as Span;
     await runWithContext({ runId: RUN_ID, metadata: { trace_id: TRACE_ID } }, async () => {
+      await runInSpan(span, async () => {
+        expect(currentTraceCorrelation()).toEqual({ traceId: span.traceId, spanId: span.spanId });
+      });
+    });
+  });
+
+  it('ignores a log-only span, whose random ids no backend knows', async () => {
+    const metadata = { traceparent: `00-${TRACE_ID}-${SPAN_ID}-01` };
+    await runWithContext({ runId: RUN_ID, metadata }, async () => {
       await withSpan('step', async () => {
-        const { traceId, spanId } = currentTraceCorrelation();
-        expect(spanId).toBeTruthy();
-        expect(traceId).toBeTruthy();
-        expect(traceId).not.toBe(TRACE_ID);
+        expect(currentTraceCorrelation()).toEqual({ traceId: TRACE_ID, spanId: SPAN_ID });
       });
     });
   });

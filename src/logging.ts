@@ -149,13 +149,34 @@ function validId(value: unknown, shape: RegExp): string | null {
  * context. Extra trailing fields are tolerated — the spec allows a future
  * version to append them, and the first four are positionally fixed.
  */
-function parseTraceparent(value: unknown): { traceId: string; spanId: string } | null {
+export function parseTraceparent(
+  value: unknown,
+): { traceId: string; spanId: string; sampled: boolean } | null {
   if (typeof value !== 'string') return null;
   const parts = value.split('-');
   if (parts.length < 4) return null;
   const traceId = validId(parts[1], HEX_32);
   const spanId = validId(parts[2], HEX_16);
-  return traceId && spanId ? { traceId, spanId } : null;
+  // trace-flags must be exactly two hex digits; bit 0 is the sampling decision.
+  if (!/^[0-9a-f]{2}$/i.test(parts[3])) return null;
+  const sampled = (Number.parseInt(parts[3], 16) & 0x01) === 0x01;
+  return traceId && spanId ? { traceId, spanId, sampled } : null;
+}
+
+/**
+ * The upstream span a dispatch should continue: the W3C `traceparent` the
+ * gateway stamps, or the loose `trace_id` / `span_id` pair the OSS dispatch
+ * path sets instead. Null when neither is complete.
+ */
+export function dispatchTraceParent(
+  metadata: Record<string, string> | undefined,
+): { traceId: string; spanId: string; sampled: boolean } | null {
+  if (!metadata) return null;
+  const traceparent = parseTraceparent(metadata.traceparent);
+  if (traceparent) return traceparent;
+  const traceId = validId(metadata.trace_id, HEX_32);
+  const spanId = validId(metadata.span_id, HEX_16);
+  return traceId && spanId ? { traceId, spanId, sampled: true } : null;
 }
 
 /**
@@ -185,16 +206,20 @@ export function currentTraceCorrelation(): {
   traceId: string | null;
   spanId: string | null;
 } {
+  // A log-only span (no native bindings or telemetry) carries random UUIDs
+  // that no backend knows, so it must not displace the dispatch traceparent.
   const span = getCurrentSpanInfo();
-  if (span) {
-    return { traceId: span.traceId, spanId: span.spanId };
+  const spanTraceId = validId(span?.traceId, HEX_32);
+  const spanSpanId = validId(span?.spanId, HEX_16);
+  if (spanTraceId && spanSpanId) {
+    return { traceId: spanTraceId, spanId: spanSpanId };
   }
 
   const metadata = getCurrentContext()?.metadata;
   if (!metadata) return { traceId: null, spanId: null };
 
   const traceparent = parseTraceparent(metadata.traceparent);
-  if (traceparent) return traceparent;
+  if (traceparent) return { traceId: traceparent.traceId, spanId: traceparent.spanId };
 
   // A span id without a trace id points nowhere, so it is dropped with it.
   const traceId = validId(metadata.trace_id, HEX_32);

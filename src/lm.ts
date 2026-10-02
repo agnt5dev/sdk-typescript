@@ -26,6 +26,7 @@ import { ActivationError, ActivationErrorCode, ConfigurationError } from './erro
 import { createHash } from 'node:crypto';
 import type { Context, JSONSchema, RecoveryPolicy } from './types.js';
 import { getCurrentContext } from './async-context.js';
+import { getCurrentSpanInfo } from './tracing.js';
 import {
   ActivationKind,
   ActivationRecoveryPolicy,
@@ -653,6 +654,18 @@ async function modelStreamInterruptionEvidence(options: {
   }];
 }
 
+/** The current span as the native LM span's parent, so LM calls join the run's trace. */
+function nativeSpanParent(): {
+  parentTraceId?: string;
+  parentSpanId?: string;
+  parentSampled?: boolean;
+} {
+  const span = getCurrentSpanInfo();
+  return span
+    ? { parentTraceId: span.traceId, parentSpanId: span.spanId, parentSampled: span.sampled ?? true }
+    : {};
+}
+
 // ============================================================================
 // LM Class (TypeScript wrapper)
 // ============================================================================
@@ -870,6 +883,7 @@ export class LM {
     const model = validateModelForProvider(request.model, this.providerName);
     const response = await this.model.generate({
       ...nativeRequest,
+      ...nativeSpanParent(),
       prompt: undefined,
       messages: messagesForNative(request.messages),
       promptRef: undefined,
@@ -1007,6 +1021,7 @@ export class LM {
     const model = validateModelForProvider(request.model, this.providerName);
     return await this.model.stream({
       ...nativeRequest,
+      ...nativeSpanParent(),
       prompt: undefined,
       messages: messagesForNative(request.messages),
       promptRef: undefined,

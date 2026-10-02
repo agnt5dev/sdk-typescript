@@ -9,6 +9,12 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import { randomUUID } from 'crypto';
 import { getLoadedNativeBindings } from '#native-loader';
+import { getCurrentContext } from './async-context.js';
+import {
+  DurableSleepSuspensionError,
+  SuspensionRequestedError,
+  WaitingForUserInputError,
+} from './errors.js';
 
 // ─── NAPI binding loader ─────────────────────────────────────────────
 
@@ -21,6 +27,8 @@ function tryLoadNapi(): any {
 export interface SpanInfo {
   traceId: string;
   spanId: string;
+  /** The trace's sampling decision; unset means sampled. */
+  sampled?: boolean;
 }
 
 const spanStorage = new AsyncLocalStorage<SpanInfo>();
@@ -28,6 +36,47 @@ const spanStorage = new AsyncLocalStorage<SpanInfo>();
 /** Get the current span info (if inside a span scope) */
 export function getCurrentSpanInfo(): SpanInfo | undefined {
   return spanStorage.getStore();
+}
+
+/**
+ * Run `fn` with `span` as the current span, so nested spans, LM calls and log
+ * records parent to it.
+ */
+export function runInSpan<T>(span: Span, fn: () => T): T {
+  return spanStorage.run(
+    { traceId: span.traceId, spanId: span.spanId, sampled: span.sampled },
+    fn,
+  );
+}
+
+/**
+ * Close `span` with the outcome of the work it covered.
+ *
+ * A durable sleep, a wait for user input or a workerless suspension unwinds by
+ * throwing, but the run is paused, not failed, so it is marked
+ * `agnt5.suspended` instead of as an error (matching the Go SDK).
+ */
+export function finishSpan(span: Span, error?: unknown): void {
+  if (
+    error instanceof WaitingForUserInputError ||
+    error instanceof DurableSleepSuspensionError ||
+    error instanceof SuspensionRequestedError
+  ) {
+    span.setAttribute('agnt5.suspended', 'true');
+  } else if (error !== undefined && runWasCancelled()) {
+    // Work aborted by a CancelExecution unwinds with an error, but the run
+    // was cancelled, not failed.
+    span.setAttribute('agnt5.cancelled', 'true');
+  } else if (error !== undefined) {
+    span.recordException(error instanceof Error ? error : new Error(String(error)));
+  }
+  span.end();
+}
+
+/** Whether the ambient run's cancellation signal has fired. */
+function runWasCancelled(): boolean {
+  const execution = getCurrentContext()?.executionContext as { signal?: AbortSignal } | undefined;
+  return execution?.signal?.aborted === true;
 }
 
 // ─── Span class ──────────────────────────────────────────────────────
@@ -45,6 +94,8 @@ export class Span {
   readonly name: string;
   readonly componentType: string;
   readonly parentSpanId: string | null;
+  /** Inherited from the parent; an unsampled trace stays unsampled. */
+  readonly sampled: boolean;
   private _nativeSpan: any = null;
   private _attributes: Record<string, string> = {};
   private _startTime: number;
@@ -59,6 +110,7 @@ export class Span {
     this.name = name;
     this.componentType = componentType;
     this.parentSpanId = parentInfo?.spanId || null;
+    this.sampled = parentInfo?.sampled ?? true;
     this._startTime = Date.now();
     if (attributes) {
       this._attributes = { ...attributes };
@@ -80,6 +132,7 @@ export class Span {
           parentTraceId,
           parentSpanId,
           attributes || null,
+          this.sampled,
         );
 
         const napiTraceId = this._nativeSpan.traceId;
@@ -161,7 +214,15 @@ export class Span {
 export async function withSpan<T>(
   name: string,
   fn: (span: Span) => T | Promise<T>,
-  options?: { componentType?: string; attributes?: Record<string, string> },
+  options?: {
+    componentType?: string;
+    attributes?: Record<string, string>;
+    /**
+     * When `fn` returns an async iterable, keep the span open until it is
+     * consumed, so work done while streaming is inside the span.
+     */
+    followAsyncIterable?: boolean;
+  },
 ): Promise<T> {
   const parentInfo = getCurrentSpanInfo();
   const span = new Span(
@@ -171,17 +232,67 @@ export async function withSpan<T>(
     options?.attributes,
   );
 
-  const spanInfo: SpanInfo = { traceId: span.traceId, spanId: span.spanId };
-
+  let result: T;
   try {
-    const result = await spanStorage.run(spanInfo, () => fn(span));
-    span.end();
-    return result;
+    result = await runInSpan(span, () => fn(span));
   } catch (error) {
-    span.recordException(error as Error);
-    span.end();
+    finishSpan(span, error);
     throw error;
   }
+  if (options?.followAsyncIterable && isAsyncIterable(result)) {
+    return traceAsyncIterable(span, result) as T;
+  }
+  finishSpan(span);
+  return result;
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return value != null && typeof (value as any)[Symbol.asyncIterator] === 'function';
+}
+
+/** Run each step of `source` inside `span`, ending the span when it finishes. */
+function traceAsyncIterable<T>(span: Span, source: AsyncIterable<T>): AsyncIterable<T> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<T> {
+      const iterator = runInSpan(span, () => source[Symbol.asyncIterator]());
+      let finished = false;
+      const finish = (error?: unknown) => {
+        if (finished) return;
+        finished = true;
+        finishSpan(span, error);
+      };
+      return {
+        async next(...args: [] | [unknown]) {
+          try {
+            const step = await runInSpan(span, () => iterator.next(...args));
+            if (step.done) finish();
+            return step;
+          } catch (error) {
+            finish(error);
+            throw error;
+          }
+        },
+        async return(value?: any) {
+          // Run the generator's cleanup inside the span before ending it.
+          try {
+            const step = iterator.return
+              ? await runInSpan(span, () => iterator.return!(value))
+              : { done: true as const, value };
+            finish();
+            return step;
+          } catch (error) {
+            finish(error);
+            throw error;
+          }
+        },
+        async throw(error?: unknown) {
+          finish(error);
+          if (iterator.throw) return iterator.throw(error);
+          throw error;
+        },
+      };
+    },
+  };
 }
 
 // ─── spanContext ─────────────────────────────────────────────────────

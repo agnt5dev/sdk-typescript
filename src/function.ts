@@ -16,6 +16,7 @@ import {
   workflowStepStarted,
 } from './events.js';
 import { FunctionRegistry } from './function-registry.js';
+import { withSpan } from './tracing.js';
 import type { FunctionOptions } from './types.js';
 
 /**
@@ -186,7 +187,12 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
         anyCtx.pushCorrelation(fnCid);
       }
       try {
-        const invokeHandler = () => handler(ctx, ...args);
+        const invokeHandler = () =>
+          withSpan(`function.${handlerName}`, () => handler(ctx, ...args), {
+            componentType: 'function',
+            attributes: { run_id: ctx.runId, handler_name: handlerName },
+            followAsyncIterable: true,
+          });
         const result = hasTaskLocalCorrelation
           ? await anyCtx.runWithCorrelation(fnCid, invokeHandler)
           : await invokeHandler();
