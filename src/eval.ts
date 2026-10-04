@@ -7,6 +7,7 @@
 
 import { RunError } from './errors.js';
 import {
+  CORRECTNESS_JUDGE_CRITERIA,
   extractToolCallsFromEvents,
   toolCallNames,
   toolTrajectoryMatches,
@@ -522,7 +523,7 @@ export interface CorrectnessConfig extends EvaluatorPresetConfig {}
 export class Correctness extends EvaluatorPreset {
   protected override readonly presetName: string = 'correctness';
   protected override readonly scorerName: string = 'correctness';
-  protected override readonly criteria: string = 'Evaluate whether the output correctly answers the input and matches the expected output. Award pass for fully correct answers, partial for incomplete or partially correct answers, and fail for incorrect or unsupported answers.';
+  protected override readonly criteria: string = CORRECTNESS_JUDGE_CRITERIA;
 
   constructor(config: CorrectnessConfig = {}) {
     super({ includeInput: true, ...config });
