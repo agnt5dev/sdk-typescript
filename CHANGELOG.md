@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.10.8] - 2026-10-04
+
 ### Fixed
 
 - The built-in `correctness` judge no longer marks right answers down for explaining them. Its rubric asked whether the output "matches the expected output" and gave partial credit otherwise, so with the default `gpt-4o-mini` judge an answer like "**Augustus** was the first Roman emperor…" scored 0.5 against "Augustus" and failed a 0.8 pass mark. The rubric now judges agreement with the reference answer, not similarity: a right answer that explains itself is a pass, partial is only for a missing required part, and a wrong or contradicting answer fails. The judge now quotes the output's answer before it labels it, so a long, right answer is no longer failed for its length. The built-in scorer asks for a `pass` / `partial` / `fail` label, scored 1.0 / 0.5 / 0.0, so its results carry that label and the quoted `answer` in their metadata. The `Correctness` preset and the built-in share one rubric (`CORRECTNESS_JUDGE_CRITERIA`); it and `CORRECTNESS_JUDGE_SYSTEM_PROMPT` are identical in the Python SDK.
