@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.10.9] - 2026-10-05
+
 ### Removed
 
 - **Breaking:** `MCPServer.runHTTP()` is gone (AGNT5-1569). It answered single JSON-RPC POSTs only (no `GET` stream, sessions or SSE), so it wasn't a compliant Streamable HTTP server. Publish tools with `addFunction`, `addWorkflow` or `addAgent` and AGNT5 serves them over Streamable HTTP at `/mcp/{project}/{env}/{server}`; use `runStdio()` to serve a server locally.
