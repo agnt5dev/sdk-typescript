@@ -7,7 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Removed
+
+- **Breaking:** `MCPServer.runHTTP()` is gone (AGNT5-1569). It answered single JSON-RPC POSTs only (no `GET` stream, sessions or SSE), so it wasn't a compliant Streamable HTTP server. Publish tools with `addFunction`, `addWorkflow` or `addAgent` and AGNT5 serves them over Streamable HTTP at `/mcp/{project}/{env}/{server}`; use `runStdio()` to serve a server locally.
+
+### Fixed
+
+- `MCPServer.runStdio()` follows JSON-RPC 2.0 and MCP (AGNT5-1569). It no longer replies to notifications (any message without an `id`, such as `notifications/initialized`) or to responses from the client. An unknown method is `-32601`; an unknown tool or prompt, `params` or `arguments` that aren't an object, or a missing tool name is `-32602`; an unknown resource is `-32002`; a message without `"jsonrpc": "2.0"`, a method or a string/integer `id` is `-32600`; a line that isn't JSON is `-32700` instead of stopping the server. All of these were `-32603`, and a request without `jsonrpc` was served. A tool that throws now returns a result with `isError: true` and the error text, as hosted servers do, so the model can read it; it was a `-32603` protocol error. `ping` returns `{}`. `dispatch()` returns `undefined` for messages that get no reply, and `MCPServerError` takes a JSON-RPC `code`.
+
 ### Added
+
+- `ctx.caller` (AGNT5-1569): who called the run through a hosted MCP server, as a frozen `Caller` with `server`, `tool`, `subject` (an AGNT5 user id for OAuth, `service_key:{id}` for an API key), `authMethod` (`oauth` or `api_key`) and `client` (the OAuth client id or the client's User-Agent). It is `undefined` when the run wasn't started by an MCP tool call. Functions and workflows get it on worker and workerless runs. It reads the `trigger_type=mcp` and `mcp.*` keys the runtime stamps on the run; no token reaches the run. `callerFromMetadata(metadata)` is exported for custom contexts.
 
 - Publish an `MCPServer` with the deployment, as the Python SDK does (AGNT5-1569). Tools added with `addFunction`, `addWorkflow` or `addAgent(name, component, { title, description, mode, visibility, annotations })` are served at `/mcp/{project}/{env}/{server}`, each call running as a durable run. The worker registers each server that publishes a tool as an `mcp` component whose definition follows contract v1 (`definition()`); a server name the platform will refuse (it is a URL segment: lowercase letters, digits, `-`, `_`) is logged as an error at startup. Tool names, modes (`sync`, `auto`, `background`), visibility (`model`, `app`) and annotations are checked where they are written, and `get_run`/`cancel_run` are reserved. Tools carry full JSON Schema 2020-12 input and output schemas (defaults, `$defs`, `anyOf` and `additionalProperties` are kept; Zod 4 schemas are converted) and explicit hints (`readOnlyHint` defaults to `false`). A published agent is served without a `registerAgents` call.
 - `new MCPServer('support', { title, instructions })`. The options-object form still works, and `name` and `version` now default to the id and `0.1.0`.

@@ -3,6 +3,8 @@ import type { HITLInputType, HITLOption } from './errors.js';
 import { emptyRuntimeContext } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
 import type { Context, Logger, StepOptions } from './types.js';
+import { callerFromMetadata } from './caller.js';
+import type { Caller } from './caller.js';
 
 export interface WorkerlessContextOptions {
   checkpoints?: Record<string, unknown>;
@@ -57,6 +59,10 @@ export class WorkerlessContext implements Context {
       }
     }
     this.loadReplayState(options.metadata);
+  }
+
+  get caller(): Caller | undefined {
+    return callerFromMetadata(this.metadata);
   }
 
   async get<T>(key: string, defaultValue?: T): Promise<T | undefined> {

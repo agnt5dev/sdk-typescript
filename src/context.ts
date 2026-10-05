@@ -23,6 +23,8 @@ import {
   stepActivationRequest,
 } from './activation.js';
 import type { ActivationDecision, ActivationExecution } from './activation.js';
+import { callerFromMetadata } from './caller.js';
+import type { Caller } from './caller.js';
 
 function getNativeLogFn() {
   const native = getLoadedNativeBindings();
@@ -221,6 +223,10 @@ export class ContextImpl implements Context {
 
   readonly runtime: RuntimeContext;
   readonly metadata?: Record<string, string>;
+
+  get caller(): Caller | undefined {
+    return callerFromMetadata(this.metadata);
+  }
 
   get activation(): ActivationExecution | undefined {
     return currentActivation();

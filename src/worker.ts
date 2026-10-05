@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { WorkerOptions, Context, Logger, StepOptions } from './types.js';
+import { callerFromMetadata } from './caller.js';
+import type { Caller } from './caller.js';
 import { FunctionRegistry } from './function.js';
 import { WorkflowRegistry } from './workflow.js';
 import type { TriggerSpec } from './workflow.js';
@@ -319,6 +321,10 @@ class SimpleContext implements Context {
 
   get signal(): AbortSignal {
     return this._signal;
+  }
+
+  get caller(): Caller | undefined {
+    return callerFromMetadata(this.metadata);
   }
 
   get activation(): ActivationExecution | undefined {
