@@ -222,8 +222,10 @@ export class MCPServer {
   /**
    * Publish a workflow (`workflow(name, handler)`) as a tool. By default a
    * call waits up to the server's call budget, then hands back a run handle
-   * (`mode: 'auto'`). A plain function still serves over `runStdio` but is
-   * not published.
+   * (`mode: 'auto'`). Clients that render MCP Apps (ChatGPT, Claude, Cursor,
+   * VS Code) show such calls as an AGNT5 run card with live status, steps and
+   * output; `view: null` turns the card off for this tool. A plain function
+   * still serves over `runStdio` but is not published.
    */
   addWorkflow(name: string, workflow: any, options: MCPToolOptions = {}): void {
     const config = workflow?._agnt5_config;
@@ -310,6 +312,7 @@ export class MCPServer {
       mode: options.mode,
       visibility: options.visibility ? [...options.visibility] : undefined,
       annotations,
+      view: options.view === null ? null : undefined,
       target: spec.target,
     });
   }

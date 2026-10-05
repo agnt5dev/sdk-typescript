@@ -118,9 +118,10 @@ export type { ToolInvokeOptions } from './tool.js';
 export type { ToolFunction } from './tool.js';
 export { MCPServer, MCPServerError, Prompt, Resource } from './mcp-server.js';
 export type { MCPServerOptions } from './mcp-server.js';
-export { MCPServerRegistry, MCP_SCHEMA_VERSION, validServerName } from './mcp-publish.js';
+export { MCPServerRegistry, MCP_RUN_VIEW, MCP_SCHEMA_VERSION, validServerName } from './mcp-publish.js';
 export type {
   MCPToolMode,
+  MCPToolView,
   MCPToolVisibility,
   MCPToolAnnotations,
   MCPToolOptions,
