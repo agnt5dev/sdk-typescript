@@ -19,6 +19,15 @@ export const MCP_TOOL_VISIBILITIES = ['model', 'app'] as const;
 const ANNOTATION_HINTS = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'] as const;
 const RESERVED_TOOL_NAMES = new Set(['get_run', 'cancel_run']);
 
+/**
+ * The default `view`: the AGNT5 run card that MCP Apps hosts (ChatGPT,
+ * Claude, Cursor, VS Code) show for `auto` and `background` tools while their
+ * run goes on. Pass `view: null` to turn it off for a tool.
+ */
+export const MCP_RUN_VIEW = 'run';
+/** How a definition says a tool has no view. */
+const NO_VIEW = 'none';
+
 const TOOL_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
 const SERVER_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 
@@ -29,6 +38,9 @@ const SERVER_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
  * `auto` for workflows and agents.
  */
 export type MCPToolMode = (typeof MCP_TOOL_MODES)[number];
+
+/** A tool's MCP Apps view: the run card (the default) or `null` for none. */
+export type MCPToolView = typeof MCP_RUN_VIEW | null;
 
 /** Who can call the tool: the model, an app view, or both (the default). */
 export type MCPToolVisibility = (typeof MCP_TOOL_VISIBILITIES)[number];
@@ -50,6 +62,11 @@ export interface MCPToolOptions {
   mode?: MCPToolMode;
   visibility?: MCPToolVisibility[];
   annotations?: MCPToolAnnotations;
+  /**
+   * `null` turns off the AGNT5 run card that MCP Apps clients show for
+   * `auto` and `background` calls. Default: {@link MCP_RUN_VIEW}.
+   */
+  view?: MCPToolView;
 }
 
 export type MCPComponentType = 'function' | 'workflow' | 'agent';
@@ -65,6 +82,8 @@ export interface MCPToolDefinition {
   annotations: MCPToolAnnotations;
   input_schema: JSONSchema;
   output_schema?: JSONSchema;
+  /** `none` when the tool shows no view; absent for the default (the run card). */
+  view?: typeof NO_VIEW;
 }
 
 /** The definition the worker registers for a server (contract version 1). */
@@ -98,6 +117,8 @@ export interface PublishedTool {
   mode?: MCPToolMode;
   visibility?: MCPToolVisibility[];
   annotations: MCPToolAnnotations;
+  /** `null` when the run card is off. */
+  view?: MCPToolView;
   /** The component itself (for agents, so the worker can serve it). Not published. */
   target?: unknown;
 }
@@ -116,6 +137,7 @@ export function toolDefinition(tool: PublishedTool): MCPToolDefinition {
   if (tool.mode) definition.mode = tool.mode;
   if (tool.visibility?.length) definition.visibility = [...tool.visibility];
   if (tool.outputSchema) definition.output_schema = tool.outputSchema;
+  if (tool.view === null) definition.view = NO_VIEW;
   return definition;
 }
 
@@ -131,7 +153,12 @@ export function checkToolOptions(name: string, options: MCPToolOptions = {}): MC
   if (RESERVED_TOOL_NAMES.has(name)) {
     throw new Error(`MCP tool name ${JSON.stringify(name)} is reserved for the built-in run tools`);
   }
-  const { mode, visibility, annotations } = options;
+  const { mode, visibility, annotations, view } = options;
+  if (view !== undefined && view !== null && view !== MCP_RUN_VIEW) {
+    throw new Error(
+      `view must be ${JSON.stringify(MCP_RUN_VIEW)} (the AGNT5 run card) or null (no view), not ${JSON.stringify(view)}`,
+    );
+  }
   if (mode !== undefined && !(MCP_TOOL_MODES as readonly unknown[]).includes(mode)) {
     throw new Error(`mode must be one of ${MCP_TOOL_MODES.join(', ')}, not ${JSON.stringify(mode)}`);
   }

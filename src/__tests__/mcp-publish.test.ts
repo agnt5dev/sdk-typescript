@@ -5,7 +5,7 @@ import { Agent, AgentRegistry } from '../agent.js';
 import type { GenerateRequest, GenerateResponse, LanguageModel } from '../agent.js';
 import { fn, FunctionRegistry } from '../function.js';
 import { MCPServer } from '../mcp-server.js';
-import { MCPServerRegistry } from '../mcp-publish.js';
+import { MCP_RUN_VIEW, MCPServerRegistry } from '../mcp-publish.js';
 import { toJsonSchemaDocument } from '../schema-utils.js';
 import { ToolRegistry } from '../tool.js';
 import { Worker } from '../worker.js';
@@ -240,6 +240,23 @@ describe('MCPServer publishing', () => {
     expect(server.published).toBe(false);
     server.addFunction('lookup', lookupOrder);
     expect(() => server.addWorkflow('lookup', triage)).toThrow(/already has a tool/);
+  });
+
+  it('turns the run card off with view: null', () => {
+    const { lookupOrder, triage, agent } = defineComponents();
+    const server = new MCPServer('support');
+    server.addWorkflow('triage_ticket', triage);
+    server.addWorkflow('quiet_triage', triage, { view: null });
+    server.addAgent('support_agent', agent, { view: null });
+    server.addFunction('lookup', lookupOrder, { mode: 'background', view: MCP_RUN_VIEW });
+    const tools = Object.fromEntries(server.definition().tools.map(t => [t.name, t]));
+
+    expect(tools.triage_ticket).not.toHaveProperty('view');
+    expect(tools.lookup).not.toHaveProperty('view');
+    expect(tools.quiet_triage.view).toBe('none');
+    expect(tools.support_agent.view).toBe('none');
+
+    expect(() => server.addWorkflow('custom', triage, { view: 'board' as any })).toThrow(/view must be/);
   });
 
   it('does not publish stdio-only servers', () => {
