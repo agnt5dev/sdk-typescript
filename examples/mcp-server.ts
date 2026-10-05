@@ -3,11 +3,11 @@
  *
  * Expose AGNT5 tools, agents, workflows, prompts, and resources as an MCP server.
  *
- * Run stdio:
+ * Run over stdio:
  *   tsx examples/mcp-server.ts
  *
- * Run Streamable HTTP:
- *   tsx examples/mcp-server.ts --http
+ * To serve tools over HTTP, publish them with addFunction, addWorkflow or
+ * addAgent and deploy: AGNT5 serves the server at /mcp/{project}/{env}/{id}.
  */
 
 import { Agent, MCPServer, Prompt, Resource, Tool, workflow } from '../src/index.js';
@@ -82,11 +82,7 @@ const server = new MCPServer({
   },
 });
 
-const run = process.argv.includes('--http')
-  ? server.runHTTP({ host: '127.0.0.1', port: 34183, path: '/mcp' })
-  : server.runStdio();
-
-run.catch(error => {
+server.runStdio().catch(error => {
   console.error(error);
   process.exit(1);
 });

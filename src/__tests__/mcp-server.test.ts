@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { Readable } from 'node:stream';
+import { describe, it, expect, vi } from 'vitest';
 import { Agent } from '../agent.js';
 import type { GenerateRequest, GenerateResponse, LanguageModel } from '../agent.js';
 import { MCPServer, Prompt, Resource } from '../mcp-server.js';
@@ -13,7 +14,7 @@ class MockLanguageModel implements LanguageModel {
 
 describe('MCPServer', () => {
   it('lists and calls registered tools, agents, and workflows', async () => {
-    const echoTool = new Tool(
+    const echo = new Tool(
       'echo',
       'Echo a message',
       async (_ctx, args: { message: string }) => `echo:${args.message}`,
@@ -42,12 +43,12 @@ describe('MCPServer', () => {
       id: 'test-mcp',
       name: 'Test MCP',
       version: '1.0.0',
-      tools: { echo: echoTool },
+      tools: { echo },
       agents: { research_agent: agent },
       workflows: { summarize_topic: summarizeTopic },
     });
 
-    const listed = await server.dispatch({
+    const listed = await call(server, {
       jsonrpc: '2.0',
       id: 1,
       method: 'tools/list',
@@ -59,7 +60,7 @@ describe('MCPServer', () => {
     expect(toolNames.has('research_agent')).toBe(true);
     expect(toolNames.has('summarize_topic')).toBe(true);
 
-    const echoResponse = await server.dispatch({
+    const echoResponse = await call(server, {
       jsonrpc: '2.0',
       id: 2,
       method: 'tools/call',
@@ -70,7 +71,7 @@ describe('MCPServer', () => {
     });
     expect(echoResponse.result.content[0].text).toBe('echo:hello');
 
-    const workflowResponse = await server.dispatch({
+    const workflowResponse = await call(server, {
       jsonrpc: '2.0',
       id: 3,
       method: 'tools/call',
@@ -81,7 +82,7 @@ describe('MCPServer', () => {
     });
     expect(workflowResponse.result.content[0].text).toContain('"summary":"done"');
 
-    const agentResponse = await server.dispatch({
+    const agentResponse = await call(server, {
       jsonrpc: '2.0',
       id: 4,
       method: 'tools/call',
@@ -129,7 +130,7 @@ describe('MCPServer', () => {
       },
     });
 
-    const promptsResponse = await server.dispatch({
+    const promptsResponse = await call(server, {
       jsonrpc: '2.0',
       id: 1,
       method: 'prompts/list',
@@ -137,7 +138,7 @@ describe('MCPServer', () => {
     });
     expect(promptsResponse.result.prompts[0].name).toBe('research_brief');
 
-    const promptResponse = await server.dispatch({
+    const promptResponse = await call(server, {
       jsonrpc: '2.0',
       id: 2,
       method: 'prompts/get',
@@ -148,7 +149,7 @@ describe('MCPServer', () => {
     });
     expect(promptResponse.result.messages[0].content.text).toBe('Research AGNT5');
 
-    const resourcesResponse = await server.dispatch({
+    const resourcesResponse = await call(server, {
       jsonrpc: '2.0',
       id: 3,
       method: 'resources/list',
@@ -156,7 +157,7 @@ describe('MCPServer', () => {
     });
     expect(resourcesResponse.result.resources[0].uri).toBe('docs://handbook');
 
-    const resourceResponse = await server.dispatch({
+    const resourceResponse = await call(server, {
       jsonrpc: '2.0',
       id: 4,
       method: 'resources/read',
@@ -165,86 +166,170 @@ describe('MCPServer', () => {
     expect(resourceResponse.result.contents[0].text).toBe('# Handbook');
   });
 
-  it('parses and writes stdio messages using JSONL framing', () => {
-    const server = new MCPServer({
-      id: 'test-mcp',
-      name: 'Test MCP',
-      version: '1.0.0',
-    });
-    const first = '{"jsonrpc":"2.0","id":1,"method":"ping"}';
-    const second = '{"jsonrpc":"2.0","id":2,"method":"ping"}';
+  it('does not answer notifications or client responses over stdio', async () => {
+    const server = new MCPServer({ id: 'test-mcp' });
+    const replies = await serveStdio(
+      server,
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1 } },
+      { jsonrpc: '2.0', method: 'no/such/notification' },
+      { jsonrpc: '2.0', id: 'srv-1', result: {} },
+      { jsonrpc: '2.0', id: 2, method: 'ping' },
+    );
+    expect(replies.map(reply => reply.id)).toEqual([1, 2]);
+    expect(replies[0].result.serverInfo.name).toBe('test-mcp');
+    expect(replies[1].result).toEqual({});
+  });
 
-    const parsed = (server as any).tryParseMessage(Buffer.from(`${first}\r\n${second}\n`));
+  it('answers each malformed or unknown request with its JSON-RPC code over stdio', async () => {
+    const server = new MCPServer({ id: 'test-mcp', tools: { echo: echoTool() } });
+    const replies = await serveStdio(
+      server,
+      { jsonrpc: '2.0', id: 1, method: 'nope' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'nope' } },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'echo', arguments: 1 } },
+      { id: 4, method: 'ping' },
+      '{not json',
+      { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'echo', arguments: { message: 'hi' } } },
+    );
+    expect(replies.map(reply => [reply.id, reply.error?.code ?? null])).toEqual([
+      [1, -32601],
+      [2, -32602],
+      [3, -32602],
+      [4, -32600],
+      [null, -32700],
+      [5, null],
+    ]);
+    expect(replies[5].result.content[0].text).toBe('echo:hi');
+  });
 
-    expect(parsed.request).toEqual({ jsonrpc: '2.0', id: 1, method: 'ping' });
-    expect(parsed.remaining.toString('utf8')).toBe(`${second}\n`);
-
-    const writes: string[] = [];
-    const originalWrite = process.stdout.write;
-    (process.stdout as any).write = (chunk: any, ...args: any[]) => {
-      writes.push(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
-      const callback = args.find(arg => typeof arg === 'function');
-      if (callback) callback();
-      return true;
-    };
-    try {
-      (server as any).writeMessage(Buffer.from(first, 'utf8'));
-    } finally {
-      (process.stdout as any).write = originalWrite;
-    }
-
-    const output = writes.join('');
-    expect(output).toBe(`${first}\n`);
+  it('frames stdio replies as JSON lines and accepts CRLF input', async () => {
+    const server = new MCPServer({ id: 'test-mcp' });
+    const output = await runStdio(server, '{"jsonrpc":"2.0","id":1,"method":"ping"}\r\n\n');
+    expect(output).toBe('{"jsonrpc":"2.0","id":1,"result":{}}\n');
     expect(output).not.toContain('Content-Length');
   });
 
-  it('serves Streamable HTTP requests', async () => {
-    const server = new MCPServer({
-      id: 'test-mcp',
-      name: 'Test MCP',
-      version: '1.0.0',
-    });
-    const handle = await (server as any).startHTTP({ host: '127.0.0.1', port: 0 });
-
-    try {
-      const response = await fetch(`http://${handle.host}:${handle.port}/mcp`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json, text/event-stream',
-        },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-      });
-      const body = await response.json() as any;
-
-      expect(response.status).toBe(200);
-      expect(body.result.serverInfo.name).toBe('Test MCP');
-      expect(body.result.protocolVersion).toBe('2025-11-25');
-    } finally {
-      await handle.close();
-    }
+  it('returns -32601 for an unknown method', async () => {
+    const server = new MCPServer({ id: 'test-mcp' });
+    const response = await call(server, { jsonrpc: '2.0', id: 1, method: 'tools/nope' });
+    expect(response.id).toBe(1);
+    expect(response.error.code).toBe(-32601);
   });
 
-  it('rejects cross-origin Streamable HTTP requests', async () => {
-    const server = new MCPServer({
-      id: 'test-mcp',
-      name: 'Test MCP',
-      version: '1.0.0',
+  it('returns -32602 for an unknown tool', async () => {
+    const server = new MCPServer({ id: 'test-mcp', tools: { echo: echoTool() } });
+    const response = await call(server, {
+      jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'nope', arguments: {} },
     });
-    const handle = await (server as any).startHTTP({ host: '127.0.0.1', port: 0 });
+    expect(response.error.code).toBe(-32602);
+    expect(response.error.message).toContain('nope');
+  });
 
-    try {
-      const response = await fetch(`http://${handle.host}:${handle.port}/mcp`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Origin: 'https://evil.example',
-        },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} }),
-      });
-      expect(response.status).toBe(403);
-    } finally {
-      await handle.close();
-    }
+  it.each([
+    [{ name: 'echo', arguments: 'hello' }],
+    [{ name: 'echo', arguments: ['hello'] }],
+    [{ arguments: { message: 'hello' } }],
+    [{ name: 7, arguments: {} }],
+  ])('returns -32602 for malformed tool call params %j', async params => {
+    const server = new MCPServer({ id: 'test-mcp', tools: { echo: echoTool() } });
+    const response = await call(server, { jsonrpc: '2.0', id: 1, method: 'tools/call', params });
+    expect(response.error.code).toBe(-32602);
+  });
+
+  it('returns -32602 when params is not an object', async () => {
+    const server = new MCPServer({ id: 'test-mcp' });
+    const response = await call(server, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: [1] });
+    expect(response.error.code).toBe(-32602);
+  });
+
+  it('reports a failing tool as a tool error, not a protocol error', async () => {
+    const explode = new Tool('explode', 'Always fails', async () => {
+      throw new Error('boom');
+    });
+    const server = new MCPServer({ id: 'test-mcp', tools: { explode } });
+    const response = await call(server, {
+      jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'explode', arguments: {} },
+    });
+    expect(response.error).toBeUndefined();
+    expect(response.result.isError).toBe(true);
+    expect(response.result.content[0].text).toContain('boom');
+  });
+
+  it('returns -32602 for an unknown prompt and -32002 for an unknown resource', async () => {
+    const server = new MCPServer({ id: 'test-mcp' });
+    const prompt = await call(server, { jsonrpc: '2.0', id: 1, method: 'prompts/get', params: { name: 'nope' } });
+    expect(prompt.error.code).toBe(-32602);
+    const resource = await call(server, {
+      jsonrpc: '2.0', id: 2, method: 'resources/read', params: { uri: 'docs://nope' },
+    });
+    expect(resource.error.code).toBe(-32002);
+  });
+
+  it.each([
+    [{ id: 1, method: 'ping' }],
+    [{ jsonrpc: '1.0', id: 1, method: 'ping' }],
+    [{ jsonrpc: 2.0, id: 1, method: 'ping' }],
+  ])('returns -32600 for a request without "jsonrpc": "2.0" %j', async request => {
+    const server = new MCPServer({ id: 'test-mcp' });
+    const response = await call(server, request);
+    expect(response.id).toBe(1);
+    expect(response.error.code).toBe(-32600);
+  });
+
+  it.each([
+    [[{ jsonrpc: '2.0', id: 1, method: 'ping' }]],
+    ['ping'],
+    [{ jsonrpc: '2.0', id: null, method: 'ping' }],
+    [{ jsonrpc: '2.0', id: 1.5, method: 'ping' }],
+    [{ jsonrpc: '2.0', id: 1 }],
+    [{ jsonrpc: '2.0', id: 1, method: 5 }],
+  ])('returns -32600 for a malformed request %j', async request => {
+    const server = new MCPServer({ id: 'test-mcp' });
+    const response = await call(server, request);
+    expect(response.error.code).toBe(-32600);
+  });
+
+  it('no longer has the POST-only HTTP transport', () => {
+    const server = new MCPServer({ id: 'test-mcp' }) as any;
+    expect(server.runHTTP).toBeUndefined();
+    expect(server.startHTTP).toBeUndefined();
   });
 });
+
+function echoTool(): Tool {
+  return new Tool('echo', 'Echo a message', async (_ctx, args: { message: string }) => `echo:${args.message}`);
+}
+
+async function call(server: MCPServer, request: unknown): Promise<any> {
+  const response = await server.dispatch(request);
+  expect(response).toBeDefined();
+  return response!;
+}
+
+/** Run `runStdio` over the given input and return what it writes. */
+async function runStdio(server: MCPServer, input: string): Promise<string> {
+  const stdin = vi
+    .spyOn(process, 'stdin', 'get')
+    .mockReturnValue(Readable.from([Buffer.from(input, 'utf8')]) as any);
+  const writes: string[] = [];
+  const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: any) => {
+    writes.push(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
+    return true;
+  }) as any);
+  try {
+    await server.runStdio();
+  } finally {
+    stdin.mockRestore();
+    stdout.mockRestore();
+  }
+  return writes.join('');
+}
+
+async function serveStdio(server: MCPServer, ...messages: unknown[]): Promise<any[]> {
+  const input =
+    messages.map(message => (typeof message === 'string' ? message : JSON.stringify(message))).join('\n') + '\n';
+  const output = await runStdio(server, input);
+  return output.split('\n').filter(Boolean).map(line => JSON.parse(line));
+}

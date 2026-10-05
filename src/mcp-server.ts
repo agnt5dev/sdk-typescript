@@ -1,6 +1,3 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
-import type { AddressInfo } from 'net';
-
 import { ContextImpl } from './context.js';
 import type { JSONSchema } from './types.js';
 import { Tool } from './tool.js';
@@ -20,11 +17,40 @@ import {
   type PublishedTool,
 } from './mcp-publish.js';
 
+/** JSON-RPC 2.0 and MCP error codes. */
+const MCP_ERROR_CODES = Object.freeze({
+  PARSE_ERROR: -32700,
+  INVALID_REQUEST: -32600,
+  METHOD_NOT_FOUND: -32601,
+  INVALID_PARAMS: -32602,
+  INTERNAL_ERROR: -32603,
+  RESOURCE_NOT_FOUND: -32002,
+});
+
+/** An MCP server error, answered with its JSON-RPC error `code`. */
 export class MCPServerError extends Error {
-  constructor(message: string) {
+  readonly code: number;
+
+  constructor(message: string, code: number = MCP_ERROR_CODES.INTERNAL_ERROR) {
     super(message);
     this.name = 'MCPServerError';
+    this.code = code;
   }
+}
+
+type JsonRpcResponse = Record<string, any>;
+
+function errorResponse(id: string | number | null, code: number, message: string): JsonRpcResponse {
+  return { jsonrpc: '2.0', id, error: { code, message } };
+}
+
+/** MCP request ids are strings or integers, never null. */
+function isValidId(value: unknown): value is string | number {
+  return typeof value === 'string' || (typeof value === 'number' && Number.isInteger(value));
+}
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export interface PromptMessage {
@@ -91,7 +117,7 @@ export class Resource {
 export interface MCPServerOptions {
   /** The server's name on the platform, part of its URL: lowercase letters, digits, `-` and `_`. */
   id: string;
-  /** Name reported by `initialize` over stdio/HTTP. Defaults to `id`. */
+  /** Name reported by `initialize` over stdio. Defaults to `id`. */
   name?: string;
   /** Defaults to `0.1.0`. */
   version?: string;
@@ -104,13 +130,6 @@ export interface MCPServerOptions {
   resources?: Record<string, Resource>;
   instructions?: string;
   metadata?: Record<string, any>;
-}
-
-interface MCPServerHandle {
-  host: string;
-  port: number;
-  close(): Promise<void>;
-  closed: Promise<void>;
 }
 
 /**
@@ -175,7 +194,7 @@ export class MCPServer {
     MCPServerRegistry.register(this);
   }
 
-  /** Serve a tool over `runStdio`/`runHTTP` only; it is not published. */
+  /** Serve a tool over `runStdio` only; it is not published. */
   addTool(name: string, tool: Tool): void {
     this.tools.set(name, tool);
   }
@@ -303,177 +322,79 @@ export class MCPServer {
     this.resources.set(name, resource);
   }
 
+  /** Serve MCP JSON-RPC over stdio using newline-delimited JSON. */
   async runStdio(): Promise<void> {
-    const stdin = process.stdin;
     let buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 
-    for await (const chunk of stdin) {
+    for await (const chunk of process.stdin) {
       buffer = Buffer.concat([buffer, chunk]);
-      while (true) {
-        const parsed = this.tryParseMessage(buffer);
-        if (!parsed) break;
-        buffer = parsed.remaining;
-        const response = await this.dispatch(parsed.request);
-        this.writeMessage(Buffer.from(JSON.stringify(response), 'utf8'));
+      let lineEnd: number;
+      while ((lineEnd = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.subarray(0, lineEnd).toString('utf8').replace(/\r$/, '');
+        buffer = Buffer.from(buffer.subarray(lineEnd + 1));
+        const response = await this.handleLine(line);
+        if (response) this.writeMessage(Buffer.from(JSON.stringify(response), 'utf8'));
       }
     }
   }
 
-  async runHTTP(options?: { host?: string; port?: number; path?: string }): Promise<void> {
-    const handle = await this.startHTTP(options);
-    await handle.closed;
-  }
-
-  async dispatch(request: Record<string, any>): Promise<Record<string, any>> {
+  /**
+   * Handle one JSON-RPC message and return the response to send, or
+   * `undefined` for a notification (a message without an `id`) or a response
+   * from the client: neither gets a reply. Exposed for tests and embeddings.
+   */
+  async dispatch(request: unknown): Promise<JsonRpcResponse | undefined> {
+    if (!isPlainObject(request)) {
+      return errorResponse(null, MCP_ERROR_CODES.INVALID_REQUEST, 'Invalid Request: expected a JSON object');
+    }
+    const hasId = Object.prototype.hasOwnProperty.call(request, 'id');
+    if (hasId && !isValidId(request.id)) {
+      return errorResponse(null, MCP_ERROR_CODES.INVALID_REQUEST, 'Invalid Request: id must be a string or an integer');
+    }
+    const id: string | number | null = hasId ? request.id : null;
+    if (request.jsonrpc !== '2.0') {
+      return errorResponse(id, MCP_ERROR_CODES.INVALID_REQUEST, 'Invalid Request: "jsonrpc" must be "2.0"');
+    }
+    const method = request.method;
+    if (method === undefined && ('result' in request || 'error' in request)) {
+      // A response to a request this server never sends.
+      return undefined;
+    }
+    if (typeof method !== 'string' || !method) {
+      return errorResponse(id, MCP_ERROR_CODES.INVALID_REQUEST, 'Invalid Request: "method" must be a string');
+    }
+    if (!hasId) {
+      // Notifications (notifications/initialized, notifications/cancelled,
+      // ...) are never answered, not even with an error.
+      return undefined;
+    }
+    const params = request.params ?? {};
+    if (!isPlainObject(params)) {
+      return errorResponse(id, MCP_ERROR_CODES.INVALID_PARAMS, 'Invalid params: "params" must be an object');
+    }
     try {
-      return {
-        jsonrpc: '2.0',
-        id: request.id ?? null,
-        result: await this.handleRequest(request.method, request.params || {}),
-      };
+      return { jsonrpc: '2.0', id, result: await this.handleRequest(method, params) };
     } catch (error: any) {
-      return {
-        jsonrpc: '2.0',
-        id: request.id ?? null,
-        error: {
-          code: -32603,
-          message: error?.message || String(error),
-        },
-      };
+      const code = error instanceof MCPServerError ? error.code : MCP_ERROR_CODES.INTERNAL_ERROR;
+      return errorResponse(id, code, error?.message || String(error));
     }
   }
 
-  private tryParseMessage(buffer: Buffer): { request: Record<string, any>; remaining: Buffer } | null {
-    const lineEnd = buffer.indexOf('\n');
-    if (lineEnd === -1) return null;
-
-    const line = buffer.subarray(0, lineEnd).toString('utf8').replace(/\r$/, '');
-    return {
-      request: JSON.parse(line),
-      remaining: Buffer.from(buffer.subarray(lineEnd + 1)),
-    };
+  /** Parse one stdio line and dispatch it. */
+  private async handleLine(line: string): Promise<JsonRpcResponse | undefined> {
+    if (!line.trim()) return undefined;
+    let message: unknown;
+    try {
+      message = JSON.parse(line);
+    } catch (error: any) {
+      return errorResponse(null, MCP_ERROR_CODES.PARSE_ERROR, `Parse error: ${error?.message || String(error)}`);
+    }
+    return this.dispatch(message);
   }
 
   private writeMessage(payload: Buffer): void {
     process.stdout.write(payload);
     process.stdout.write('\n');
-  }
-
-  private async startHTTP(options?: { host?: string; port?: number; path?: string }): Promise<MCPServerHandle> {
-    const host = options?.host || '127.0.0.1';
-    const port = options?.port ?? 0;
-    const path = this.normalizePath(options?.path || '/mcp');
-    const server = createServer((req, res) => {
-      this.handleStreamableHttpRequest(req, res, path).catch(error => {
-        this.writeJson(res, 500, {
-          jsonrpc: '2.0',
-          id: null,
-          error: { code: -32603, message: error?.message || String(error) },
-        });
-      });
-    });
-
-    return this.listen(server, host, port);
-  }
-
-  private async handleStreamableHttpRequest(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
-    if (!this.isAllowedOrigin(req.headers.origin, req.headers.host)) {
-      this.writeText(res, 403, 'forbidden origin');
-      return;
-    }
-
-    const url = new URL(req.url || '/', 'http://localhost');
-    if (url.pathname !== path) {
-      this.writeText(res, 404, 'not found');
-      return;
-    }
-
-    if (req.method === 'GET') {
-      this.writeText(res, 405, 'GET stream is not supported');
-      return;
-    }
-    if (req.method !== 'POST') {
-      this.writeText(res, 405, 'method not allowed');
-      return;
-    }
-
-    const request = JSON.parse(await this.readBody(req));
-    if (!Object.prototype.hasOwnProperty.call(request, 'id')) {
-      await this.dispatch(request);
-      res.writeHead(202).end();
-      return;
-    }
-
-    const response = await this.dispatch(request);
-    this.writeJson(res, 200, response);
-  }
-
-  private async listen(server: Server, host: string, port: number): Promise<MCPServerHandle> {
-    const closed = new Promise<void>(resolve => {
-      server.once('close', resolve);
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error) => {
-        server.off('listening', onListening);
-        reject(error);
-      };
-      const onListening = () => {
-        server.off('error', onError);
-        resolve();
-      };
-      server.once('error', onError);
-      server.once('listening', onListening);
-      server.listen(port, host);
-    });
-
-    const address = server.address() as AddressInfo;
-    return {
-      host,
-      port: address.port,
-      closed,
-      close: () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
-    };
-  }
-
-  private readBody(req: IncomingMessage): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      req.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-      req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-      req.on('error', reject);
-    });
-  }
-
-  private writeJson(res: ServerResponse, status: number, payload: Record<string, any>): void {
-    res.writeHead(status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(payload));
-  }
-
-  private writeText(res: ServerResponse, status: number, text: string): void {
-    res.writeHead(status, { 'Content-Type': 'text/plain' });
-    res.end(text);
-  }
-
-  private normalizePath(path: string): string {
-    return path.startsWith('/') ? path : `/${path}`;
-  }
-
-  private isAllowedOrigin(
-    origin: string | string[] | undefined,
-    host: string | string[] | undefined,
-  ): boolean {
-    const originValue = Array.isArray(origin) ? origin[0] : origin;
-    if (!originValue) return true;
-
-    const hostValue = Array.isArray(host) ? host[0] : host;
-    if (!hostValue) return false;
-
-    try {
-      return new URL(originValue).host === hostValue;
-    } catch {
-      return false;
-    }
   }
 
   private async handleRequest(method: string, params: Record<string, any>): Promise<any> {
@@ -489,11 +410,18 @@ export class MCPServer {
       };
     }
 
-    if (method === 'notifications/initialized' || method === 'initialized') return { ok: true };
-    if (method === 'ping') return { pong: true };
+    if (method === 'ping') return {};
     if (method === 'tools/list' || method === 'tools.list') return { tools: this.listTools() };
     if (method === 'tools/call' || method === 'tools.call') {
-      return this.callTool(params.name || '', params.arguments || {});
+      const name = params.name;
+      if (typeof name !== 'string' || !name) {
+        throw new MCPServerError('Invalid params: "name" must be a tool name', MCP_ERROR_CODES.INVALID_PARAMS);
+      }
+      const args = params.arguments ?? {};
+      if (!isPlainObject(args)) {
+        throw new MCPServerError('Invalid params: "arguments" must be an object', MCP_ERROR_CODES.INVALID_PARAMS);
+      }
+      return this.callTool(name, args);
     }
     if (method === 'prompts/list' || method === 'prompts.list') return { prompts: this.listPrompts() };
     if (method === 'prompts/get' || method === 'prompts.get') {
@@ -502,7 +430,7 @@ export class MCPServer {
     if (method === 'resources/list' || method === 'resources.list') return { resources: this.listResources() };
     if (method === 'resources/read' || method === 'resources.read') return this.readResource(params.uri || '');
 
-    throw new MCPServerError(`method not found: ${method}`);
+    throw new MCPServerError(`Method not found: ${method}`, MCP_ERROR_CODES.METHOD_NOT_FOUND);
   }
 
   private listTools(): any[] {
@@ -547,31 +475,31 @@ export class MCPServer {
   }
 
   private async callTool(name: string, args: Record<string, any>): Promise<any> {
+    let call: () => Promise<any>;
     if (this.tools.has(name)) {
-      const ctx = this.createContext(name);
-      const result = await this.tools.get(name)!.invoke(ctx, args);
-      return this.wrapTextResult(result);
-    }
-
-    if (this.agents.has(name)) {
-      const input = args.input;
-      if (typeof input !== 'string' || !input) {
-        throw new MCPServerError("agent tools require a non-empty 'input' string");
-      }
-      const result = await this.agents.get(name)!.run(input, this.createContext(name));
-      return this.wrapTextResult({
-        output: result.output,
-        toolCalls: result.toolCalls,
-      });
-    }
-
-    if (this.workflows.has(name)) {
+      call = () => this.tools.get(name)!.invoke(this.createContext(name), args);
+    } else if (this.agents.has(name)) {
+      call = async () => {
+        const input = args.input;
+        if (typeof input !== 'string' || !input) {
+          throw new MCPServerError("agent tools require a non-empty 'input' string");
+        }
+        const result = await this.agents.get(name)!.run(input, this.createContext(name));
+        return { output: result.output, toolCalls: result.toolCalls };
+      };
+    } else if (this.workflows.has(name)) {
       const workflow = this.workflows.get(name)!;
-      const result = await workflow(args);
-      return this.wrapTextResult(result);
+      call = async () => workflow(args);
+    } else {
+      throw new MCPServerError(`Unknown tool: ${name}`, MCP_ERROR_CODES.INVALID_PARAMS);
     }
-
-    throw new MCPServerError(`unknown tool: ${name}`);
+    try {
+      return this.wrapTextResult(await call());
+    } catch (error: any) {
+      // A tool execution error, not a protocol one, so the model can read it
+      // and correct the call (as the hosted server does).
+      return this.wrapTextResult(`${name} failed: ${error?.message || String(error)}`, true);
+    }
   }
 
   private listPrompts(): any[] {
@@ -596,7 +524,7 @@ export class MCPServer {
   private async getPrompt(name: string, args: Record<string, any>): Promise<any> {
     const prompt = this.prompts.get(name);
     if (!prompt) {
-      throw new MCPServerError(`unknown prompt: ${name}`);
+      throw new MCPServerError(`Unknown prompt: ${name}`, MCP_ERROR_CODES.INVALID_PARAMS);
     }
     const result = await prompt.handler(args);
     let messages: PromptMessage[];
@@ -627,7 +555,7 @@ export class MCPServer {
   private async readResource(uri: string): Promise<any> {
     const resource = Array.from(this.resources.values()).find(item => item.uri === uri);
     if (!resource) {
-      throw new MCPServerError(`unknown resource: ${uri}`);
+      throw new MCPServerError(`Resource not found: ${uri}`, MCP_ERROR_CODES.RESOURCE_NOT_FOUND);
     }
     const result = await resource.read();
     const text = typeof result === 'string' ? result : JSON.stringify(result);
@@ -642,11 +570,11 @@ export class MCPServer {
     };
   }
 
-  private wrapTextResult(result: any): any {
+  private wrapTextResult(result: any, isError = false): any {
     const text = typeof result === 'string' ? result : JSON.stringify(result);
     return {
       content: [{ type: 'text', text }],
-      isError: false,
+      isError,
     };
   }
 

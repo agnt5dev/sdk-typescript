@@ -3,6 +3,7 @@ import type { Sandbox } from './sandbox.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import type { WorkerlessFlowControlPolicy } from './flow-control.js';
 import type { ActivationExecution } from './activation.js';
+import type { Caller } from './caller.js';
 
 export type RecoveryPolicy =
   | 'idempotent_retry'
@@ -95,6 +96,11 @@ export interface Context {
   readonly runtime: RuntimeContext;
   /** Runtime dispatch metadata for this invocation. */
   readonly metadata?: Record<string, string>;
+  /**
+   * Who called this run through a hosted MCP server, or `undefined` when the
+   * run wasn't started by an MCP tool call.
+   */
+  readonly caller?: Caller;
   /** Sandbox workspace attached by Agent when configured. */
   /**
    * Sandbox workspace attached by Agent when configured.

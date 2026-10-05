@@ -359,6 +359,8 @@ export type {
   LLMRuntimeOptions,
   RuntimeContext,
 } from './runtime-context.js';
+export { callerFromMetadata } from './caller.js';
+export type { Caller } from './caller.js';
 
 // State management exports
 export {
