@@ -53,6 +53,12 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
     return this;
   }
 
+  /** Describe what the function does (the description of an MCP tool that publishes it). */
+  description(text: string): this {
+    this.config.description = text;
+    return this;
+  }
+
   /**
    * Declare the function input schema used by Studio, manifests, and runtime
    * registration. TypeScript types are erased at runtime, so structured

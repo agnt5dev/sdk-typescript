@@ -108,6 +108,7 @@ export {
   mergeSchemas,
   validateSchema,
   extractFunctionDescription,
+  toJsonSchemaDocument,
 } from './schema-utils.js';
 export type { SchemaFormat, SchemaConversionOptions } from './schema-utils.js';
 
@@ -116,6 +117,17 @@ export { Tool, ToolRegistry, tool, AskUserTool, RequestApprovalTool } from './to
 export type { ToolInvokeOptions } from './tool.js';
 export type { ToolFunction } from './tool.js';
 export { MCPServer, MCPServerError, Prompt, Resource } from './mcp-server.js';
+export type { MCPServerOptions } from './mcp-server.js';
+export { MCPServerRegistry, MCP_SCHEMA_VERSION, validServerName } from './mcp-publish.js';
+export type {
+  MCPToolMode,
+  MCPToolVisibility,
+  MCPToolAnnotations,
+  MCPToolOptions,
+  MCPToolDefinition,
+  MCPServerDefinition,
+  PublishedTool,
+} from './mcp-publish.js';
 
 
 // Workflow exports

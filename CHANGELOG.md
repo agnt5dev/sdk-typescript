@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Publish an `MCPServer` with the deployment, as the Python SDK does (AGNT5-1569). Tools added with `addFunction`, `addWorkflow` or `addAgent(name, component, { title, description, mode, visibility, annotations })` are served at `/mcp/{project}/{env}/{server}`, each call running as a durable run. The worker registers each server that publishes a tool as an `mcp` component whose definition follows contract v1 (`definition()`); a server name the platform will refuse (it is a URL segment: lowercase letters, digits, `-`, `_`) is logged as an error at startup. Tool names, modes (`sync`, `auto`, `background`), visibility (`model`, `app`) and annotations are checked where they are written, and `get_run`/`cancel_run` are reserved. Tools carry full JSON Schema 2020-12 input and output schemas (defaults, `$defs`, `anyOf` and `additionalProperties` are kept; Zod 4 schemas are converted) and explicit hints (`readOnlyHint` defaults to `false`). A published agent is served without a `registerAgents` call.
+- `new MCPServer('support', { title, instructions })`. The options-object form still works, and `name` and `version` now default to the id and `0.1.0`.
+- `fn(name).description(text)` and a `description` workflow option, used as the description of an MCP tool that publishes them.
+- `toJsonSchemaDocument(schema, io)` converts a Zod, TypeBox or JSON Schema to a JSON Schema 2020-12 document. Function, workflow and tool registration use it for Zod schemas, which were registered as Zod's internals.
+
 ## [0.10.8] - 2026-10-04
 
 ### Fixed
