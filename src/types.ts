@@ -39,6 +39,8 @@ export interface BackoffPolicy {
 export interface FunctionOptions {
   /** Optional custom name for the function */
   name?: string;
+  /** What the function does. Used as the description of an MCP tool that publishes it. */
+  description?: string;
   /** JSON Schema for the function input. TypeScript types are erased at runtime. */
   inputSchema?: JSONSchema;
   /** JSON Schema for the function output. TypeScript types are erased at runtime. */

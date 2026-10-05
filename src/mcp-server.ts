@@ -5,6 +5,20 @@ import { ContextImpl } from './context.js';
 import type { JSONSchema } from './types.js';
 import { Tool } from './tool.js';
 import { Agent } from './agent.js';
+import { toJsonSchemaDocument } from './schema-utils.js';
+import {
+  AGENT_INPUT_SCHEMA,
+  MCP_SCHEMA_VERSION,
+  MCPServerRegistry,
+  checkToolOptions,
+  firstLine,
+  objectSchema,
+  toolDefinition,
+  type MCPComponentType,
+  type MCPServerDefinition,
+  type MCPToolOptions,
+  type PublishedTool,
+} from './mcp-publish.js';
 
 export class MCPServerError extends Error {
   constructor(message: string) {
@@ -75,9 +89,14 @@ export class Resource {
 }
 
 export interface MCPServerOptions {
+  /** The server's name on the platform, part of its URL: lowercase letters, digits, `-` and `_`. */
   id: string;
-  name: string;
-  version: string;
+  /** Name reported by `initialize` over stdio/HTTP. Defaults to `id`. */
+  name?: string;
+  /** Defaults to `0.1.0`. */
+  version?: string;
+  /** Human-readable name shown by MCP clients. */
+  title?: string;
   tools?: Record<string, Tool>;
   agents?: Record<string, Agent>;
   workflows?: Record<string, any>;
@@ -94,10 +113,28 @@ interface MCPServerHandle {
   closed: Promise<void>;
 }
 
+/**
+ * An MCP server built from AGNT5 functions, workflows and agents.
+ *
+ * Published with the deployment: tools added with `addFunction`,
+ * `addWorkflow` or `addAgent` are served at
+ * `https://api.agnt5.com/mcp/{project}/{env}/{id}`, each call running as a
+ * durable AGNT5 run:
+ *
+ * ```typescript
+ * const support = new MCPServer('support', { instructions: 'Order and ticket tools.' });
+ * support.addFunction('lookup_order', lookupOrder, { annotations: { readOnlyHint: true } });
+ * support.addWorkflow('triage_ticket', triageTicket); // mode: 'auto'
+ * ```
+ *
+ * The server's id is part of its URL: lowercase letters, digits, `-` and
+ * `_`. `runStdio()` still serves it locally for development.
+ */
 export class MCPServer {
   readonly id: string;
   readonly name: string;
   readonly version: string;
+  readonly title?: string;
   readonly instructions?: string;
   readonly metadata: Record<string, any>;
 
@@ -106,11 +143,17 @@ export class MCPServer {
   private workflows = new Map<string, any>();
   private prompts = new Map<string, Prompt>();
   private resources = new Map<string, Resource>();
+  private publishedTools = new Map<string, PublishedTool>();
 
-  constructor(options: MCPServerOptions) {
+  constructor(id: string, options?: Omit<MCPServerOptions, 'id'>);
+  constructor(options: MCPServerOptions);
+  constructor(idOrOptions: string | MCPServerOptions, maybeOptions: Omit<MCPServerOptions, 'id'> = {}) {
+    const options: MCPServerOptions =
+      typeof idOrOptions === 'string' ? { ...maybeOptions, id: idOrOptions } : idOrOptions;
     this.id = options.id;
-    this.name = options.name;
-    this.version = options.version;
+    this.name = options.name || options.id;
+    this.version = options.version || '0.1.0';
+    this.title = options.title;
     this.instructions = options.instructions;
     this.metadata = options.metadata || {};
 
@@ -129,18 +172,127 @@ export class MCPServer {
     for (const [name, resource] of Object.entries(options.resources || {})) {
       this.resources.set(name, resource);
     }
+    MCPServerRegistry.register(this);
   }
 
+  /** Serve a tool over `runStdio`/`runHTTP` only; it is not published. */
   addTool(name: string, tool: Tool): void {
     this.tools.set(name, tool);
   }
 
-  addAgent(name: string, agent: Agent): void {
+  /**
+   * Publish a function (`fn(name).run(handler)`) as a tool. Functions wait
+   * for their result (`mode: 'sync'`) unless told otherwise.
+   */
+  addFunction(name: string, func: unknown, options: MCPToolOptions = {}): void {
+    const config = (func as any)?._agnt5_config;
+    if (!config || typeof config.handler !== 'function' || typeof config.name !== 'string') {
+      throw new TypeError(
+        `addFunction(${JSON.stringify(name)}, ...) needs a function created with fn(name).run(handler)`,
+      );
+    }
+    const fnOptions = config.options || {};
+    this.publish(name, 'function', config.name, {
+      inputSchema: fnOptions.inputSchema,
+      outputSchema: fnOptions.outputSchema,
+      defaultDescription: firstLine(fnOptions.description),
+      options,
+    });
+  }
+
+  /**
+   * Publish a workflow (`workflow(name, handler)`) as a tool. By default a
+   * call waits up to the server's call budget, then hands back a run handle
+   * (`mode: 'auto'`). A plain function still serves over `runStdio` but is
+   * not published.
+   */
+  addWorkflow(name: string, workflow: any, options: MCPToolOptions = {}): void {
+    const config = workflow?._agnt5_config;
+    if (config && typeof config.handler === 'function' && typeof config.name === 'string') {
+      this.publish(name, 'workflow', config.name, {
+        inputSchema: config.inputSchema,
+        outputSchema: config.outputSchema,
+        defaultDescription: firstLine(config.description),
+        options,
+      });
+    }
+    this.workflows.set(name, workflow);
+  }
+
+  /**
+   * Publish an agent as a tool that takes a message (and optionally a
+   * session to continue). The worker serves the agent; no
+   * `registerAgents` call is needed for it.
+   */
+  addAgent(name: string, agent: Agent, options: MCPToolOptions = {}): void {
+    if (!agent || typeof agent.name !== 'string' || !agent.name) {
+      throw new TypeError(`addAgent(${JSON.stringify(name)}, ...) needs an Agent`);
+    }
+    this.publish(name, 'agent', agent.name, {
+      inputSchema: AGENT_INPUT_SCHEMA,
+      outputSchema: undefined,
+      defaultDescription: firstLine((agent as any).description) || firstLine(agent.instructions),
+      options,
+      target: agent,
+    });
     this.agents.set(name, agent);
   }
 
-  addWorkflow(name: string, workflow: any): void {
-    this.workflows.set(name, workflow);
+  /** Whether the worker publishes this server with the deployment. */
+  get published(): boolean {
+    return this.publishedTools.size > 0;
+  }
+
+  /** The tools this server publishes, in the order they were added. */
+  publishedToolList(): PublishedTool[] {
+    return Array.from(this.publishedTools.values());
+  }
+
+  /** The definition the worker registers (platform contract, version 1). */
+  definition(): MCPServerDefinition {
+    const definition: MCPServerDefinition = {
+      schema_version: MCP_SCHEMA_VERSION,
+      name: this.id,
+      tools: this.publishedToolList().map(toolDefinition),
+    };
+    if (this.title) definition.title = this.title;
+    if (this.instructions) definition.instructions = this.instructions;
+    return definition;
+  }
+
+  private publish(
+    name: string,
+    componentType: MCPComponentType,
+    componentName: string,
+    spec: {
+      inputSchema: unknown;
+      outputSchema: unknown;
+      defaultDescription?: string;
+      options: MCPToolOptions;
+      target?: unknown;
+    },
+  ): void {
+    const { options } = spec;
+    const annotations = checkToolOptions(name, options);
+    if (this.publishedTools.has(name)) {
+      throw new Error(`MCP server ${JSON.stringify(this.id)} already has a tool named ${JSON.stringify(name)}`);
+    }
+    this.publishedTools.set(name, {
+      name,
+      componentType,
+      componentName,
+      inputSchema: objectSchema(toJsonSchemaDocument(spec.inputSchema, 'input')) ?? {
+        type: 'object',
+        properties: {},
+      },
+      outputSchema: objectSchema(toJsonSchemaDocument(spec.outputSchema, 'output')),
+      title: options.title,
+      description: options.description || spec.defaultDescription,
+      mode: options.mode,
+      visibility: options.visibility ? [...options.visibility] : undefined,
+      annotations,
+      target: spec.target,
+    });
   }
 
   addPrompt(name: string, prompt: Prompt): void {

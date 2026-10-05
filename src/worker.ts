@@ -4,6 +4,8 @@ import { FunctionRegistry } from './function.js';
 import { WorkflowRegistry } from './workflow.js';
 import type { TriggerSpec } from './workflow.js';
 import { ToolRegistry } from './tool.js';
+import { MCPServerRegistry, validServerName } from './mcp-publish.js';
+import { isZodSchema, toJsonSchemaDocument } from './schema-utils.js';
 import {
   BUILTIN_DETERMINISTIC_SCORER_NAMES,
   BUILTIN_JUDGE_SCORER_NAMES,
@@ -158,13 +160,16 @@ type ComponentRegistration = {
   metadata: Record<string, string>;
   inputSchema?: string;
   outputSchema?: string;
+  /** JSON document for components that carry one (MCP servers). */
+  definition?: string;
 };
 
 const BUILTIN_COMPONENT_SOURCE = 'agnt5_builtin';
 
-function serializedSchema(schema: unknown): string | undefined {
+function serializedSchema(schema: unknown, io: 'input' | 'output' = 'input'): string | undefined {
   if (!schema || typeof schema !== 'object') return undefined;
-  return JSON.stringify(schema);
+  // A Zod schema registers as the JSON Schema it describes, not its internals.
+  return JSON.stringify(isZodSchema(schema) ? toJsonSchemaDocument(schema, io) : schema);
 }
 
 function isSystemComponentRegistration(component: ComponentRegistration): boolean {
@@ -1808,7 +1813,7 @@ export class Worker {
         config,
         metadata: {},
         inputSchema: serializedSchema(fnConfig.options.inputSchema),
-        outputSchema: serializedSchema(fnConfig.options.outputSchema),
+        outputSchema: serializedSchema(fnConfig.options.outputSchema, 'output'),
       });
     }
 
@@ -1831,7 +1836,7 @@ export class Worker {
         config: {},
         metadata,
         inputSchema: serializedSchema(cfg.inputSchema),
-        outputSchema: serializedSchema(cfg.outputSchema),
+        outputSchema: serializedSchema(cfg.outputSchema, 'output'),
         triggers: cfg.triggers,
       });
     }
@@ -1844,8 +1849,19 @@ export class Worker {
         config: {},
         metadata: {},
         inputSchema: serializedSchema(tool.inputSchema),
-        outputSchema: serializedSchema(tool.outputSchema),
+        outputSchema: serializedSchema(tool.outputSchema, 'output'),
       });
+    }
+
+    // MCP servers defined in code (AGNT5-1569) publish agents as tools; the
+    // worker serves those agents without a registerAgents call.
+    const mcpServers = Array.from(MCPServerRegistry.all().values()).filter(server => server.published);
+    for (const server of mcpServers) {
+      for (const tool of server.publishedToolList()) {
+        if (tool.componentType === 'agent' && tool.target instanceof Agent && !this.agents.has(tool.componentName)) {
+          this.agents.set(tool.componentName, tool.target);
+        }
+      }
     }
 
     // Agents (explicitly registered via registerAgents)
@@ -1888,6 +1904,25 @@ export class Worker {
       }
     }
 
+    // Each published MCP server registers as an "mcp" component whose
+    // definition names the tools above. The platform validates it and
+    // publishes the server whole or not at all.
+    for (const server of mcpServers) {
+      if (!validServerName(server.id)) {
+        console.error(
+          `MCP server ${JSON.stringify(server.id)} will be refused: its name is part of its URL, ` +
+            "so use lowercase letters, digits, '-' and '_' (up to 63 characters)",
+        );
+      }
+      components.push({
+        name: server.id,
+        componentType: 'mcp',
+        config: {},
+        metadata: {},
+        definition: JSON.stringify(server.definition()),
+      });
+    }
+
     const visibleComponents = components.filter((component) => !isSystemComponentRegistration(component));
     const counts = {
       function: visibleComponents.filter(c => c.componentType === 'function').length,
@@ -1895,6 +1930,7 @@ export class Worker {
       tool: visibleComponents.filter(c => c.componentType === 'tool').length,
       agent: visibleComponents.filter(c => c.componentType === 'agent').length,
       scorer: visibleComponents.filter(c => c.componentType === 'scorer').length,
+      'mcp server': visibleComponents.filter(c => c.componentType === 'mcp').length,
     };
     const summary = Object.entries(counts).filter(([, n]) => n > 0).map(([t, n]) => `${n} ${t}(s)`).join(', ');
     console.log(`📦 Registered components: ${summary || 'none'}`);

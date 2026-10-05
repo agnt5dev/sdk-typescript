@@ -4,6 +4,8 @@ import type { WorkerlessFlowControlPolicy } from './flow-control.js';
 export interface WorkflowConfig {
   name: string;
   handler: WorkflowHandler;
+  /** What the workflow does. Used as the description of an MCP tool that publishes it. */
+  description?: string;
   /** JSON Schema for workflow input. */
   inputSchema?: JSONSchema;
   /** JSON Schema for workflow output. */
@@ -52,6 +54,8 @@ export interface WebhookTriggerOptions extends EventTriggerOptions {
 export interface WorkflowOptions {
   /** Custom workflow name (defaults to function name) */
   name?: string;
+  /** What the workflow does. Used as the description of an MCP tool that publishes it. */
+  description?: string;
   /** JSON Schema for workflow input. */
   inputSchema?: JSONSchema;
   /** JSON Schema for workflow output. */

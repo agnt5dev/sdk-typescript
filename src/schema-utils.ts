@@ -134,6 +134,41 @@ export function zodToJsonSchema(schema: any, options: SchemaConversionOptions = 
   }
 }
 
+const JSON_SCHEMA_2020_12 = 'https://json-schema.org/draft/2020-12/schema';
+
+/**
+ * Convert a component schema (Zod, TypeBox or JSON Schema) to a full-fidelity
+ * JSON Schema 2020-12 document, or `undefined` when there is none.
+ *
+ * Zod 4 schemas use Zod's own converter, which keeps defaults, `$defs`,
+ * `anyOf` and `additionalProperties`; `io` picks whether the document
+ * describes what the component accepts (`input`, where fields with defaults
+ * are optional) or what it returns (`output`). Older Zod schemas fall back to
+ * {@link zodToJsonSchema}. JSON Schema and TypeBox schemas are kept as
+ * written. A `$schema` naming another draft is dropped: the document is read
+ * as 2020-12.
+ */
+export function toJsonSchemaDocument(
+  schema: unknown,
+  io: 'input' | 'output' = 'input',
+): JSONSchema | undefined {
+  if (!schema || typeof schema !== 'object') return undefined;
+  let doc: JSONSchema;
+  if (isZodSchema(schema)) {
+    const zod = schema as { toJSONSchema?: (params?: Record<string, unknown>) => JSONSchema };
+    doc = typeof zod.toJSONSchema === 'function'
+      ? zod.toJSONSchema({ target: 'draft-2020-12', io, unrepresentable: 'any' })
+      : zodToJsonSchema(schema);
+  } else {
+    doc = schema as JSONSchema;
+  }
+  if (typeof doc.$schema === 'string' && doc.$schema.replace(/#$/, '') !== JSON_SCHEMA_2020_12) {
+    const { $schema: _ignored, ...rest } = doc;
+    return rest;
+  }
+  return doc;
+}
+
 /**
  * Basic Zod to JSON Schema conversion (fallback when zod-to-json-schema is not available)
  */
