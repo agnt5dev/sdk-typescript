@@ -2,6 +2,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { WorkerOptions, Context, Logger, StepOptions } from './types.js';
 import { callerFromMetadata } from './caller.js';
 import type { Caller } from './caller.js';
+import { progressReport } from './progress.js';
+import type { ProgressOptions } from './progress.js';
 import { FunctionRegistry } from './function.js';
 import { WorkflowRegistry } from './workflow.js';
 import type { TriggerSpec } from './workflow.js';
@@ -297,6 +299,7 @@ class SimpleContext implements Context {
   // (e.g. agent.started/completed/failed emitted by Agent.stream()).
   private _correlationStack: string[] = [];
   private _correlationScope = new AsyncLocalStorage<string>();
+  private _correlationScopes = new Map<string, { name: string; parentCorrelationId: string }>();
 
   // Per-workflow incrementing counter for generating step names like
   // `fetch_top_ids_0`, `summarize_3`. Matches sdk-python's WorkflowContext
@@ -536,6 +539,34 @@ class SimpleContext implements Context {
     }
 
     await this._emitter.emit(event);
+  }
+
+  /** See {@link Context.progress}. A no-op without an emitter (local/test mode). */
+  progress(progress: number, options?: ProgressOptions): void {
+    const report = progressReport(progress, options);
+    const runCid = this._runCid ?? this.runId.slice(0, 8);
+    const correlationId = this.getCurrentCorrelationId() ?? runCid;
+    // A function called from a workflow sits under its step or activation,
+    // as its function.started does; the dispatched component sits under the
+    // run, as its lifecycle records do.
+    const scope = this._correlationScopes.get(correlationId);
+    this._emitter?.reportProgress(report, {
+      name: scope?.name ?? (this.metadata.component_name || this.serviceName),
+      correlationId,
+      parentCorrelationId: scope?.parentCorrelationId ?? runCid,
+    });
+  }
+
+  /** Where a nested function's events sit, for ctx.progress made inside it. */
+  registerCorrelationScope(
+    cid: string,
+    scope: { name: string; parentCorrelationId: string },
+  ): void {
+    this._correlationScopes.set(cid, scope);
+  }
+
+  unregisterCorrelationScope(cid: string): void {
+    this._correlationScopes.delete(cid);
   }
 
   /** Push a correlation id onto the stack (parent context for nested events). */
@@ -1161,6 +1192,12 @@ export class Worker {
             isPullDispatch && message.metadata?.pull_completion_lifecycle_v1 === 'true',
         });
         emitter.setWorker(this.nativeWorker);
+        // A cancelled run already has its terminal (the gateway wrote
+        // run.cancelled): drop progress the moment the cancel arrives, before
+        // any component failure the handler's unwinding emits could flush it.
+        const dropProgress = () => emitter.discardProgress();
+        if (abortController.signal.aborted) dropProgress();
+        else abortController.signal.addEventListener('abort', dropProgress, { once: true });
 
         // Correlation IDs: run CID from run_id[:8], component CID random
         const runCid = runId.slice(0, 8);

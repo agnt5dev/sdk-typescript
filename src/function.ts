@@ -192,6 +192,8 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
       if (!hasTaskLocalCorrelation) {
         anyCtx.pushCorrelation(fnCid);
       }
+      // ctx.progress inside this function sits where its lifecycle does.
+      anyCtx.registerCorrelationScope?.(fnCid, { name: handlerName, parentCorrelationId: functionParentCid });
       try {
         const invokeHandler = () =>
           withSpan(`function.${handlerName}`, () => handler(ctx, ...args), {
@@ -246,6 +248,7 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
         }
         throw err;
       } finally {
+        anyCtx.unregisterCorrelationScope?.(fnCid);
         if (!hasTaskLocalCorrelation) {
           anyCtx.popCorrelation();
         }

@@ -8,7 +8,16 @@
  */
 
 import type { BaseEvent } from './events.js';
-import { isCheckpointEvent } from './events.js';
+import { isCheckpointEvent, progressUpdate } from './events.js';
+import { ProgressReporter } from './progress.js';
+import type { ProgressReport } from './progress.js';
+
+/** Where a progress report sits in the run's event tree. */
+export interface ProgressSource {
+  name: string;
+  correlationId: string;
+  parentCorrelationId: string | null;
+}
 
 const EXECUTION_AUTHORITY_METADATA_KEYS = [
   'dispatch_mode',
@@ -100,6 +109,11 @@ export class EventEmitter {
   private hasQueuedTransient = false;
   private emissionChain: Promise<void> = Promise.resolve();
   private readonly deferLifecycle: boolean;
+  private progressReporter?: ProgressReporter<ProgressSource>;
+  /** The run ended (terminal, flush or cancel): no more progress. */
+  private progressEnded = false;
+  /** The run was cancelled elsewhere: no progress record goes out, not even one in flight. */
+  private progressDiscarded = false;
 
   constructor(
     runId: string,
@@ -133,6 +147,11 @@ export class EventEmitter {
    * remains an immediate ordering barrier.
    */
   emit(event: BaseEvent): Promise<void> {
+    if (TERMINAL_EVENT_TYPES.has(event.eventType)) {
+      // The waiting progress report goes ahead of the record that ends the
+      // run; nothing reported after it is sent.
+      this.endProgress(true);
+    }
     const operation = this.emissionChain.then(() => this.emitOrdered(event));
     // Keep later fire-and-forget log events ordered even if their caller does
     // not observe a rejection. Awaited lifecycle calls still receive it.
@@ -142,27 +161,108 @@ export class EventEmitter {
 
   /** Persist any trailing lifecycle batch before the worker returns a result. */
   flush(): Promise<void> {
+    // flush() ends the run: the waiting progress report goes ahead of it,
+    // and nothing reported after it is sent.
+    this.endProgress(true);
     const operation = this.emissionChain.then(() => this.flushPendingCheckpoints());
     this.emissionChain = operation.catch(() => undefined);
     return operation;
   }
 
-  private async emitOrdered(event: BaseEvent): Promise<void> {
-    if (!this.nativeWorker) {
-      return; // No worker — running locally or in tests
-    }
+  /**
+   * Drop any progress report still waiting and take no more: for a run that
+   * already has its terminal elsewhere (the gateway wrote run.cancelled).
+   */
+  discardProgress(): void {
+    this.endProgress(false);
+  }
 
-    // Signal language-runtime admission before any checkpoint I/O or batching.
-    // SDK-core gates pull-slot ramp-up on this edge, so a blocked Node event
-    // loop cannot cause the worker to claim its entire concurrency budget.
-    if (
-      event.eventType === 'run.started' &&
-      typeof this.nativeWorker.markExecutionStarted === 'function'
-    ) {
-      this.nativeWorker.markExecutionStarted(this.runId);
+  /**
+   * Stop progress for good, sending what is waiting first or not. Recorded
+   * on the emitter, so a report made after the end can't start a reporter.
+   */
+  private endProgress(sendWaiting: boolean): void {
+    this.progressEnded = true;
+    if (sendWaiting) {
+      this.progressReporter?.drain();
+    } else {
+      this.progressDiscarded = true;
+      this.progressReporter?.close();
     }
+  }
 
+  /**
+   * `ctx.progress` for this run. Reports are coalesced to at most one a
+   * second, the latest, and each is appended to the journal at once (see
+   * {@link appendNow}); the last one is appended before the run finishes.
+   * `source` is kept only with an accepted report. False when the report was
+   * dropped: it went backwards, repeated the last one, the run has finished,
+   * or there is no worker to send it.
+   *
+   * The never-backwards filter is per emitter, one execution of the run; the
+   * runtime enforces it across executions (retries, resumed workflows).
+   */
+  reportProgress(report: ProgressReport, source: ProgressSource): boolean {
+    if (!this.nativeWorker || this.progressEnded) return false;
+    if (!this.progressReporter) {
+      this.progressReporter = new ProgressReporter<ProgressSource>((latest, at) =>
+        this.appendNow(progressUpdate(at.name, at.correlationId, at.parentCorrelationId, latest)),
+      );
+    }
+    return this.progressReporter.report(report, source);
+  }
+
+  /**
+   * Append an event to the run's journal now, whatever its type.
+   *
+   * For side-band records someone reads while the run is still going
+   * (`progress.update`). sdk-core holds the queued events of a non-streaming
+   * pull run until it completes, so a queued report would arrive too late.
+   * Lifecycle events emitted before it are persisted first.
+   */
+  appendNow(event: BaseEvent): Promise<void> {
+    const operation = this.emissionChain.then(() => this.appendNowOrdered(event));
+    this.emissionChain = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async appendNowOrdered(event: BaseEvent): Promise<void> {
+    if (!this.nativeWorker) return;
     this.sequence++;
+    const { eventData, metadata, timestampNs } = this.prepare(event);
+    metadata['cid'] = event.correlationId;
+    metadata['pcid'] = event.parentCorrelationId || '';
+    // Lifecycle records emitted before this one go first. If that batch
+    // fails, put it back: whoever flushes next (at the latest, the end of the
+    // run) retries it and sees the failure. A progress record's own failure
+    // is best effort; a lifecycle record's isn't.
+    const batch = this.pendingCheckpoints;
+    try {
+      await this.flushPendingCheckpoints();
+    } catch (error) {
+      this.pendingCheckpoints = [...batch, ...this.pendingCheckpoints];
+      throw error;
+    }
+    // The run may have been cancelled while that flush was in flight: its
+    // terminal is already written, so this progress record would land after.
+    if (this.progressDiscarded) return;
+    await this.nativeWorker.emitCheckpoint(
+      this.runId,
+      event.eventType,
+      eventData,
+      this.sequence,
+      metadata,
+      timestampNs,
+      5000, // timeout_ms
+    );
+  }
+
+  /** The event's wire payload, metadata and a strictly increasing timestamp. */
+  private prepare(event: BaseEvent): {
+    eventData: string;
+    metadata: Record<string, string>;
+    timestampNs: number;
+  } {
     if (event.timestampNs <= this.lastTimestampNs) {
       // Native transport accepts a JavaScript Number, whose precision at
       // epoch-nanosecond scale is coarser than 1ns. Advance by 1µs so
@@ -185,8 +285,26 @@ export class EventEmitter {
       const value = this.baseMetadata[key];
       if (value !== undefined) metadata[key] = value;
     }
+    return { eventData, metadata, timestampNs: Number(event.timestampNs) };
+  }
 
-    const timestampNs = Number(event.timestampNs);
+  private async emitOrdered(event: BaseEvent): Promise<void> {
+    if (!this.nativeWorker) {
+      return; // No worker — running locally or in tests
+    }
+
+    // Signal language-runtime admission before any checkpoint I/O or batching.
+    // SDK-core gates pull-slot ramp-up on this edge, so a blocked Node event
+    // loop cannot cause the worker to claim its entire concurrency budget.
+    if (
+      event.eventType === 'run.started' &&
+      typeof this.nativeWorker.markExecutionStarted === 'function'
+    ) {
+      this.nativeWorker.markExecutionStarted(this.runId);
+    }
+
+    this.sequence++;
+    const { eventData, metadata, timestampNs } = this.prepare(event);
 
     if (isCheckpointEvent(event.eventType)) {
       // Add correlation IDs to metadata (matches Python EventEmitter convention)

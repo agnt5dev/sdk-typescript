@@ -493,6 +493,35 @@ export function logEvent(
   };
 }
 
+// ─── Progress events ────────────────────────────────────────────────
+
+/**
+ * A `ctx.progress` report: how far the run has got, out of `total` when
+ * known, and what it is doing. Appended to the journal as it is made (see
+ * `EventEmitter.reportProgress`), not queued.
+ */
+export interface ProgressUpdate extends BaseEvent {
+  eventType: 'progress.update';
+  progress: number;
+  total?: number;
+  message?: string;
+}
+
+export function progressUpdate(
+  name: string,
+  correlationId: string,
+  parentCorrelationId: string | null,
+  report: { progress: number; total?: number; message?: string },
+): ProgressUpdate {
+  return {
+    ...baseFields(name, correlationId, parentCorrelationId),
+    eventType: 'progress.update',
+    progress: report.progress,
+    total: report.total,
+    message: report.message,
+  };
+}
+
 // ─── Run lifecycle events ───────────────────────────────────────────
 
 export interface RunStarted extends BaseEvent {
