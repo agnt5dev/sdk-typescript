@@ -5,6 +5,8 @@ import type { RuntimeContext } from './runtime-context.js';
 import type { Context, Logger, StepOptions } from './types.js';
 import { callerFromMetadata } from './caller.js';
 import type { Caller } from './caller.js';
+import { progressReport } from './progress.js';
+import type { ProgressOptions } from './progress.js';
 
 export interface WorkerlessContextOptions {
   checkpoints?: Record<string, unknown>;
@@ -250,6 +252,14 @@ export class WorkerlessContext implements Context {
 
   async emit(event: unknown): Promise<void> {
     this.emittedEvents.push(normalizeWorkerlessEvent(event));
+  }
+
+  /**
+   * Checked, then dropped: a workerless invocation returns its events with
+   * its result, too late for anyone watching it run.
+   */
+  progress(progress: number, options?: ProgressOptions): void {
+    progressReport(progress, options);
   }
 
   close(): void {
