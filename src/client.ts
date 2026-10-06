@@ -102,6 +102,8 @@ export type RunStatus =
 
 /** Structured error detail from a failed run */
 export interface RunErrorDetail {
+  type?: string;
+  stack?: string;
   code: string;
   message: string;
   details?: Record<string, any>;
@@ -119,6 +121,8 @@ interface RawRunResponse {
   error?: any;
   error_message?: string;
   error_code?: string;
+  error_type?: string;
+  error_stack?: string;
   duration_ms?: number;
   trace_id?: string;
   component?: string;
@@ -200,18 +204,24 @@ export class RunResponse<T = any> {
     this.metadata = raw.metadata;
 
     // Parse error — could be a string or a structured object
-    if (raw.error || raw.error_message) {
+    if (raw.error || raw.error_message || (raw.status === 'failed' && (raw.error_type || raw.metadata?.error_type || raw.error?.type))) {
       if (typeof raw.error === 'string') {
         this.error = { code: raw.error_code || 'EXECUTION_FAILED', message: raw.error };
-      } else if (typeof raw.error === 'object') {
+      } else if (raw.error && typeof raw.error === 'object') {
         this.error = {
           code: raw.error.code || raw.error_code || 'EXECUTION_FAILED',
           message: raw.error.message || String(raw.error),
           details: raw.error.details,
         };
-      } else if (raw.error_message) {
-        this.error = { code: raw.error_code || 'EXECUTION_FAILED', message: raw.error_message };
+      } else {
+        this.error = { code: raw.error_code || 'EXECUTION_FAILED', message: raw.error_message ?? 'Execution failed' };
       }
+    }
+    if (this.error) {
+      const type = raw.error?.type ?? raw.error_type ?? raw.metadata?.error_type;
+      const stack = raw.error?.stack ?? raw.error_stack ?? raw.metadata?.error_stack;
+      if (typeof type === 'string') this.error.type = type;
+      if (typeof stack === 'string') this.error.stack = stack;
     }
   }
 

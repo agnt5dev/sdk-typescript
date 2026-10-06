@@ -112,7 +112,8 @@ Set `autoRegister: true` to discover registered agents, or use
 `worker.registerAgents(...)` for an explicit agent list. Auto-discovery of agents
 is disabled when the option is omitted. Workers contain
 detached promise rejections and timer exceptions, fail their originating run,
-and retain the error class and stack. `containProcessErrors: false` disables
+and retain the error class and stack in `result.error.type` and
+`result.error.stack`. `containProcessErrors: false` disables
 those process guards for applications that own process error handling.
 
 ## Package entrypoints
