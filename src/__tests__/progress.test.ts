@@ -329,6 +329,53 @@ describe('ctx.progress', () => {
       expect(figures(native)).toEqual([[1, 3, undefined]]);
     });
 
+    it('a cancelled workflow writes nothing after the gateway cancelled it', async () => {
+      const native = nativeWorker();
+      const worker = new Worker('progress-test', { serviceVersion: '0.1.0' });
+      (worker as any).nativeWorker = native;
+      workflow('triage', async ctx => {
+        ctx.progress(1, { total: 3 });
+        ctx.progress(2, { total: 3 }); // waiting out the interval
+        (worker as any).inflight.get('run-progress').abort();
+        throw new Error('aborted');
+      });
+      const result = await (worker as any)
+        .processMessage({
+          invocationId: 'run-progress',
+          componentName: 'triage',
+          componentType: 'workflow',
+          inputJson: '{}',
+          metadata: { run_id: 'run-progress', component_name: 'triage' },
+        })
+        .then(JSON.parse);
+      expect(result.eventType).toBe('run.cancelled');
+      // workflow.failed is still emitted while unwinding; the waiting report
+      // must not ride ahead of it.
+      const types = native.emitCheckpoint.mock.calls.map(args => args[1]);
+      expect(types).toContain('workflow.failed');
+      expect(figures(native)).toEqual([[1, 3, undefined]]);
+    });
+
+    it("a function's report hangs off its run like its lifecycle records", async () => {
+      const native = nativeWorker();
+      fn('embed_docs').run(async ctx => {
+        ctx.progress(1, { total: 1 });
+        return { ok: true };
+      });
+      await dispatch(native, 'embed_docs', 'function');
+      const calls = native.emitCheckpoint.mock.calls;
+      const progress = calls.find(args => args[1] === 'progress.update')!;
+      const data = JSON.parse(progress[2]);
+      const runCid = 'run-progress'.slice(0, 8);
+      expect(data.parent_correlation_id).toBe(runCid);
+      expect(progress[4].pcid).toBe(runCid);
+      // And sits under the function, as function.started does.
+      const started = [...calls, ...native.emitCheckpointBatch.mock.calls.flatMap(args =>
+        (args[0] as any[]).map(e => [e.runId, e.eventType, e.eventData]))]
+        .find(args => args[1] === 'function.started')!;
+      expect(data.correlation_id).toBe(JSON.parse(started[2]).correlation_id);
+    });
+
     function dispatch(native: Native, componentName: string, componentType: string) {
       const worker = new Worker('progress-test', { serviceVersion: '0.1.0' });
       (worker as any).nativeWorker = native;

@@ -546,7 +546,9 @@ class SimpleContext implements Context {
     this._emitter?.reportProgress(report, {
       name: this.metadata.component_name || this.serviceName,
       correlationId: this.getCurrentCorrelationId() ?? this.runId.slice(0, 8),
-      parentCorrelationId: this._runCid ?? null,
+      // Workflows set the run's cid; other dispatches use the same one
+      // their lifecycle records are parented to.
+      parentCorrelationId: this._runCid ?? this.runId.slice(0, 8),
     });
   }
 
@@ -1173,6 +1175,12 @@ export class Worker {
             isPullDispatch && message.metadata?.pull_completion_lifecycle_v1 === 'true',
         });
         emitter.setWorker(this.nativeWorker);
+        // A cancelled run already has its terminal (the gateway wrote
+        // run.cancelled): drop progress the moment the cancel arrives, before
+        // any component failure the handler's unwinding emits could flush it.
+        const dropProgress = () => emitter.discardProgress();
+        if (abortController.signal.aborted) dropProgress();
+        else abortController.signal.addEventListener('abort', dropProgress, { once: true });
 
         // Correlation IDs: run CID from run_id[:8], component CID random
         const runCid = runId.slice(0, 8);
@@ -1688,9 +1696,6 @@ export class Worker {
           // Flush any trailing component/session lifecycle batch first.
           try {
             try {
-              // A cancelled run already has its terminal (the gateway wrote
-              // run.cancelled): progress still waiting would land after it.
-              if (abortController.signal.aborted) emitter.discardProgress();
               await emitter.flush();
             } catch (flushError) {
               // A run whose events could not be delivered did not succeed,
