@@ -1,11 +1,24 @@
 /** Publishing MCPServer definitions with the deployment (AGNT5-1569). */
 
+import { createHash } from 'node:crypto';
+import { mkdtempSync, truncateSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Agent, AgentRegistry } from '../agent.js';
 import type { GenerateRequest, GenerateResponse, LanguageModel } from '../agent.js';
 import { fn, FunctionRegistry } from '../function.js';
 import { MCPServer } from '../mcp-server.js';
-import { MCP_RUN_VIEW, MCPServerRegistry } from '../mcp-publish.js';
+import {
+  MCP_MAX_VIEW_BYTES,
+  MCP_MAX_VIEWS_BYTES,
+  MCP_RUN_VIEW,
+  MCPServerRegistry,
+  checkViewsBudget,
+  validServerName,
+  viewRegistrationBytes,
+} from '../mcp-publish.js';
 import { toJsonSchemaDocument } from '../schema-utils.js';
 import { ToolRegistry } from '../tool.js';
 import { Worker } from '../worker.js';
@@ -44,6 +57,8 @@ class MockLanguageModel implements LanguageModel {
     return { text: 'ok', finishReason: 'stop' };
   }
 }
+
+const BOARD = '<!doctype html><title>Order</title><p>An order board ✓</p>';
 
 const orderSchema = {
   type: 'object' as const,
@@ -259,6 +274,103 @@ describe('MCPServer publishing', () => {
     expect(() => server.addWorkflow('custom', triage, { view: 'board' as any })).toThrow(/view must be/);
   });
 
+  it('ships custom views that tools name, in any mode', () => {
+    const { lookupOrder, triage } = defineComponents();
+    const server = new MCPServer('support');
+    const board = server.addView('order', { html: BOARD });
+    expect([board.name, board.server, board.size]).toEqual(['order', 'support', Buffer.byteLength(BOARD)]);
+    expect(board.sha256).toBe(createHash('sha256').update(BOARD).digest('hex'));
+    expect(Object.keys(board)).not.toContain('html');
+
+    const dir = mkdtempSync(join(tmpdir(), 'agnt5-view-'));
+    const built = join(dir, 'receipt.html');
+    writeFileSync(built, '<!doctype html><p>Receipt</p>');
+    const receipt = server.addView('receipt', { path: pathToFileURL(built) });
+
+    // Sync tools too; by handle or by name.
+    server.addFunction('lookup', lookupOrder, { view: board });
+    server.addWorkflow('triage_ticket', triage, { view: 'receipt' });
+    server.addWorkflow('plain', triage);
+    const definition = server.definition();
+    const tools = Object.fromEntries(definition.tools.map(t => [t.name, t]));
+    expect(tools.lookup.view).toBe('order');
+    expect(tools.triage_ticket.view).toBe('receipt');
+    expect(tools.plain).not.toHaveProperty('view');
+    expect(definition.views).toEqual([
+      { name: 'order', sha256: board.sha256, size: board.size, html: BOARD },
+      { name: 'receipt', sha256: receipt.sha256, size: receipt.size, html: '<!doctype html><p>Receipt</p>' },
+    ]);
+    expect([...server.views.keys()]).toEqual(['order', 'receipt']);
+  });
+
+  it('checks views where they are added and named', () => {
+    const { lookupOrder } = defineComponents();
+    const server = new MCPServer('support');
+    expect(() => server.addView('Order Board', { html: BOARD })).toThrow(/lowercase/);
+    expect(() => server.addView('run', { html: BOARD })).toThrow(/reserved/);
+    expect(() => server.addView('none', { html: BOARD })).toThrow(/reserved/);
+    expect(() => server.addView('order', {} as any)).toThrow(/one of \{ html \} or \{ path \}/);
+    expect(() => server.addView('order', { html: BOARD, path: 'x.html' } as any)).toThrow(/one of/);
+    expect(() => server.addView('order', { path: join(tmpdir(), 'agnt5-missing-view.html') })).toThrow(
+      /does not exist. Build it first/,
+    );
+    expect(() => server.addView('order', { html: ' ' })).toThrow(/no HTML/);
+    expect(() => server.addView('order', { html: 'x'.repeat(MCP_MAX_VIEW_BYTES + 1) })).toThrow(/limit is 2097152/);
+    server.addView('order', { html: BOARD });
+    expect(() => server.addView('order', { html: BOARD })).toThrow(/already has a view/);
+
+    const invoice = new MCPServer('billing').addView('invoice', { html: BOARD });
+    expect(() => server.addFunction('lookup', lookupOrder, { view: invoice })).toThrow(/belongs to MCP server "billing"/);
+    expect(() => server.addFunction('lookup', lookupOrder, { view: 'chart' })).toThrow(/view must be/);
+  });
+
+  it('budgets views as they travel in the registration', () => {
+    // The definition is a JSON string inside a JSON webhook: escaped twice.
+    for (const html of [BOARD, '<script>const a = "x\\y";</script>', 'line\none\ttab\u0001', '✓ é 注 😀']) {
+      const twice = JSON.stringify(JSON.stringify(html).slice(1, -1)).slice(1, -1);
+      expect(viewRegistrationBytes(html)).toBe(Buffer.byteLength(twice));
+    }
+    // Within 2 MB, but four times that escaped twice: refused for the server.
+    const quotes = '"'.repeat(1024 * 1024);
+    expect(() => new MCPServer('one').addView('a', { html: quotes })).toThrow(
+      /take 4194304 bytes of the registration/,
+    );
+    expect(MCP_MAX_VIEWS_BYTES).toBeLessThan(4 * 1024 * 1024);
+  });
+
+  it("budgets only the published servers' views, together", () => {
+    const big = 'x'.repeat(MCP_MAX_VIEW_BYTES);
+    const one = new MCPServer('one');
+    const two = new MCPServer('two');
+    one.addView('a', { html: big });
+    two.addView('b', { html: big }); // each server is within its own budget
+    new MCPServer('stdio-only').addView('c', { html: big });
+    expect(() => checkViewsBudget([one])).not.toThrow();
+    expect(() => checkViewsBudget([one, two])).toThrow(/take 4194304 bytes .* \(one\/a 2097152, two\/b 2097152\)/);
+  });
+
+  it('refuses HTML with unpaired surrogates', () => {
+    const server = new MCPServer('support');
+    for (const html of ['<p>\uD800</p>', '<p>\uDC00</p>', '<p>a\uDBFF</p>']) {
+      expect(() => server.addView('order', { html })).toThrow(/unpaired UTF-16 surrogates/);
+    }
+    // A paired surrogate (an emoji) is fine.
+    expect(server.addView('order', { html: '<p>😀</p>' }).size).toBe(Buffer.byteLength('<p>😀</p>'));
+  });
+
+  it('matches names whole and refuses oversized files before reading them', () => {
+    const { lookupOrder } = defineComponents();
+    const server = new MCPServer('support');
+    expect(() => server.addView('order\n', { html: BOARD })).toThrow(/lowercase/);
+    expect(() => server.addFunction('lookup\n', lookupOrder)).toThrow(/1 to 128/);
+    expect(validServerName('support\n')).toBe(false);
+
+    const huge = join(mkdtempSync(join(tmpdir(), 'agnt5-view-')), 'huge.html');
+    writeFileSync(huge, '');
+    truncateSync(huge, MCP_MAX_VIEW_BYTES + 1);
+    expect(() => server.addView('order', { path: huge })).toThrow(/limit is 2097152/);
+  });
+
   it('does not publish stdio-only servers', () => {
     const stdio = new MCPServer({
       id: 'legacy',
@@ -275,7 +387,7 @@ describe('MCPServer publishing', () => {
 describe('Worker MCP registration', () => {
   it('registers published servers as mcp components and serves their agents', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    supportServer();
+    supportServer().addView('board', { html: BOARD });
     new MCPServer('stdio-only'); // nothing published: not registered
 
     await new Worker('ts-worker').run();
@@ -289,11 +401,28 @@ describe('Worker MCP registration', () => {
       'mcp_test_triage',
       'mcp_test_agent',
     ]);
+    // The bundle travels with the registration, byte for byte.
+    expect(definition.views[0].html).toBe(BOARD);
     const byName = new Map(components.map(c => [c.name, c.componentType]));
     expect(byName.get('mcp_test_lookup_order')).toBe('function');
     expect(byName.get('mcp_test_triage')).toBe('workflow');
     // The published agent is served without a registerAgents call.
     expect(byName.get('mcp_test_agent')).toBe('agent');
+  });
+
+  it("refuses to start past the views budget, counting only published servers' views", async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { lookupOrder } = defineComponents();
+    const big = 'x'.repeat(MCP_MAX_VIEW_BYTES);
+    const one = new MCPServer('one');
+    one.addFunction('lookup', lookupOrder, { view: one.addView('big', { html: big }) });
+    new MCPServer('stdio-only').addView('big', { html: big }); // not published
+    await new Worker('ts-worker').run();
+    expect((globalThis as any).__agnt5RegisteredComponents.some((c: any) => c.name === 'one')).toBe(true);
+
+    const two = new MCPServer('two');
+    two.addFunction('lookup', lookupOrder, { view: two.addView('big', { html: big }) });
+    await expect(new Worker('ts-worker').run()).rejects.toThrow(/bytes of its registration together/);
   });
 
   it('logs, but still registers, a server name the platform will refuse', async () => {

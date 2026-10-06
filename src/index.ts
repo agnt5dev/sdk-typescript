@@ -118,7 +118,16 @@ export type { ToolInvokeOptions } from './tool.js';
 export type { ToolFunction } from './tool.js';
 export { MCPServer, MCPServerError, Prompt, Resource } from './mcp-server.js';
 export type { MCPServerOptions } from './mcp-server.js';
-export { MCPServerRegistry, MCP_RUN_VIEW, MCP_SCHEMA_VERSION, validServerName } from './mcp-publish.js';
+export {
+  MCPServerRegistry,
+  MCPView,
+  MCP_MAX_VIEW_BYTES,
+  MCP_MAX_VIEWS_BYTES,
+  MCP_RUN_VIEW,
+  MCP_SCHEMA_VERSION,
+  validServerName,
+  viewRegistrationBytes,
+} from './mcp-publish.js';
 export type {
   MCPToolMode,
   MCPToolView,
@@ -127,6 +136,8 @@ export type {
   MCPToolOptions,
   MCPToolDefinition,
   MCPServerDefinition,
+  MCPViewDefinition,
+  MCPViewSource,
   PublishedTool,
 } from './mcp-publish.js';
 
