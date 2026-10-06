@@ -349,6 +349,15 @@ describe('MCPServer publishing', () => {
     expect(() => checkViewsBudget([one, two])).toThrow(/take 4194304 bytes .* \(one\/a 2097152, two\/b 2097152\)/);
   });
 
+  it('refuses HTML with unpaired surrogates', () => {
+    const server = new MCPServer('support');
+    for (const html of ['<p>\uD800</p>', '<p>\uDC00</p>', '<p>a\uDBFF</p>']) {
+      expect(() => server.addView('order', { html })).toThrow(/unpaired UTF-16 surrogates/);
+    }
+    // A paired surrogate (an emoji) is fine.
+    expect(server.addView('order', { html: '<p>😀</p>' }).size).toBe(Buffer.byteLength('<p>😀</p>'));
+  });
+
   it('matches names whole and refuses oversized files before reading them', () => {
     const { lookupOrder } = defineComponents();
     const server = new MCPServer('support');

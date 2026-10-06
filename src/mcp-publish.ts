@@ -226,6 +226,13 @@ export function viewRegistrationBytes(html: string): number {
   return size;
 }
 
+/** Whether `text` has no unpaired UTF-16 surrogates. */
+function isWellFormed(text: string): boolean {
+  const native = (text as { isWellFormed?: () => boolean }).isWellFormed;
+  if (typeof native === 'function') return native.call(text);
+  return !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text);
+}
+
 /**
  * Refuse a worker whose published servers' views together pass
  * {@link MCP_MAX_VIEWS_BYTES} of its registration: the registration would
@@ -295,6 +302,12 @@ export function loadView(server: string, name: string, source: MCPViewSource): M
   }
   if (typeof html !== 'string' || !html.trim()) {
     throw new Error(`view ${JSON.stringify(name)} has no HTML`);
+  }
+  // A lone surrogate isn't text: UTF-8 can't carry it (TextEncoder would
+  // swap in U+FFFD, changing the hash), and JSON escapes it to \udXXX, past
+  // what the registration budget counts. A file read as UTF-8 never has one.
+  if (!isWellFormed(html)) {
+    throw new Error(`view ${JSON.stringify(name)}: its HTML contains unpaired UTF-16 surrogates`);
   }
   const data = new TextEncoder().encode(html);
   if (data.length > MCP_MAX_VIEW_BYTES) {
