@@ -299,6 +299,7 @@ class SimpleContext implements Context {
   // (e.g. agent.started/completed/failed emitted by Agent.stream()).
   private _correlationStack: string[] = [];
   private _correlationScope = new AsyncLocalStorage<string>();
+  private _correlationScopes = new Map<string, { name: string; parentCorrelationId: string }>();
 
   // Per-workflow incrementing counter for generating step names like
   // `fetch_top_ids_0`, `summarize_3`. Matches sdk-python's WorkflowContext
@@ -543,13 +544,29 @@ class SimpleContext implements Context {
   /** See {@link Context.progress}. A no-op without an emitter (local/test mode). */
   progress(progress: number, options?: ProgressOptions): void {
     const report = progressReport(progress, options);
+    const runCid = this._runCid ?? this.runId.slice(0, 8);
+    const correlationId = this.getCurrentCorrelationId() ?? runCid;
+    // A function called from a workflow sits under its step or activation,
+    // as its function.started does; the dispatched component sits under the
+    // run, as its lifecycle records do.
+    const scope = this._correlationScopes.get(correlationId);
     this._emitter?.reportProgress(report, {
-      name: this.metadata.component_name || this.serviceName,
-      correlationId: this.getCurrentCorrelationId() ?? this.runId.slice(0, 8),
-      // Workflows set the run's cid; other dispatches use the same one
-      // their lifecycle records are parented to.
-      parentCorrelationId: this._runCid ?? this.runId.slice(0, 8),
+      name: scope?.name ?? (this.metadata.component_name || this.serviceName),
+      correlationId,
+      parentCorrelationId: scope?.parentCorrelationId ?? runCid,
     });
+  }
+
+  /** Where a nested function's events sit, for ctx.progress made inside it. */
+  registerCorrelationScope(
+    cid: string,
+    scope: { name: string; parentCorrelationId: string },
+  ): void {
+    this._correlationScopes.set(cid, scope);
+  }
+
+  unregisterCorrelationScope(cid: string): void {
+    this._correlationScopes.delete(cid);
   }
 
   /** Push a correlation id onto the stack (parent context for nested events). */

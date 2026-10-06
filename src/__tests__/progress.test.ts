@@ -284,6 +284,32 @@ describe('EventEmitter.reportProgress', () => {
     expect(figures(native)).toEqual([[1, undefined, undefined]]);
   });
 
+  it.each([
+    ['a cancel', (e: EventEmitter) => e.discardProgress()],
+    ['the end of the run', (e: EventEmitter) => void e.flush()],
+    [
+      'a terminal record',
+      (e: EventEmitter) =>
+        void e.emit({
+          eventType: 'run.completed',
+          eventId: 'done',
+          name: 'run',
+          correlationId: 'run-cid',
+          parentCorrelationId: null,
+          timestampNs: 1n,
+          metadata: {},
+        } as any),
+    ],
+  ])('takes no report after %s, even if none came before', async (_when, end) => {
+    const native = nativeWorker();
+    const emitter = new EventEmitter('run-1');
+    emitter.setWorker(native);
+    end(emitter);
+    expect(emitter.reportProgress({ progress: 1 }, SOURCE)).toBe(false);
+    await settle(2000);
+    expect(figures(native)).toEqual([]);
+  });
+
   it('is a no-op without a worker', () => {
     expect(new EventEmitter('run-1').reportProgress({ progress: 1 }, SOURCE)).toBe(false);
   });
@@ -354,6 +380,41 @@ describe('ctx.progress', () => {
       const types = native.emitCheckpoint.mock.calls.map(args => args[1]);
       expect(types).toContain('workflow.failed');
       expect(figures(native)).toEqual([[1, 3, undefined]]);
+    });
+
+    it("a function called from a workflow reports where its lifecycle sits", async () => {
+      const native = nativeWorker();
+      const embedOne = fn('embed_one').run(async (ctx, doc: string) => {
+        ctx.progress(1, { total: 1, message: `Embedded ${doc}` });
+        return doc;
+      });
+      workflow('triage', async ctx => {
+        ctx.progress(1, { total: 2, message: 'Starting' });
+        await embedOne(ctx, 'a.md');
+        return { ok: true };
+      });
+      await dispatch(native, 'triage', 'workflow');
+
+      const records = [
+        ...native.emitCheckpoint.mock.calls.map(args => ({ type: args[1], data: JSON.parse(args[2]) })),
+        ...native.emitCheckpointBatch.mock.calls.flatMap(args =>
+          (args[0] as any[]).map(e => ({ type: e.eventType, data: JSON.parse(e.eventData) })),
+        ),
+      ];
+      const started = (type: string, name: string) =>
+        records.find(r => r.type === type && r.data.name === name)!.data;
+      const progress = records.filter(r => r.type === 'progress.update').map(r => r.data);
+      const nested = progress.find(p => p.message === 'Embedded a.md');
+      const fnStarted = started('function.started', 'embed_one');
+      expect(nested).toMatchObject({
+        name: 'embed_one',
+        correlation_id: fnStarted.correlation_id,
+        parent_correlation_id: fnStarted.parent_correlation_id,
+      });
+      expect(nested.parent_correlation_id).not.toBe('run-progress'.slice(0, 8));
+      // The workflow's own report stays under the run.
+      const own = progress.find(p => p.message === 'Starting');
+      expect(own.parent_correlation_id).toBe('run-progress'.slice(0, 8));
     });
 
     it("a function's report hangs off its run like its lifecycle records", async () => {

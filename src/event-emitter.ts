@@ -110,6 +110,8 @@ export class EventEmitter {
   private emissionChain: Promise<void> = Promise.resolve();
   private readonly deferLifecycle: boolean;
   private progressReporter?: ProgressReporter<ProgressSource>;
+  /** The run ended (terminal, flush or cancel): no more progress. */
+  private progressEnded = false;
 
   constructor(
     runId: string,
@@ -146,7 +148,7 @@ export class EventEmitter {
     if (TERMINAL_EVENT_TYPES.has(event.eventType)) {
       // The waiting progress report goes ahead of the record that ends the
       // run; nothing reported after it is sent.
-      this.progressReporter?.drain();
+      this.endProgress(true);
     }
     const operation = this.emissionChain.then(() => this.emitOrdered(event));
     // Keep later fire-and-forget log events ordered even if their caller does
@@ -159,7 +161,7 @@ export class EventEmitter {
   flush(): Promise<void> {
     // flush() ends the run: the waiting progress report goes ahead of it,
     // and nothing reported after it is sent.
-    this.progressReporter?.drain();
+    this.endProgress(true);
     const operation = this.emissionChain.then(() => this.flushPendingCheckpoints());
     this.emissionChain = operation.catch(() => undefined);
     return operation;
@@ -170,7 +172,17 @@ export class EventEmitter {
    * already has its terminal elsewhere (the gateway wrote run.cancelled).
    */
   discardProgress(): void {
-    this.progressReporter?.close();
+    this.endProgress(false);
+  }
+
+  /**
+   * Stop progress for good, sending what is waiting first or not. Recorded
+   * on the emitter, so a report made after the end can't start a reporter.
+   */
+  private endProgress(sendWaiting: boolean): void {
+    this.progressEnded = true;
+    if (sendWaiting) this.progressReporter?.drain();
+    else this.progressReporter?.close();
   }
 
   /**
@@ -185,7 +197,7 @@ export class EventEmitter {
    * runtime enforces it across executions (retries, resumed workflows).
    */
   reportProgress(report: ProgressReport, source: ProgressSource): boolean {
-    if (!this.nativeWorker) return false;
+    if (!this.nativeWorker || this.progressEnded) return false;
     if (!this.progressReporter) {
       this.progressReporter = new ProgressReporter<ProgressSource>((latest, at) =>
         this.appendNow(progressUpdate(at.name, at.correlationId, at.parentCorrelationId, latest)),
