@@ -5,15 +5,21 @@ import { Agent } from './agent.js';
 import { toJsonSchemaDocument } from './schema-utils.js';
 import {
   AGENT_INPUT_SCHEMA,
+  MCP_MAX_VIEWS_BYTES,
+  MCP_RUN_VIEW,
   MCP_SCHEMA_VERSION,
   MCPServerRegistry,
+  MCPView,
   checkToolOptions,
   firstLine,
+  loadView,
   objectSchema,
   toolDefinition,
   type MCPComponentType,
   type MCPServerDefinition,
   type MCPToolOptions,
+  type MCPToolView,
+  type MCPViewSource,
   type PublishedTool,
 } from './mcp-publish.js';
 
@@ -148,6 +154,14 @@ export interface MCPServerOptions {
  *
  * The server's id is part of its URL: lowercase letters, digits, `-` and
  * `_`. `runStdio()` still serves it locally for development.
+ *
+ * A server can ship its own MCP App views (`addView`) and show one for a
+ * tool's results instead of the built-in run card:
+ *
+ * ```typescript
+ * const board = support.addView('order', { path: new URL('../views/order.html', import.meta.url) });
+ * support.addFunction('lookup_order', lookupOrder, { view: board });
+ * ```
  */
 export class MCPServer {
   readonly id: string;
@@ -163,6 +177,7 @@ export class MCPServer {
   private prompts = new Map<string, Prompt>();
   private resources = new Map<string, Resource>();
   private publishedTools = new Map<string, PublishedTool>();
+  private ownViews = new Map<string, MCPView>();
 
   constructor(id: string, options?: Omit<MCPServerOptions, 'id'>);
   constructor(options: MCPServerOptions);
@@ -200,8 +215,69 @@ export class MCPServer {
   }
 
   /**
+   * Ship an MCP App view with this server and return its handle; pass it
+   * (or `name`) as a tool's `view` to show it for that tool's results in
+   * clients that render MCP Apps (ChatGPT, Claude, Cursor, VS Code).
+   *
+   * A view is one self-contained HTML file: give its text as `{ html }` or
+   * the built file as `{ path }` (a path or file URL; for example Vite with
+   * `vite-plugin-singlefile`). It is read now, so a missing build fails at
+   * startup. Up to 2 MB per view, and 3 MB for all the views a worker
+   * publishes; `name` follows the server-name rule, and `run` and `none` are
+   * reserved.
+   *
+   * The view gets the tool's result over the MCP Apps bridge: its
+   * `structuredContent` (the output, when it is an object) and its text. A
+   * call that hands off (`auto` or `background`) gives it the run handle
+   * instead, in `_meta["com.agnt5/run"]`; the view can poll the built-in
+   * `get_run` tool through the host. Clients that don't render MCP Apps read
+   * the text.
+   */
+  addView(name: string, source: MCPViewSource): MCPView {
+    const view = loadView(this.id, name, source);
+    if (this.ownViews.has(name)) {
+      throw new Error(`MCP server ${JSON.stringify(this.id)} already has a view named ${JSON.stringify(name)}`);
+    }
+    let published = 0;
+    for (const server of MCPServerRegistry.all().values()) {
+      for (const other of server.views.values()) published += other.size;
+    }
+    if (published + view.size > MCP_MAX_VIEWS_BYTES) {
+      throw new Error(
+        `view ${JSON.stringify(name)} would make this worker's MCP views ${published + view.size} bytes together; the limit is ${MCP_MAX_VIEWS_BYTES}`,
+      );
+    }
+    this.ownViews.set(name, view);
+    return view;
+  }
+
+  /** The views this server ships (`addView`), by name. */
+  get views(): Map<string, MCPView> {
+    return new Map(this.ownViews);
+  }
+
+  /** A tool's `view` as published: the run card, none, or a view name. */
+  private resolveView(view: MCPToolView | undefined): string | null | undefined {
+    if (view === undefined || view === MCP_RUN_VIEW) return undefined;
+    if (view === null) return null;
+    if (view instanceof MCPView) {
+      if (this.ownViews.get(view.name) !== view) {
+        throw new Error(
+          `view ${JSON.stringify(view.name)} belongs to MCP server ${JSON.stringify(view.server)}; add it to ${JSON.stringify(this.id)} with addView`,
+        );
+      }
+      return view.name;
+    }
+    if (typeof view === 'string' && this.ownViews.has(view)) return view;
+    throw new Error(
+      `view must be ${JSON.stringify(MCP_RUN_VIEW)} (the AGNT5 run card), null (no view) or a view added with addView, not ${JSON.stringify(view)}`,
+    );
+  }
+
+  /**
    * Publish a function (`fn(name).run(handler)`) as a tool. Functions wait
-   * for their result (`mode: 'sync'`) unless told otherwise.
+   * for their result (`mode: 'sync'`) unless told otherwise. `view:` one of
+   * the server's own views (`addView`) shows it for every call.
    */
   addFunction(name: string, func: unknown, options: MCPToolOptions = {}): void {
     const config = (func as any)?._agnt5_config;
@@ -224,8 +300,9 @@ export class MCPServer {
    * call waits up to the server's call budget, then hands back a run handle
    * (`mode: 'auto'`). Clients that render MCP Apps (ChatGPT, Claude, Cursor,
    * VS Code) show such calls as an AGNT5 run card with live status, steps and
-   * output; `view: null` turns the card off for this tool. A plain function
-   * still serves over `runStdio` but is not published.
+   * output; `view: null` turns the card off for this tool, and `view:` one
+   * of the server's own views (`addView`) shows that instead. A plain
+   * function still serves over `runStdio` but is not published.
    */
   addWorkflow(name: string, workflow: any, options: MCPToolOptions = {}): void {
     const config = workflow?._agnt5_config;
@@ -278,6 +355,9 @@ export class MCPServer {
     };
     if (this.title) definition.title = this.title;
     if (this.instructions) definition.instructions = this.instructions;
+    if (this.ownViews.size > 0) {
+      definition.views = Array.from(this.ownViews.values(), view => view.toDefinition());
+    }
     return definition;
   }
 
@@ -294,6 +374,7 @@ export class MCPServer {
     },
   ): void {
     const { options } = spec;
+    const view = this.resolveView(options.view);
     const annotations = checkToolOptions(name, options);
     if (this.publishedTools.has(name)) {
       throw new Error(`MCP server ${JSON.stringify(this.id)} already has a tool named ${JSON.stringify(name)}`);
@@ -312,7 +393,7 @@ export class MCPServer {
       mode: options.mode,
       visibility: options.visibility ? [...options.visibility] : undefined,
       annotations,
-      view: options.view === null ? null : undefined,
+      view,
       target: spec.target,
     });
   }
