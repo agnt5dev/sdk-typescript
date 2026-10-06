@@ -265,7 +265,7 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
       if (!checkpointed) {
         return executeFunction(ctx, handlerName, args, this.config, attemptCtx => lifecycle(attemptCtx, ...args));
       }
-      const name = anyCtx.nextStepName?.(handlerName) ?? handlerName;
+      const name = anyCtx.nextStepName?.(handlerName) ?? anyCtx.allocateActivationKey?.('function-step', handlerName) ?? handlerName;
       return checkpointFunctionOutput<TOutput>(ctx, name, args, (consume, canRetry) =>
         runInWorkflowStep(() => executeFunction(ctx, handlerName, args, this.config,
           async attemptCtx => consume(await lifecycle(attemptCtx, ...args)), canRetry)));

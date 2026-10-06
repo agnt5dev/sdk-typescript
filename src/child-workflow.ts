@@ -31,9 +31,10 @@ export async function runChildWorkflow<T>(ctx: Context, name: string, input: unk
   const key = allocator?.call(ctx, 'child-workflow', name) ?? name;
   if (!managed) {
     const child = new ContextImpl(`child:${ctx.invocationId}:${key}`, `child:${ctx.runId}:${key}`, 0, name);
-    return await handler(child, input);
+    try { return await handler(child, input); }
+    finally { child.close(); }
   }
-  const client = new Client({ deploymentId: metadata.deployment_id, tenantId: metadata.sub_tenant_id });
+  const client = new Client({ deploymentId: metadata.deployment_id, tenantId: metadata.tenant_id });
   const join = async (idempotencyKey: string, expectedRunId?: string): Promise<T> => {
     throwIfAborted(ctx.signal);
     const submitted = await client.submit(name, input, { componentType: 'workflow', idempotencyKey, signal: ctx.signal,

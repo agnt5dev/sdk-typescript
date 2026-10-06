@@ -406,6 +406,38 @@ describe('durable activation V1 contract', () => {
   });
 
   it.each([
+    ActivationErrorCode.InvalidArgument, ActivationErrorCode.NonDeterministicReplay,
+    ActivationErrorCode.PayloadConflict, ActivationErrorCode.IllegalTransition,
+    ActivationErrorCode.ReferenceRequired, ActivationErrorCode.StateVersionConflict,
+    ActivationErrorCode.DurabilityUnavailable,
+  ])('fails the admitted parent for a hard nested %s error', async code => {
+    const value = request();
+    const id = await activationId(value.projectId, value.runId, value.parentActivationId, value.kind, value.stableKey);
+    const transport = new RecordingTransport({ kind: 'EXECUTE', activationId: id, attempt: 1, acceptedJournalOffset: 11n, fenceToken: encoder.encode('fence') });
+    const error = new ActivationError(code, 'nested activation failed');
+    await expect(new ActivationClient(transport).run(value, async () => { throw error; }, {
+      encodeOutput: output => encoder.encode(JSON.stringify(output)),
+      decodeOutput: output => JSON.parse(decoder.decode(output)), latencyMs: () => 1,
+    })).rejects.toBe(error);
+    expect(transport.failRequests).toHaveLength(1);
+    expect(transport.failRequests[0]).toMatchObject({ activationId: id, retryable: false });
+    expect(transport.completeRequests).toHaveLength(0);
+  });
+
+  it.each([ActivationErrorCode.Contended, ActivationErrorCode.StaleAuthority, ActivationErrorCode.Cancelled, ActivationErrorCode.UnknownOutcome, ActivationErrorCode.RequiredChildUnresolved])('does not fail an admitted parent on runtime-owned %s interruption', async code => {
+    const value = request();
+    const id = await activationId(value.projectId, value.runId, value.parentActivationId, value.kind, value.stableKey);
+    const transport = new RecordingTransport({ kind: 'EXECUTE', activationId: id, attempt: 1, acceptedJournalOffset: 11n, fenceToken: encoder.encode('fence') });
+    const error = new ActivationError(code, 'runtime must resolve this activation');
+    await expect(new ActivationClient(transport).run(value, async () => { throw error; }, {
+      encodeOutput: output => encoder.encode(JSON.stringify(output)),
+      decodeOutput: output => JSON.parse(decoder.decode(output)), latencyMs: () => 1,
+    })).rejects.toBe(error);
+    expect(transport.failRequests).toHaveLength(0);
+    expect(transport.completeRequests).toHaveLength(0);
+  });
+
+  it.each([
     ['WAIT', ActivationErrorCode.Contended],
     ['CONFLICT', ActivationErrorCode.NonDeterministicReplay],
     ['CANCELLED', ActivationErrorCode.Cancelled],

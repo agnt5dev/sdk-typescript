@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { throwIfAborted } from './cancellation.js';
 import type { WorkerOptions, Context, Logger, StepOptions } from './types.js';
 import { callerFromMetadata } from './caller.js';
 import type { Caller } from './caller.js';
@@ -1210,6 +1211,14 @@ export class Worker {
     detachedFailure.catch(() => {});
     const executeUser = <T>(execute: () => T | Promise<T>): Promise<T> =>
       Promise.race([Promise.resolve().then(execute), detachedFailure]);
+    // Node reports rejected promises after the current microtask queue and
+    // detached timers on the next turn. Let those reports reach this run
+    // before committing a successful or paused outcome.
+    const checkExecutionOutcome = async () => {
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      if (detachedError !== undefined) throw detachedError;
+      throwIfAborted(abortController.signal);
+    };
     const onDetachedError = (error: unknown) => {
       if (!active) {
         console.error(`Detached error after run ${runId} settled:`, error);
@@ -1253,6 +1262,9 @@ export class Worker {
         // sdk-core stamps pull_completion_lifecycle_v1 only on non-streaming
         // pull assignments whose session negotiated the capability.
         const emitter = new EventEmitter(runId, durableEventMetadata(message.metadata || {}), {
+          beforeTerminal: async event => {
+            if (['run.completed', 'workflow.completed', 'workflow.paused'].includes(event.eventType)) await checkExecutionOutcome();
+          },
           deferLifecycle:
             isPullDispatch && message.metadata?.pull_completion_lifecycle_v1 === 'true',
         });
@@ -1531,16 +1543,21 @@ export class Worker {
               let agentResult: AgentResult | undefined;
 
               const iterator = agent.stream(userMessage, ctx, history, { managedSpan: true })[Symbol.asyncIterator]();
-              while (true) {
-                const next = await executeUser(() => iterator.next());
-                if (next.done) break;
-                const event = next.value;
-                if ('output' in event && 'toolCalls' in event && 'context' in event) {
-                  agentResult = event as AgentResult;
-                } else {
-                  // Forward AgentEvent to platform via emitter
-                  await emitter.emit(event as AgentEvent);
+              try {
+                while (true) {
+                  const next = await executeUser(() => iterator.next());
+                  if (next.done) break;
+                  const event = next.value;
+                  if ('output' in event && 'toolCalls' in event && 'context' in event) {
+                    agentResult = event as AgentResult;
+                  } else {
+                    // Forward AgentEvent to platform via emitter
+                    await emitter.emit(event as AgentEvent);
+                  }
                 }
+              } finally {
+                // A pending user operation must not hold the failure response.
+                void iterator.return?.().catch(error => console.error('Agent stream cleanup failed', error));
               }
 
               if (!agentResult) {
@@ -1661,6 +1678,7 @@ export class Worker {
               throw new Error(`Unknown component type: ${message.componentType}`);
           }
 
+          await checkExecutionOutcome();
           ctx.logger.info(
             `run.completed | ${message.componentType} ${message.componentName} | run_id=${runId}`,
           );
@@ -1680,7 +1698,22 @@ export class Worker {
             eventType: 'run.completed',
           });
         } catch (error) {
+          // A suspension can beat Node's detached-error notification too.
+          try { await checkExecutionOutcome(); }
+          catch (outcomeError) { error = outcomeError; }
           runError = error;
+          // Cancellation already has a gateway terminal, even if the handler
+          // was about to return a pause instead of observing the signal.
+          if (abortController.signal.aborted && detachedError === undefined) {
+            runError = undefined;
+            runSpan.setAttribute('agnt5.cancelled', 'true');
+            console.log(`🛑 Invocation cancelled: ${message.componentName} (run ${runCid})`);
+            return JSON.stringify({
+              invocationId: message.invocationId,
+              outputJson: JSON.stringify({ _cancelled: true }),
+              eventType: 'run.cancelled',
+            });
+          }
           if (error instanceof DurableSleepSuspensionError) {
             return JSON.stringify({
               invocationId: message.invocationId,
@@ -1745,21 +1778,6 @@ export class Worker {
                   ? { completed_steps: JSON.stringify(error.checkpointState) }
                   : {}),
               },
-            });
-          }
-
-          // Cooperative cancellation: the handler errored because its
-          // ctx.signal was aborted (CancelExecution). The gateway already
-          // authored run.cancelled as the terminal event, so do NOT emit
-          // run.failed — return cleanly with no error.
-          if (abortController.signal.aborted && detachedError === undefined) {
-            runError = undefined;
-            runSpan.setAttribute('agnt5.cancelled', 'true');
-            console.log(`🛑 Invocation cancelled: ${message.componentName} (run ${runCid})`);
-            return JSON.stringify({
-              invocationId: message.invocationId,
-              outputJson: JSON.stringify({ _cancelled: true }),
-              eventType: 'run.cancelled',
             });
           }
 

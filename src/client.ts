@@ -13,6 +13,7 @@ import { BatchResult, BatchStatusResult } from './batch.js';
 import type { BatchConfig, BatchItemInput, CancelBatchResult } from './batch.js';
 import { EvalResponse, BatchEvalResult, BatchEvalItemResult, LLMJudge, EvaluatorPreset, normalizeBatchEvalItems, normalizeScorerSpecs } from './eval.js';
 import type { BatchEvalItem } from './eval.js';
+import { abortable, combineSignals, throwIfAborted } from './cancellation.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -452,15 +453,18 @@ export class Client {
    */
   private async withRetry<T>(
     operation: () => Promise<T>,
-    maxRetries?: number
+    maxRetries?: number,
+    signal?: AbortSignal,
   ): Promise<T> {
     const retries = maxRetries ?? this.maxRetries;
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
+      throwIfAborted(signal);
       try {
         return await operation();
       } catch (error) {
+        throwIfAborted(signal);
         lastError = error as Error;
 
         // Don't retry on these errors
@@ -475,11 +479,20 @@ export class Client {
         if (attempt === retries) break;
 
         const delay = this.retryDelayMs * Math.pow(2, attempt);
-        await new Promise(resolve => setTimeout(resolve, delay));
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try { await abortable(() => new Promise<void>(resolve => { timer = setTimeout(resolve, delay); }), signal); }
+        finally { if (timer !== undefined) clearTimeout(timer); }
       }
     }
 
     throw lastError;
+  }
+
+  private async withRequestSignal<T>(timeoutMs: number, signal: AbortSignal | undefined, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    throwIfAborted(signal);
+    const combined = combineSignals(signal, AbortSignal.timeout(timeoutMs));
+    try { return await abortable(() => operation(combined.signal!), combined.signal); }
+    finally { combined.dispose(); }
   }
 
   /**
@@ -490,7 +503,7 @@ export class Client {
   async run<T = any>(component: string, inputData: any = {}, options: RunOptions = {}): Promise<RunResponse<T>> {
     const waitMs = responseWaitMs(options.waitTimeoutMs);
     const timeoutMs = options.timeoutMs ?? Math.max(this.timeout, waitMs + 10000);
-    return this.withRetry(async () => {
+    return this.withRetry(() => this.withRequestSignal(timeoutMs, options.signal, async signal => {
       const componentType = options.componentType || 'function';
       const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/run`;
 
@@ -515,7 +528,7 @@ export class Client {
           'X-AGNT5-Wait-Timeout-Ms': String(waitMs),
         },
         body: JSON.stringify(inputData),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal,
       });
 
       if (!response.ok) {
@@ -527,94 +540,100 @@ export class Client {
       const data = (await response.json()) as RawRunResponse;
       const result = new RunResponse<T>(data);
       return result;
-    }, options.maxRetries);
+    }), options.maxRetries, options.signal);
   }
 
   /**
    * Submit a component for async execution and return immediately.
    */
   async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId' | 'idempotencyKey' | 'signal' | 'parentRunId' | 'rootRunId' | 'traceparent'> = {}): Promise<SubmitResponse> {
-    const componentType = options.componentType || 'function';
-    const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/submit`;
+    return this.withRequestSignal(this.timeout, options.signal, async requestSignal => {
+      const componentType = options.componentType || 'function';
+      const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/submit`;
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: this.buildHeaders(
-        {
-          ...(options.idempotencyKey !== undefined ? { 'Idempotency-Key': options.idempotencyKey } : {}),
-          ...(options.parentRunId ? { 'X-Parent-Run-ID': options.parentRunId } : {}),
-          ...(options.rootRunId ? { 'X-Root-Run-ID': options.rootRunId } : {}),
-          ...(options.traceparent ? { traceparent: options.traceparent } : {}),
-        },
-        options.tenant,
-        {
-          deploymentId: options.deploymentId,
-          includeAmbientDeploymentId: false,
-        },
-      ),
-      body: JSON.stringify(inputData),
-      signal: options.signal ?? AbortSignal.timeout(this.timeout),
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: this.buildHeaders(
+          {
+            ...(options.idempotencyKey !== undefined ? { 'Idempotency-Key': options.idempotencyKey } : {}),
+            ...(options.parentRunId ? { 'X-Parent-Run-ID': options.parentRunId } : {}),
+            ...(options.rootRunId ? { 'X-Root-Run-ID': options.rootRunId } : {}),
+            ...(options.traceparent ? { traceparent: options.traceparent } : {}),
+          },
+          options.tenant,
+          {
+            deploymentId: options.deploymentId,
+            includeAmbientDeploymentId: false,
+          },
+        ),
+        body: JSON.stringify(inputData),
+        signal: requestSignal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: Submission failed`);
+      }
+
+      const data = (await response.json()) as any;
+      return {
+        runId: data.run_id || data.runId || '',
+        status: (data.status as RunStatus) || 'enqueued',
+        traceId: data.trace_id,
+        component: data.component,
+        createdAt: data.created_at,
+      };
     });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: Submission failed`);
-    }
-
-    const data = (await response.json()) as any;
-    return {
-      runId: data.run_id || data.runId || '',
-      status: (data.status as RunStatus) || 'enqueued',
-      traceId: data.trace_id,
-      component: data.component,
-      createdAt: data.created_at,
-    };
   }
 
   /**
    * Get the current status of a run.
    */
   async getStatus(runId: string, signal?: AbortSignal): Promise<RunResponse> {
-    const url = `${this.gatewayUrl}/v1/status/${runId}`;
+    return this.withRequestSignal(this.timeout, signal, async requestSignal => {
+      const url = `${this.gatewayUrl}/v1/status/${runId}`;
 
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: this.buildHeaders(),
-      signal: signal ?? AbortSignal.timeout(this.timeout),
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.buildHeaders(),
+        signal: requestSignal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: Failed to get status`);
+      }
+
+      const data = (await response.json()) as RawRunResponse;
+      return new RunResponse(data);
     });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: Failed to get status`);
-    }
-
-    const data = (await response.json()) as RawRunResponse;
-    return new RunResponse(data);
   }
 
   /**
    * Get the result of a completed run.
    */
   async getResult<T = any>(runId: string, signal?: AbortSignal): Promise<RunResponse<T>> {
-    const url = `${this.gatewayUrl}/v1/result/${runId}`;
+    return this.withRequestSignal(this.timeout, signal, async requestSignal => {
+      const url = `${this.gatewayUrl}/v1/result/${runId}`;
 
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: this.buildHeaders(),
-      signal: signal ?? AbortSignal.timeout(this.timeout),
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.buildHeaders(),
+        signal: requestSignal,
+      });
+
+      if (response.status === 404) {
+        const errorData = (await response.json().catch(() => ({}))) as any;
+        const errorMsg = errorData.error || 'Run not found or not complete';
+        const currentStatus = errorData.status || 'unknown';
+        throw new RunError(`${errorMsg} (status: ${currentStatus})`, runId);
+      }
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: Failed to get result`);
+      }
+
+      const data = (await response.json()) as RawRunResponse;
+      return new RunResponse<T>(data);
     });
-
-    if (response.status === 404) {
-      const errorData = (await response.json().catch(() => ({}))) as any;
-      const errorMsg = errorData.error || 'Run not found or not complete';
-      const currentStatus = errorData.status || 'unknown';
-      throw new RunError(`${errorMsg} (status: ${currentStatus})`, runId);
-    }
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: Failed to get result`);
-    }
-
-    const data = (await response.json()) as RawRunResponse;
-    return new RunResponse<T>(data);
   }
 
   /**

@@ -40,9 +40,12 @@ export class WorkerlessContext implements Context {
   private pauseIndex = 0;
   private readonly userResponses = new Map<number, string | null>();
   private readonly signalResponses = new Map<string, unknown>();
+  private stepCounter = 0;
+  private readonly activationSequences = new Map<string, number>();
+  private readonly abortController = new AbortController();
   readonly metadata?: Record<string, string>;
   readonly runtime: RuntimeContext;
-  readonly signal: AbortSignal = new AbortController().signal;
+  readonly signal: AbortSignal = this.abortController.signal;
 
   constructor(
     public readonly invocationId: string,
@@ -66,6 +69,17 @@ export class WorkerlessContext implements Context {
 
   get caller(): Caller | undefined {
     return callerFromMetadata(this.metadata);
+  }
+
+  nextStepName(handlerName: string): string {
+    return `${handlerName}_${this.stepCounter++}`;
+  }
+
+  allocateActivationKey(kind: string, name: string): string {
+    const namespace = `${kind}:${name}`;
+    const ordinal = this.activationSequences.get(namespace) ?? 0;
+    this.activationSequences.set(namespace, ordinal + 1);
+    return `${namespace}:${ordinal}`;
   }
 
   async get<T>(key: string, defaultValue?: T): Promise<T | undefined> {
@@ -275,7 +289,8 @@ export class WorkerlessContext implements Context {
   }
 
   close(): void {
-    // No resources to release for workerless in-memory execution.
+    // Release unfinished function iterators and cancel any run-owned I/O.
+    this.abortController.abort();
   }
 
   private warnIfPotentialUnsafeStepChange(stepName: string, checkpointKey: string): void {

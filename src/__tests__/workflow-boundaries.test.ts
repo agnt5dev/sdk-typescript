@@ -165,6 +165,9 @@ describe('workflow execution boundaries', () => {
     ))));
     const running = dispatch(nativeWorker());
     await vi.advanceTimersByTimeAsync(100);
+    // The worker gives detached process errors one turn to surface before
+    // committing its outcome; finish those turns after the join expires.
+    await vi.runAllTimersAsync();
     await expect(running).resolves.toMatchObject({ eventType: 'run.failed', errorType: 'TimeoutError' });
     expect(vi.getTimerCount()).toBe(0);
   });

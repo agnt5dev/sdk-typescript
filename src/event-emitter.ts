@@ -88,6 +88,8 @@ function serializeEvent(event: BaseEvent): string {
 }
 
 export interface EventEmitterOptions {
+  /** Validate a terminal after earlier checkpoint writes, before authoring it. */
+  beforeTerminal?: (event: BaseEvent) => Promise<void>;
   /**
    * The runtime negotiated `pull_completion_lifecycle_v1` for this pull run:
    * non-terminal lifecycle checkpoints are queued for sdk-core to hold and
@@ -109,6 +111,7 @@ export class EventEmitter {
   private hasQueuedTransient = false;
   private emissionChain: Promise<void> = Promise.resolve();
   private readonly deferLifecycle: boolean;
+  private readonly beforeTerminal?: EventEmitterOptions['beforeTerminal'];
   private progressReporter?: ProgressReporter<ProgressSource>;
   /** The run ended (terminal, flush or cancel): no more progress. */
   private progressEnded = false;
@@ -123,6 +126,7 @@ export class EventEmitter {
     this.runId = runId;
     this.baseMetadata = baseMetadata;
     this.deferLifecycle = options.deferLifecycle === true;
+    this.beforeTerminal = options.beforeTerminal;
   }
 
   /** Whether non-terminal lifecycle checkpoints ride in CompleteJob. */
@@ -338,6 +342,7 @@ export class EventEmitter {
         typeof this.nativeWorker.emitCheckpointBatch !== 'function'
       ) {
         await this.flushPendingCheckpoints();
+        if (TERMINAL_EVENT_TYPES.has(event.eventType)) await this.beforeTerminal?.(event);
         await this.nativeWorker.emitCheckpoint(
           this.runId,
           event.eventType,

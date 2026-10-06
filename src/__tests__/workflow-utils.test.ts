@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ContextImpl } from '../context.js';
-import { WaitingForUserInputError } from '../errors.js';
+import { ActivationError, ActivationErrorCode, WaitingForUserInputError } from '../errors.js';
 import { saga, withTimeout } from '../workflow-utils.js';
 
 describe('workflow helper failure handling', () => {
@@ -50,6 +50,20 @@ describe('workflow helper failure handling', () => {
     const pause = new WaitingForUserInputError({ runId: 'helpers', question: 'Continue?', pauseIndex: 0, stepName: 'approval' });
     const compensate = vi.fn();
     await expect(saga(context(), [[async () => 1, compensate], [async () => { throw pause; }, async () => {}]])).rejects.toBe(pause);
+    expect(compensate).not.toHaveBeenCalled();
+  });
+
+  it.each([ActivationErrorCode.InvalidArgument, ActivationErrorCode.NonDeterministicReplay, ActivationErrorCode.PayloadConflict])('compensates completed actions for hard activation error %s', async code => {
+    const error = new ActivationError(code, 'nested activation failed');
+    const compensate = vi.fn(async () => {});
+    await expect(saga(context(), [[async () => 1, compensate], [async () => { throw error; }, async () => {}]])).rejects.toBe(error);
+    expect(compensate).toHaveBeenCalledOnce();
+  });
+
+  it.each([ActivationErrorCode.Contended, ActivationErrorCode.StaleAuthority, ActivationErrorCode.Cancelled, ActivationErrorCode.UnknownOutcome, ActivationErrorCode.RequiredChildUnresolved])('leaves runtime-owned interruption %s uncompensated', async code => {
+    const error = new ActivationError(code, 'runtime must resolve this activation');
+    const compensate = vi.fn(async () => {});
+    await expect(saga(context(), [[async () => 1, compensate], [async () => { throw error; }, async () => {}]])).rejects.toBe(error);
     expect(compensate).not.toHaveBeenCalled();
   });
 
