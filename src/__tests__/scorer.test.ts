@@ -449,7 +449,7 @@ describe('Built-in scorers', () => {
   });
 
   it('llmJudge: should reject labels outside configured choice scores', async () => {
-    const result = await llmJudge(
+    await expect(llmJudge(
       {
         output: '4',
         config: {
@@ -468,12 +468,7 @@ describe('Built-in scorers', () => {
           generate: async () => ({ text: '{"label":"maybe","explanation":"uncertain"}' }),
         },
       } as any,
-    );
-
-    expect(result.passed).toBe(false);
-    expect(result.label).toBe('invalid_label');
-    expect(result.metadata?.invalid_label).toBe('maybe');
-    expect(result.metadata?.allowed_labels).toEqual(['correct', 'incorrect']);
+    )).rejects.toThrow('Judge returned label');
   });
 
   it('llmJudge: should infer missing choice label from a unique returned score', async () => {
@@ -505,7 +500,7 @@ describe('Built-in scorers', () => {
   });
 
   it('llmJudge: should report missing custom prompt template variables', async () => {
-    const result = await llmJudge({
+    await expect(llmJudge({
       output: { answer: '4' },
       config: {
         prompt_template: 'Score {{output.missing}}',
@@ -513,11 +508,7 @@ describe('Built-in scorers', () => {
         provider: 'openai',
         model: 'gpt-test',
       },
-    });
-
-    expect(result.passed).toBe(false);
-    expect(result.label).toBe('config_error');
-    expect(result.explanation).toContain('output.missing');
+    })).rejects.toThrow('output.missing');
   });
 
   it('faithfulness: should bind configured context fields', async () => {
@@ -619,7 +610,7 @@ describe('Built-in scorers', () => {
   });
 
   it('correctness: a failed judge call stays an error, not an invalid label', async () => {
-    const result = await correctness(
+    await expect(correctness(
       { input: 'What is 2+2?', output: '4', expected: '4', config: {} },
       {
         runId: 'run-1',
@@ -632,12 +623,7 @@ describe('Built-in scorers', () => {
           },
         },
       } as any,
-    );
-
-    expect(result.label).toBe('error');
-    expect(result.passed).toBe(false);
-    expect(result.explanation).toBe('LLM call failed: 429 rate limited');
-    expect(result.metadata?.judge_preset).toBe('correctness');
+    )).rejects.toThrow('429 rate limited');
   });
 
   it.each([
@@ -667,7 +653,7 @@ describe('Built-in scorers', () => {
       } as any,
     );
 
-    expect(messages[0].content).toBe(CORRECTNESS_JUDGE_SYSTEM_PROMPT);
+    expect(messages[0].content).toContain(CORRECTNESS_JUDGE_SYSTEM_PROMPT);
     expect(messages[1].content).toContain(CORRECTNESS_JUDGE_CRITERIA);
     expect(messages[1].content).toContain('Choose exactly one label from: fail, partial, pass');
     expect(result.score).toBe(score);

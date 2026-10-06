@@ -605,42 +605,36 @@ export async function llmJudge(
   ctx?: ScorerContext,
 ): Promise<ScorerResult> {
   const cfg = request.config ?? {};
+  const configFailure = (message: string): ScorerResult => {
+    if (cfg.choice_scores != null) throw new Error(`Judge configuration error: ${message}`);
+    return new ScorerResult({ score: 0, passed: false, label: 'config_error', explanation: message });
+  };
   const criteria = typeof cfg.criteria === 'string' ? cfg.criteria : '';
   const promptTemplate = typeof cfg.prompt_template === 'string' ? cfg.prompt_template : '';
   if (!criteria && !promptTemplate) {
-    return new ScorerResult({
-      score: 0.0,
-      passed: false,
-      label: 'config_error',
-      explanation: 'llm_judge requires `config.criteria` or `config.prompt_template`',
-    });
+    return configFailure('llm_judge requires `config.criteria` or `config.prompt_template`');
   }
   const providerExplicit = typeof cfg.provider === 'string';
   const providerName = providerExplicit ? (cfg.provider as string) : 'openai';
   const modelName = typeof cfg.model === 'string' ? cfg.model : '';
   if (!modelName) {
-    return new ScorerResult({
-      score: 0.0,
-      passed: false,
-      label: 'config_error',
-      explanation: 'llm_judge requires `config.model`',
-    });
+    return configFailure('llm_judge requires `config.model`');
   }
-  const systemPrompt =
+  let systemPrompt =
     typeof cfg.system_prompt === 'string' ? cfg.system_prompt : LLM_JUDGE_DEFAULT_SYSTEM_PROMPT;
   const temperature = typeof cfg.temperature === 'number' ? cfg.temperature : 0.0;
   const includeInput = cfg.include_input === true;
   const contextData = cfg.context_data ?? cfg.context;
   const choiceScoresResult = parseChoiceScores(cfg.choice_scores);
   if (choiceScoresResult.error) {
-    return new ScorerResult({
-      score: 0.0,
-      passed: false,
-      label: 'config_error',
-      explanation: choiceScoresResult.error,
-    });
+    return configFailure(choiceScoresResult.error);
   }
   const choiceScores = choiceScoresResult.scores;
+  if (choiceScores) {
+    systemPrompt = typeof cfg.system_prompt === 'string' ? cfg.system_prompt
+      : 'You are an expert evaluator. Evaluate the output using the provided criteria.';
+    systemPrompt += `\n\nRespond ONLY with a JSON object containing "label" and "explanation". Choose exactly one label from: ${JSON.stringify(Object.keys(choiceScores).sort())}. The platform maps the selected label to its configured score.`;
+  }
 
   // Build the user prompt the same way Rust/Python do — keeps judge
   // verdicts comparable across languages.
@@ -655,12 +649,7 @@ export async function llmJudge(
       tags: cfg.tags,
     });
     if (rendered.error) {
-      return new ScorerResult({
-        score: 0.0,
-        passed: false,
-        label: 'config_error',
-        explanation: rendered.error,
-      });
+      return configFailure(rendered.error);
     }
     userContent = `${rendered.text!.trimEnd()}\n\n`;
     if (!templateReferencesSelector(promptTemplate, 'output')) {
@@ -697,12 +686,7 @@ export async function llmJudge(
     try {
       lm = await makeLmForProvider(providerName);
     } catch (e) {
-      return new ScorerResult({
-        score: 0.0,
-        passed: false,
-        label: 'config_error',
-        explanation: `llm_judge: unsupported provider '${providerName}': ${(e as Error).message}`,
-      });
+      return configFailure(`llm_judge: unsupported provider '${providerName}': ${(e as Error).message}`);
     }
   }
 
@@ -717,6 +701,7 @@ export async function llmJudge(
       temperature,
     });
   } catch (e) {
+    if (choiceScores) throw e;
     return new ScorerResult({
       score: 0.0,
       passed: false,
@@ -724,7 +709,7 @@ export async function llmJudge(
       explanation: `LLM call failed: ${(e as Error).message}`,
     });
   }
-  return applyChoiceScores(parseLlmJudgeResponse(response.text ?? ''), choiceScores);
+  return parseLlmJudgeResponse(response.text ?? '', choiceScores);
 }
 
 function formatJudgeValue(v: any): string {
@@ -802,12 +787,22 @@ async function makeLmForProvider(
   }
 }
 
-function parseLlmJudgeResponse(content: string): ScorerResult {
+function parseLlmJudgeResponse(content: string, choiceScores?: Record<string, number>): ScorerResult {
   const jsonStr = extractJudgeJson(content);
   let parsed: any;
   try {
     parsed = JSON.parse(jsonStr);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Judge response must be a JSON object');
+    }
+    if (parsed.passed != null && typeof parsed.passed !== 'boolean') {
+      throw new Error('Judge passed must be a boolean');
+    }
+    if (parsed.score != null && (typeof parsed.score !== 'number' || !Number.isFinite(parsed.score))) {
+      throw new Error('Judge score must be finite');
+    }
   } catch (e) {
+    if (choiceScores) throw new Error(`Judge response error: ${(e as Error).message}`);
     return new ScorerResult({
       score: 0.0,
       passed: false,
@@ -831,13 +826,13 @@ function parseLlmJudgeResponse(content: string): ScorerResult {
       extras[k] = v;
     }
   }
-  return new ScorerResult({
+  return applyChoiceScores(new ScorerResult({
     score,
     passed,
     label,
     explanation,
     metadata: Object.keys(extras).length > 0 ? extras : undefined,
-  });
+  }), choiceScores, typeof parsed.score === 'number', typeof parsed.passed === 'boolean');
 }
 
 function extractJudgeJson(raw: string): string {
@@ -927,28 +922,25 @@ function parseChoiceScores(raw: any): { scores?: Record<string, number>; error?:
 function applyChoiceScores(
   result: ScorerResult,
   choiceScores?: Record<string, number>,
+  hasScore = true,
+  hasPassed = true,
 ): ScorerResult {
   if (!choiceScores || result.label === 'parse_error' || result.label === 'config_error') {
     return result;
   }
   const labels = Object.keys(choiceScores).sort();
-  const selectedLabel = result.label && result.label in choiceScores
+  const binary = labels.length === 2 && labels.some(label => choiceScores[label] === 0)
+    && labels.some(label => choiceScores[label] === 1);
+  const inferredLabel = binary && hasPassed
+    ? labels.find(label => choiceScores[label] === Number(result.passed))
+    : hasScore ? labelForChoiceScore(result.score, choiceScores) : undefined;
+  const selectedLabel = result.label && Object.prototype.hasOwnProperty.call(choiceScores, result.label)
     ? result.label
     : result.label
       ? undefined
-      : labelForChoiceScore(result.score, choiceScores);
+      : inferredLabel;
   if (!selectedLabel || !(selectedLabel in choiceScores)) {
-    return new ScorerResult({
-      score: 0.0,
-      passed: false,
-      label: 'invalid_label',
-      explanation: `Judge returned label ${JSON.stringify(result.label)}; expected one of: ${labels.join(', ')}`,
-      metadata: {
-        ...(result.metadata ?? {}),
-        allowed_labels: labels,
-        ...(result.label ? { invalid_label: result.label } : {}),
-      },
-    });
+    throw new Error(`Judge returned label ${JSON.stringify(result.label)}; expected one of: ${labels.join(', ')}`);
   }
   const score = Math.max(0, Math.min(1, choiceScores[selectedLabel]));
   return new ScorerResult({
@@ -965,8 +957,9 @@ function applyChoiceScores(
 }
 
 function labelForChoiceScore(score: number, choiceScores: Record<string, number>): string | undefined {
+  const distance = Math.min(...Object.values(choiceScores).map(choiceScore => Math.abs(choiceScore - score)));
   const matches = Object.entries(choiceScores)
-    .filter(([, choiceScore]) => Math.abs(choiceScore - score) < 1e-9)
+    .filter(([, choiceScore]) => Math.abs(Math.abs(choiceScore - score) - distance) < 1e-9)
     .map(([label]) => label);
   return matches.length === 1 ? matches[0] : undefined;
 }
