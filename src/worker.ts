@@ -1220,14 +1220,12 @@ export class Worker {
       throwIfAborted(abortController.signal);
     };
     const onDetachedError = (error: unknown) => {
-      if (!active) {
-        console.error(`Detached error after run ${runId} settled:`, error);
-        return;
-      }
-      if (detachedError !== undefined) return;
+      if (!active) return false;
+      if (detachedError !== undefined) return true;
       detachedError = error instanceof Error ? error : new Error(String(error));
       rejectDetached(detachedError);
       abortController.abort(detachedError);
+      return true;
     };
     this.inflight.set(runId, abortController);
 

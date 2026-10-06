@@ -3,7 +3,7 @@ import { activationId } from '../activation.js';
 import { Worker } from '../worker.js';
 import { fn, FunctionRegistry } from '../function.js';
 import { workflow, WorkflowRegistry } from '../workflow.js';
-import { executeChildWorkflow, withTimeout } from '../workflow-utils.js';
+import { executeChildWorkflow, saga, withTimeout } from '../workflow-utils.js';
 import { invocationRunId } from '../child-workflow.js';
 import { ActivationError, ActivationErrorCode } from '../errors.js';
 import { tool } from '../tool.js';
@@ -128,6 +128,50 @@ describe('workflow execution boundaries', () => {
     const result = await dispatch(nativeWorker());
     expect(result).toMatchObject({ eventType: 'run.failed', errorType: 'ConfigurationError' });
     expect(result.error).toContain('Finish or close');
+  });
+
+  it.each([false, true])('rejects an incompletely consumed replay before a wait or completion (activation=%s)', async activation => {
+    const streamed = fn('replayed-stream').run(async function* () { yield 1; yield 2; } as any);
+    let boundary = 'original';
+    workflow('parent-workflow', async ctx => {
+      const iterator = await streamed(ctx) as any;
+      await iterator.next();
+      if (boundary === 'original') { await iterator.next(); await iterator.next(); }
+      if (boundary !== 'return') await ctx.waitForUser('Continue?');
+      return 'done';
+    });
+    const native = nativeWorker();
+    const flags = activation ? { durable_activation_v1: 'true' } : {};
+    const paused = await dispatch(native, flags);
+    expect(paused.eventType).toBe('workflow.paused');
+    for (boundary of ['wait', 'return']) {
+      const result = await dispatch(native, { ...flags, ...paused.metadata, user_response: 'yes' });
+      expect(result).toMatchObject({ eventType: 'run.failed', errorType: 'ConfigurationError' });
+      expect(result.error).toContain('Finish or close');
+    }
+  });
+
+  it.each([false, true])('preserves the failed saga outcome across dispatches after compensation (activation=%s)', async activation => {
+    const reserve = vi.fn(async () => 1);
+    const release = vi.fn(async () => {});
+    const charge = vi.fn().mockRejectedValueOnce(new Error('payment failed')).mockResolvedValue(2);
+    workflow('parent-workflow', async ctx => {
+      let outcome = 'success';
+      try { await saga(ctx, [[reserve, release], [charge, async () => {}]], { name: 'order' }); }
+      catch (error) { outcome = (error as Error).message; }
+      await ctx.waitForUser('Continue?');
+      return outcome;
+    });
+    const native = nativeWorker();
+    const flags = activation ? { durable_activation_v1: 'true' } : {};
+    const paused = await dispatch(native, flags);
+    expect(paused.eventType).toBe('workflow.paused');
+    const completed = await dispatch(native, { ...flags, ...paused.metadata, user_response: 'yes' });
+    expect(completed.eventType).toBe('run.completed');
+    expect(JSON.parse(completed.outputJson)).toBe('payment failed');
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+    expect(charge).toHaveBeenCalledOnce();
   });
 
   it('rejects waits inside an unfinished step instead of abandoning its activation', async () => {

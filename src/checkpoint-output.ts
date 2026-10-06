@@ -103,6 +103,7 @@ export async function checkpointFunctionOutput<T>(
     if (live) finalReply?.();
     else if (output.kind === 'value') delivered.resolve(output.value);
     else {
+      const releaseReplay = trackWorkflowStream(ctx);
       let index = 0;
       const replay = async (operation: Operation, argument?: unknown): Promise<IteratorResult<unknown>> => {
         const record = output.records[index];
@@ -113,6 +114,7 @@ export async function checkpointFunctionOutput<T>(
         if (record.operation !== operation) throw new ActivationError(ActivationErrorCode.NonDeterministicReplay, 'Streaming function replay changed iterator operations');
         if (record.argumentSignature !== iteratorArgumentSignature(argument)) throw new ActivationError(ActivationErrorCode.NonDeterministicReplay, 'Streaming function replay changed iterator arguments');
         index++;
+        if (record.result.done) releaseReplay();
         return record.result;
       };
       delivered.resolve({

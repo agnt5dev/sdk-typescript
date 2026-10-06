@@ -29,6 +29,7 @@ import { callerFromMetadata } from './caller.js';
 import type { Caller } from './caller.js';
 import { progressReport } from './progress.js';
 import type { ProgressOptions } from './progress.js';
+import { abortable, throwIfAborted } from './cancellation.js';
 
 function getNativeLogFn() {
   const native = getLoadedNativeBindings();
@@ -190,8 +191,8 @@ export class ContextImpl implements Context {
   private _activationClient?: ActivationClient;
   private _activationStepCounter = 0;
   private _activationSequences = new Map<string, number>();
-  /** Cancellation signal (never aborted on this context path). */
-  readonly signal: AbortSignal = new AbortController().signal;
+  /** Caller cancellation, or a never-aborted signal for standalone contexts. */
+  readonly signal: AbortSignal;
 
   constructor(
     public readonly invocationId: string,
@@ -207,8 +208,10 @@ export class ContextImpl implements Context {
       workerlessDeadlineMs?: number;
       workerlessYieldBeforeMs?: number;
       activationClient?: ActivationClient;
+      signal?: AbortSignal;
     }
   ) {
+    this.signal = options?.signal ?? new AbortController().signal;
     this.runtime = options?.runtime ?? emptyRuntimeContext();
     this.metadata = options?.metadata;
     this._checkpointSnapshot = new Map(Object.entries(options?.checkpoints || {}));
@@ -336,10 +339,14 @@ export class ContextImpl implements Context {
   async sleep(durationMs: number, _name?: string): Promise<void> {
     if (this._activationClient || currentActivation()) assertWorkflowWaitBoundary(this);
     validateSleepDuration(durationMs);
+    throwIfAborted(this.signal);
     if (durationMs === 0) {
       return;
     }
-    await new Promise<void>(resolve => setTimeout(resolve, durationMs));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await abortable(() => new Promise<void>(resolve => { timer = setTimeout(resolve, durationMs); }), this.signal);
+    } finally { clearTimeout(timer); }
   }
 
   checkpointSnapshot(): Record<string, any> {

@@ -365,7 +365,30 @@ export async function saga<T = any>(
       const [action, compensation] = steps[i];
 
       ctx.logger.info(`Executing saga step ${i + 1}/${steps.length}`);
-      lastResult = await checkpoint(`${name}:forward:${i}`, action);
+      let caught = false;
+      let originalError: unknown;
+      // Commit a failed forward outcome before any compensation. Replay must
+      // keep rolling back even if this action would succeed on a later attempt.
+      const outcome = await checkpoint(`${name}:forward:${i}`, async () => {
+        try { return { status: 'completed' as const, value: await action() }; }
+        catch (error) {
+          if (isControlFlow(error) || ctx.signal?.aborted) throw error;
+          caught = true;
+          originalError = error;
+          return { status: 'failed' as const, error: error instanceof Error
+            ? { kind: 'error' as const, name: error.name, message: error.message, stack: error.stack }
+            : { kind: 'value' as const, value: error } };
+        }
+      });
+      if (outcome.status === 'failed') {
+        if (caught) throw originalError;
+        if (outcome.error.kind === 'value') throw outcome.error.value;
+        const error = new Error(outcome.error.message);
+        error.name = outcome.error.name;
+        error.stack = outcome.error.stack;
+        throw error;
+      }
+      lastResult = outcome.value;
 
       completedSteps.push(compensation);
     }

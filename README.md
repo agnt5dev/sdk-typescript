@@ -68,13 +68,15 @@ finishes or is closed. Consume it with `for await`, or call `return()` before
 the workflow waits or returns. Completed streams replay their recorded iterator
 operations and validate their arguments without calling the handler again.
 Changed arguments raise `NON_DETERMINISTIC_REPLAY`. A stream is not retried after
-its iterator has been exposed to the caller.
+its iterator has been exposed to the caller. Replay iterators must also consume
+the recorded terminal operation before the workflow waits or completes.
 
 Calling a registered workflow from a managed workflow, or using
 `executeChildWorkflow`, submits a separate child run and joins its result.
 The submission uses a stable idempotency key. Child workflows need a gateway
 URL and credentials for the parent's project, and their own worker capacity.
-Standalone child calls use a separate local context.
+Standalone child calls use a separate local context and inherit cancellation
+from the parent, including cancellation triggered by `withTimeout`.
 
 Call `ctx.waitForUser`, `ctx.waitForSignal`, and durable `ctx.sleep` between
 steps. A wait inside an unfinished step or an active tool/function activation
@@ -90,6 +92,9 @@ compensations. Keep the name stable across dispatches. A pause unwinds without
 starting compensation. Failed compensations do not stop the remaining rollback;
 `SagaCompensationError` preserves the original cause and every compensation
 error. Compensations must also be idempotent.
+The failed action's outcome is recorded before rollback begins. Later dispatches
+resume rollback and preserve that failure, even if the action would now succeed.
+Start a new saga invocation to retry the transaction after compensation.
 
 In pull-worker workflows, `await ctx.set(key, value)` and
 `await ctx.delete(key)` wait for durable state-change acknowledgments.
@@ -109,6 +114,9 @@ Pass an abort signal as `agent.run(input, ctx, history, { signal })` or in an
 LM generation request. The SDK combines it with the run's cancellation signal.
 Native and edge LM providers cancel HTTP generation and streaming. Custom model
 implementations receive the signal and must honor it to stop their own I/O.
+Agent tools receive the combined signal through `ctx.signal`; cancellation also
+stops the agent waiting for an in-flight tool. Tool implementations must honor
+the signal to stop their own I/O.
 
 Set `autoRegister: true` to discover registered agents, or use
 `worker.registerAgents(...)` for an explicit agent list. Auto-discovery of agents
@@ -117,6 +125,8 @@ detached promise rejections and timer exceptions, fail their originating run,
 and retain the error class and stack in `result.error.type` and
 `result.error.stack`. `containProcessErrors: false` disables
 those process guards for applications that own process error handling.
+Errors outside an active run retain default fatal handling or the application's
+existing process handlers, including detached errors after a run has settled.
 
 ## Package entrypoints
 

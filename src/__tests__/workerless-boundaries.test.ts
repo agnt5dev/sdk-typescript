@@ -4,6 +4,7 @@ import { runChildWorkflow } from '../child-workflow.js';
 import { fn, FunctionRegistry } from '../function.js';
 import { workflow, WorkflowRegistry } from '../workflow.js';
 import { serve } from '../workerless.js';
+import { saga } from '../workflow-utils.js';
 
 async function invoke(handler: ReturnType<typeof serve>, checkpoint?: unknown, metadata?: Record<string, string>) {
   return (await handler.fetch(new Request('http://localhost/agnt5/invoke', {
@@ -83,6 +84,27 @@ describe('workerless execution boundaries', () => {
     const completed = await invoke(handler, second.checkpoint, { signal_name: 'second', waiting_step: 'finish', signal_payload: 'true' });
     expect(completed).toMatchObject({ status: 'completed', output: { first: firstSignal, second: true } });
     expect(work).toHaveBeenCalledOnce();
+  });
+
+  it('persists a failed saga outcome after rollback through the returned checkpoint', async () => {
+    const reserve = vi.fn(async () => 1);
+    const release = vi.fn(async () => {});
+    const charge = vi.fn().mockRejectedValueOnce(new Error('payment failed')).mockResolvedValue(2);
+    const parent = workflow('parent', async ctx => {
+      let outcome = 'success';
+      try { await saga(ctx, [[reserve, release], [charge, async () => {}]], { name: 'order' }); }
+      catch (error) { outcome = (error as Error).message; }
+      await ctx.waitForUser('Continue?');
+      return outcome;
+    });
+    const handler = serve({ workflows: [parent], allowUnsigned: true });
+    const paused = await invoke(handler);
+    expect(paused.status).toBe('suspended');
+    const completed = await invoke(handler, paused.checkpoint, { user_response: 'yes', pause_index: '0' });
+    expect(completed).toMatchObject({ status: 'completed', output: 'payment failed' });
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+    expect(charge).toHaveBeenCalledOnce();
   });
 
   it.each([false, true])('closes a standalone child context (throws=%s)', async throws => {

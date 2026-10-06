@@ -5,7 +5,7 @@ import { activationId, childActivationRequestFromContext, runWithActivation } fr
 import type { ActivationClient, ActivationDecision } from './activation.js';
 import { ActivationError, ActivationErrorCode, ConfigurationError, RunError } from './errors.js';
 import { retrySleep } from './function-execution.js';
-import { throwIfAborted } from './cancellation.js';
+import { abortable, throwIfAborted } from './cancellation.js';
 import { getCurrentSpanInfo } from './tracing.js';
 import type { Context, WorkflowHandler } from './types.js';
 import { encodeActivationOutput, decodeActivationOutput } from './activation-output.js';
@@ -31,8 +31,9 @@ export async function runChildWorkflow<T>(ctx: Context, name: string, input: unk
   const allocator = (ctx as any).allocateActivationKey;
   const key = allocator?.call(ctx, 'child-workflow', name) ?? name;
   if (!managed) {
-    const child = new ContextImpl(`child:${ctx.invocationId}:${key}`, `child:${ctx.runId}:${key}`, 0, name);
-    try { return await handler(child, input); }
+    throwIfAborted(ctx.signal);
+    const child = new ContextImpl(`child:${ctx.invocationId}:${key}`, `child:${ctx.runId}:${key}`, 0, name, { signal: ctx.signal });
+    try { return await abortable(() => handler(child, input), ctx.signal); }
     finally { child.close(); }
   }
   const client = new Client({ deploymentId: metadata.deployment_id, tenantId: metadata.tenant_id });

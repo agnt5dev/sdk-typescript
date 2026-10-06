@@ -1519,7 +1519,12 @@ export class Agent {
         attributes: context ? { run_id: context.runId } : undefined,
       });
       yield* traced;
-    } finally { cancellation.dispose(); }
+    } finally {
+      // A cancelled next() can leave streamLoop suspended at its failure event.
+      // Queue its return without making cancellation wait on user callbacks.
+      void agentRuns.run(scope, () => iterator.return()).catch(error => console.error('Agent cleanup failed', error));
+      cancellation.dispose();
+    }
   }
 
   private async *streamLoop(
@@ -1534,12 +1539,18 @@ export class Agent {
     const agentCorrelationId = managed ?? randomUUID();
 
     // Create context if not provided
-    const ctx = context || new ContextImpl(
+    const baseContext = context || new ContextImpl(
       `agent-${this.name}-${Date.now()}`,
       `run-${Date.now()}`,
       0,
       this.name,
     );
+    const signal = agentRuns.getStore()?.signal ?? baseContext.signal;
+    const ctx = new Proxy(baseContext, { get(target, key) {
+      if (key === 'signal') return signal;
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
     if (this.sandbox) {
       (ctx as any).sandbox = this.sandbox;
     }
@@ -1708,7 +1719,7 @@ export class Agent {
                 continue;
               }
 
-              const result = await runWithDisplayParent(iterCorrelationId, () =>
+              const result = await abortable(() => runWithDisplayParent(iterCorrelationId, () =>
                 this.invokeToolWithCallbacks({
                   agent: this,
                   context: ctx,
@@ -1720,7 +1731,7 @@ export class Agent {
                   args: toolArgs,
                   tool,
                 }),
-              );
+              ), ctx.signal);
 
               // ── Handoff detection ──
               if (result && typeof result === 'object' && (result as any)._handoff) {

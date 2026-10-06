@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { Agent } from '../agent.js';
 import { Tool } from '../tool.js';
 import { HandoffDepthExceededError, MaxIterationsExceededError } from '../errors.js';
+import { ContextImpl } from '../context.js';
 
 describe('agent run budgets', () => {
   it('rejects exhaustion without agent.completed or a raw tool result', async () => {
@@ -40,5 +41,45 @@ describe('agent run budgets', () => {
     const agent = new Agent({ name: 'pre-cancelled', instructions: '', model });
     await expect(agent.run('go', undefined, undefined, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
     expect(model.generate).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('passes caller cancellation to an in-flight tool (context=%s)', async suppliedContext => {
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    let toolSignal: AbortSignal | undefined;
+    const stopped = vi.fn();
+    const context = suppliedContext ? new ContextImpl('agent', 'agent', 0, 'agent', { storage: 'memory' }) : undefined;
+    const model = { generate: vi.fn(async () => ({ text: '', toolCalls: [{ name: 'wait', arguments: '{}' }] })) };
+    const agent = new Agent({ name: 'tool-cancel', instructions: '', model,
+      tools: [new Tool('wait', '', async ctx => {
+        toolSignal = ctx.signal; started();
+        return await new Promise<never>((_, reject) => ctx.signal.addEventListener('abort', () => { stopped(); reject(ctx.signal.reason); }, { once: true }));
+      })],
+    });
+    const controller = new AbortController();
+    const running = agent.run('go', context, undefined, { signal: controller.signal });
+    const outcome = expect(running).rejects.toMatchObject({ name: 'AbortError' });
+    await ready; controller.abort(); await outcome;
+    expect(toolSignal?.aborted).toBe(true);
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(context?.signal.aborted ?? false).toBe(false);
+    expect(model.generate).toHaveBeenCalledOnce();
+  });
+
+  it('unwinds the agent and closes its sandbox when a tool ignores cancellation', async () => {
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const close = vi.fn(async () => {});
+    const agent = new Agent({ name: 'uncooperative-tool', instructions: '',
+      model: { generate: async () => ({ text: '', toolCalls: [{ name: 'wait', arguments: '{}' }] }) },
+      tools: [new Tool('wait', '', async () => { started(); return await new Promise(() => {}); })],
+      sandbox: { close } as any,
+    });
+    const controller = new AbortController();
+    const running = agent.run('go', undefined, undefined, { signal: controller.signal });
+    const outcome = expect(running).rejects.toMatchObject({ name: 'AbortError' });
+    await ready; controller.abort(); await outcome;
+    await new Promise(resolve => setImmediate(resolve));
+    expect(close).toHaveBeenCalledOnce();
   });
 });
