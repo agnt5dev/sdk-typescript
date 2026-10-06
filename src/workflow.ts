@@ -104,6 +104,10 @@ export function workflow<TInput = any, TOutput = any>(
       actualInput = ctxOrInput as TInput;
     }
 
+    if (ctx.metadata?.component_type === 'workflow') {
+      const { executeChildWorkflow } = await import('./workflow-utils.js');
+      return await executeChildWorkflow(ctx, workflowName, actualInput);
+    }
     return handler(ctx, actualInput);
   };
 

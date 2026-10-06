@@ -168,8 +168,9 @@ export class Span {
 
   /** Record an exception on this span */
   recordException(error: Error): void {
-    this._attributes['error.type'] = error.name;
-    this._attributes['error.message'] = error.message;
+    this.setAttribute('error.type', error.name);
+    this.setAttribute('error.message', error.message);
+    if (error.stack) this.setAttribute('error.stack', error.stack.slice(0, 16384));
     if (this._nativeSpan) {
       try { this._nativeSpan.recordError(error.message); } catch { /* ignore */ }
     }

@@ -158,6 +158,7 @@ export class WaitingForUserInputError extends AGNT5Error {
   public readonly pauseIndex: number;
   public readonly allowCustom: boolean;
   public readonly skippable: boolean;
+  public readonly timeoutMs?: number;
   public readonly checkpointState: Record<string, any>;
   public readonly stepName: string | undefined;
   public readonly stepEvents?: Record<string, string | null>;
@@ -175,6 +176,7 @@ export class WaitingForUserInputError extends AGNT5Error {
     pauseIndex?: number;
     allowCustom?: boolean;
     skippable?: boolean;
+    timeoutMs?: number;
     checkpointState?: Record<string, any>;
     stepName?: string;
     stepEvents?: Record<string, string | null>;
@@ -188,6 +190,7 @@ export class WaitingForUserInputError extends AGNT5Error {
     this.pauseIndex = opts.pauseIndex ?? 0;
     this.allowCustom = opts.allowCustom ?? false;
     this.skippable = opts.skippable ?? false;
+    this.timeoutMs = opts.timeoutMs;
     this.checkpointState = opts.checkpointState || {};
     this.stepName = opts.stepName;
     this.stepEvents = opts.stepEvents;
@@ -218,6 +221,7 @@ export class DurableSleepSuspensionError extends AGNT5Error {
 export class SuspensionRequestedError extends AGNT5Error {
   public readonly runId: string;
   public readonly reason: string;
+  public readonly timeoutMs?: number;
   public readonly checkpointState: Record<string, any>;
   public readonly deadlineMs?: number;
   public readonly readyAtMs?: number;
@@ -228,6 +232,7 @@ export class SuspensionRequestedError extends AGNT5Error {
   constructor(opts: {
     runId: string;
     reason: string;
+    timeoutMs?: number;
     checkpointState?: Record<string, any>;
     deadlineMs?: number;
     readyAtMs?: number;
@@ -239,6 +244,7 @@ export class SuspensionRequestedError extends AGNT5Error {
     this.name = 'SuspensionRequestedError';
     this.runId = opts.runId;
     this.reason = opts.reason;
+    this.timeoutMs = opts.timeoutMs;
     this.checkpointState = opts.checkpointState || {};
     this.deadlineMs = opts.deadlineMs;
     this.readyAtMs = opts.readyAtMs;
@@ -344,6 +350,18 @@ export function getErrorMessage(error: unknown): string {
   return 'Unknown error';
 }
 
+/** An action failed and one or more compensations also failed. */
+export class SagaCompensationError extends AggregateError {
+  readonly cause: unknown;
+  readonly compensationErrors: readonly unknown[];
+  constructor(original: unknown, compensationErrors: unknown[]) {
+    super([original, ...compensationErrors], `Saga compensation failed after: ${getErrorMessage(original)}`);
+    this.name = 'SagaCompensationError';
+    this.cause = original;
+    this.compensationErrors = compensationErrors;
+  }
+}
+
 /**
  * Helper to create error from HTTP response
  */
@@ -372,5 +390,21 @@ export function createErrorFromResponse(
       return new ConnectionError(message, endpoint, status);
     default:
       return new ExecutionError(message);
+  }
+}
+
+/** The agent used its reasoning budget without producing a final answer. */
+export class MaxIterationsExceededError extends ExecutionError {
+  constructor(public readonly agentName: string, public readonly maxIterations: number) {
+    super(`Agent '${agentName}' exceeded ${maxIterations} iterations`, agentName, 'agent');
+    this.name = 'MaxIterationsExceededError';
+  }
+}
+
+/** Delegation exceeded the shared depth limit for the root agent run. */
+export class HandoffDepthExceededError extends ExecutionError {
+  constructor(public readonly maxHandoffDepth: number) {
+    super(`Agent handoff depth exceeded ${maxHandoffDepth}`);
+    this.name = 'HandoffDepthExceededError';
   }
 }

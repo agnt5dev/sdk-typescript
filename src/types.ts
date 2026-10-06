@@ -74,6 +74,8 @@ export type FunctionHandler<TInput = any, TOutput = any> = (
 ) => Promise<TOutput> | TOutput;
 
 export interface StepOptions {
+  /** Input included in durable replay validation. */
+  input?: unknown;
   /** Stable identity required for reordered, repeated, or concurrent work. */
   key?: string;
 }
@@ -145,10 +147,12 @@ export interface Context {
       options?: HITLOption[];
       allowCustom?: boolean;
       skippable?: boolean;
+      /** Runtime deadline for this wait; expiration fails the workflow. */
+      timeoutMs?: number;
     },
   ): Promise<string | null>;
   /** Pause workflow execution until an external signal is supplied. */
-  waitForSignal<T = unknown>(signalName: string, name?: string): Promise<T>;
+  waitForSignal<T = unknown>(signalName: string, name?: string, options?: { timeoutMs?: number }): Promise<T>;
 
   // Logging
   /** Structured logger */

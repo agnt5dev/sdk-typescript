@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import { ActivationError, ActivationErrorCode } from './errors.js';
 import { measureBusiness } from './core-metrics.js';
+import { isControlFlow } from './control-flow.js';
 import { currentDisplayParentCorrelationId, runWithDisplayParent } from './display-parent-context.js';
 
 export const DURABLE_ACTIVATION_V1 = 'durable_activation_v1';
@@ -178,7 +179,14 @@ export interface ActivationEvidence {
   sha256: Uint8Array;
 }
 
-const activationStorage = new AsyncLocalStorage<ActivationExecution>();
+const activationStorage = new AsyncLocalStorage<ActivationExecution & { sequences: Map<string, number> }>();
+export function nextActivationOrdinal(namespace: string): number | undefined {
+  const scope = activationStorage.getStore();
+  if (!scope) return undefined;
+  const ordinal = scope.sequences.get(namespace) ?? 0;
+  scope.sequences.set(namespace, ordinal + 1);
+  return ordinal;
+}
 
 export function currentActivation(): ActivationExecution | undefined {
   return activationStorage.getStore();
@@ -194,6 +202,7 @@ export function runWithActivation<T>(
     activationId: decision.activationId,
     attempt: decision.attempt,
     idempotencyKey: `agnt5:${decision.activationId}`,
+    sequences: new Map(),
   }, execute));
 }
 
@@ -447,6 +456,9 @@ export interface ActivationRunOptions<T> {
   ): void | Promise<void>;
   failureErrorCode?: string;
   failureRetryable?: boolean;
+  maxAttempts?: number;
+  shouldRetry?: (error: unknown) => boolean;
+  retryDelay?(attempt: number): Promise<void>;
   failureExternalOutcomeCertainty?: 'UNKNOWN';
   completionUsage?(result: T): ActivationUsage;
   completionEvidence?(result: T): ActivationEvidence[] | Promise<ActivationEvidence[]>;
@@ -541,6 +553,7 @@ export class ActivationClient {
     execute: () => T | Promise<T>,
     options: ActivationRunOptions<T>,
   ): Promise<{ result: T; receipt: ActivationDecision | ActivationCompletionReceipt }> {
+    while (true) {
     const decision = await this.begin(request);
     if (decision.kind === 'REPLAY') {
       if (!decision.replayOutput) {
@@ -565,6 +578,8 @@ export class ActivationClient {
     try {
       result = await measureBusiness(request.runId, execute);
     } catch (error) {
+      if (isControlFlow(error)) throw error;
+      const retryable = (options.failureRetryable ?? false) && (options.shouldRetry?.(error) ?? true) && decision.attempt < (options.maxAttempts ?? 1);
       const errorData = utf8(JSON.stringify({
         message: error instanceof Error ? error.message : String(error),
         type: error instanceof Error ? error.constructor.name : typeof error,
@@ -572,12 +587,16 @@ export class ActivationClient {
       const receipt = await this.fail(request, decision, {
         errorCode: options.failureErrorCode ?? 'STEP_FAILED',
         errorData,
-        retryable: options.failureRetryable ?? false,
+        retryable: options.maxAttempts === undefined ? options.failureRetryable ?? false : retryable,
         externalOutcomeCertainty: options.failureExternalOutcomeCertainty ?? 'UNKNOWN',
         evidence: await options.failureEvidence?.(error) ?? [],
         latencyMs: options.latencyMs(),
       });
       await options.onFailed?.(decision, receipt, error);
+      if (retryable && ['RETRY_READY', 'retry_ready'].includes(receipt.status)) {
+        await options.retryDelay?.(decision.attempt);
+        continue;
+      }
       throw error;
     }
 
@@ -594,6 +613,7 @@ export class ActivationClient {
     );
     await options.onCompleted?.(decision, receipt, result);
     return { result, receipt };
+    }
   }
 }
 

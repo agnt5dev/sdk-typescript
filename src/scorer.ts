@@ -698,7 +698,7 @@ export async function llmJudge(
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userContent },
       ],
-      temperature,
+      config: { temperature },
     });
   } catch (e) {
     if (choiceScores) throw e;

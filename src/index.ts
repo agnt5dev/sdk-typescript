@@ -27,6 +27,9 @@ export {
   ConfigurationError,
   ExecutionError,
   RetryError,
+  SagaCompensationError,
+  MaxIterationsExceededError,
+  HandoffDepthExceededError,
   StateError,
   CheckpointError,
   ActivationError,
@@ -243,7 +246,8 @@ export type {
   CallbackOverride,
   LanguageModel,
   AgentResult,
-  AgentOptions
+  AgentOptions,
+  AgentRunOptions,
 } from './agent.js';
 
 // Event exports
@@ -586,7 +590,7 @@ export type {
 /**
  * SDK version
  */
-export const VERSION = '0.6.0';
+export { VERSION } from './version.js';
 
 /**
  * Get binding type being used

@@ -66,7 +66,7 @@
     "build:napi": "napi build --platform --release --manifest-path native/Cargo.toml --output-dir .",
     "build:wasm": "wasm-pack build --target bundler --out-dir ../wasm-pkg ./wasm",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build:ts": "npm run clean && tsc",
+    "build:ts": "npm run generate:version && npm run clean && tsc && npm run verify:nodenext",
     "dev": "tsc --watch",
     "test": "vitest",
     "test:workerd": "node examples/workerless-cloudflare/smoke.mjs",
@@ -74,7 +74,10 @@
     "prepublishOnly": "napi prepublish -t npm --no-gh-release --skip-optional-publish && npm run verify:publish-manifest && npm run build:ts",
     "verify:publish-manifest": "node scripts/verify-publish-manifest.mjs",
     "verify:release-workflow": "node scripts/verify-release-workflow.mjs",
-    "version": "napi version"
+    "version": "napi version",
+    "generate:version": "node scripts/generate-version.mjs",
+    "verify:nodenext": "node scripts/verify-nodenext.mjs",
+    "verify:examples": "tsc --noEmit --strict --skipLibCheck --target ES2022 --lib ES2022 --module ESNext --moduleResolution bundler examples/structured-output.ts examples/parallel-tools.ts examples/mcp-integration.ts"
   },
   "dependencies": {
     "ajv": "^8.17.1"

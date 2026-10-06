@@ -537,6 +537,8 @@ export interface RunCompleted extends BaseEvent {
 
 export interface RunFailed extends BaseEvent {
   eventType: 'run.failed';
+  errorType?: string;
+  errorStack?: string;
   errorCode: string;
   errorMessage: string;
   attempt: number;
@@ -740,7 +742,7 @@ export function runCompleted(
 export function runFailed(
   correlationId: string,
   parentCorrelationId: string | null,
-  opts: { errorCode: string; errorMessage: string; attempt: number; maxAttempts: number; componentName?: string },
+  opts: { errorCode: string; errorMessage: string; errorType?: string; errorStack?: string; attempt: number; maxAttempts: number; componentName?: string },
 ): RunFailed {
   return {
     ...baseFields(opts.componentName ?? 'run', correlationId, parentCorrelationId, {
@@ -751,6 +753,8 @@ export function runFailed(
     componentType: 'run',
     errorCode: opts.errorCode,
     errorMessage: opts.errorMessage,
+    ...(opts.errorType ? { errorType: opts.errorType } : {}),
+    ...(opts.errorStack ? { errorStack: opts.errorStack } : {}),
     attempt: opts.attempt,
     maxAttempts: opts.maxAttempts,
   };

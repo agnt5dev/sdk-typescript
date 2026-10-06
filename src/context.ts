@@ -1,3 +1,4 @@
+import { assertWorkflowWaitBoundary, runInWorkflowStep } from './step-scope.js';
 import type { Context, Logger, StepOptions } from './types.js';
 import type { EventEmitter } from './event-emitter.js';
 import { emptyRuntimeContext } from './runtime-context.js';
@@ -19,6 +20,7 @@ import { getLoadedNativeBindings } from '#native-loader';
 import {
   ActivationClient,
   currentActivation,
+  nextActivationOrdinal,
   runWithActivation,
   stepActivationRequest,
 } from './activation.js';
@@ -27,6 +29,7 @@ import { callerFromMetadata } from './caller.js';
 import type { Caller } from './caller.js';
 import { progressReport } from './progress.js';
 import type { ProgressOptions } from './progress.js';
+import { abortable, throwIfAborted } from './cancellation.js';
 
 function getNativeLogFn() {
   const native = getLoadedNativeBindings();
@@ -188,8 +191,8 @@ export class ContextImpl implements Context {
   private _activationClient?: ActivationClient;
   private _activationStepCounter = 0;
   private _activationSequences = new Map<string, number>();
-  /** Cancellation signal (never aborted on this context path). */
-  readonly signal: AbortSignal = new AbortController().signal;
+  /** Caller cancellation, or a never-aborted signal for standalone contexts. */
+  readonly signal: AbortSignal;
 
   constructor(
     public readonly invocationId: string,
@@ -205,8 +208,10 @@ export class ContextImpl implements Context {
       workerlessDeadlineMs?: number;
       workerlessYieldBeforeMs?: number;
       activationClient?: ActivationClient;
+      signal?: AbortSignal;
     }
   ) {
+    this.signal = options?.signal ?? new AbortController().signal;
     this.runtime = options?.runtime ?? emptyRuntimeContext();
     this.metadata = options?.metadata;
     this._checkpointSnapshot = new Map(Object.entries(options?.checkpoints || {}));
@@ -236,6 +241,8 @@ export class ContextImpl implements Context {
 
   allocateActivationKey(kind: string, name: string): string {
     const namespace = `${kind}:${name}`;
+    const nestedOrdinal = nextActivationOrdinal(namespace);
+    if (nestedOrdinal !== undefined) return `${namespace}:${nestedOrdinal}`;
     const ordinal = this._activationSequences.get(namespace) ?? 0;
     this._activationSequences.set(namespace, ordinal + 1);
     return `${namespace}:${ordinal}`;
@@ -263,7 +270,7 @@ export class ContextImpl implements Context {
   }
 
   async step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T> {
-    const ordinal = this._activationStepCounter++;
+    const ordinal = nextActivationOrdinal('step') ?? this._activationStepCounter++;
     if (this._activationClient) {
       const request = await stepActivationRequest({
         metadata: this.metadata || {},
@@ -273,6 +280,7 @@ export class ContextImpl implements Context {
         stepName,
         ordinal,
         explicitKey: options?.key,
+        input: options?.input,
       });
       const startMs = Date.now();
       let decision: ActivationDecision | undefined;
@@ -283,7 +291,7 @@ export class ContextImpl implements Context {
             'step activation executed without admitted authority',
           );
         }
-        return runWithActivation(decision, fn);
+        return runWithActivation(decision, () => runInWorkflowStep(fn));
       }, {
         encodeOutput: encodeJson,
         decodeOutput: value => decodeJson<T>(value),
@@ -303,7 +311,7 @@ export class ContextImpl implements Context {
     }
 
     // Execute step
-    const result = await fn();
+    const result = await runInWorkflowStep(fn);
 
     // Checkpoint result
     await this.storage.setCheckpoint(checkpointKey, result);
@@ -319,6 +327,7 @@ export class ContextImpl implements Context {
     if (Date.now() + this._workerlessYieldBeforeMs < this._workerlessDeadlineMs) {
       return;
     }
+    assertWorkflowWaitBoundary(this);
     throw new SuspensionRequestedError({
       runId: this.runId,
       reason,
@@ -328,11 +337,16 @@ export class ContextImpl implements Context {
   }
 
   async sleep(durationMs: number, _name?: string): Promise<void> {
+    if (this._activationClient || currentActivation()) assertWorkflowWaitBoundary(this);
     validateSleepDuration(durationMs);
+    throwIfAborted(this.signal);
     if (durationMs === 0) {
       return;
     }
-    await new Promise<void>(resolve => setTimeout(resolve, durationMs));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await abortable(() => new Promise<void>(resolve => { timer = setTimeout(resolve, durationMs); }), this.signal);
+    } finally { clearTimeout(timer); }
   }
 
   checkpointSnapshot(): Record<string, any> {
@@ -381,8 +395,11 @@ export class ContextImpl implements Context {
       options?: HITLOption[];
       allowCustom?: boolean;
       skippable?: boolean;
+      timeoutMs?: number;
     },
   ): Promise<string | null> {
+    if (this._activationClient || currentActivation()) assertWorkflowWaitBoundary(this);
+    if (options?.timeoutMs !== undefined) throw new ConfigurationError('Wait timeouts require a managed or workerless workflow');
     const pauseIndex = this._pauseIndex++;
     const responseKey = `user_response:${this.runId}:${pauseIndex}`;
     const stepName = `wait_for_user_${pauseIndex}`;
@@ -415,7 +432,7 @@ export class ContextImpl implements Context {
   }
 
   async waitForSignal<T = unknown>(_signalName: string, _name?: string): Promise<T> {
-    throw new ConfigurationError('ctx.waitForSignal is only supported by managed worker runtimes');
+    throw new ConfigurationError('ctx.waitForSignal requires a managed or workerless workflow');
   }
 
   /**

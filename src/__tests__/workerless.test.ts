@@ -618,6 +618,7 @@ describe('workerless serve()', () => {
     expect(resumed).toEqual({
       status: 'completed',
       output: { approved: true },
+      checkpoint: { steps: { 'signal:approval_received:approval_gate': { approved: true } } },
     });
   });
 

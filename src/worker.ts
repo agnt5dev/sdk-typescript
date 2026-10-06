@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { throwIfAborted } from './cancellation.js';
 import type { WorkerOptions, Context, Logger, StepOptions } from './types.js';
 import { callerFromMetadata } from './caller.js';
 import type { Caller } from './caller.js';
@@ -16,7 +17,7 @@ import {
   ScorerRegistry,
   isScorer,
 } from './scorer.js';
-import { Agent, Message } from './agent.js';
+import { Agent, AgentRegistry, Message } from './agent.js';
 import type { AgentResult } from './agent.js';
 import { ChatBot } from './chat.js';
 import { runWithContext, getCurrentContext } from './async-context.js';
@@ -27,6 +28,7 @@ import {
   ActivationErrorCode,
   ConfigurationError,
   DurableSleepSuspensionError,
+  SuspensionRequestedError,
   WaitingForUserInputError,
 } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
@@ -66,6 +68,7 @@ import {
   activationId,
   ActivationDecision,
   currentActivation,
+  nextActivationOrdinal,
   NativeActivationTransport,
   runWithActivation,
   stableStepKey,
@@ -73,6 +76,9 @@ import {
   timerActivationRequest,
 } from './activation.js';
 import type { ActivationExecution } from './activation.js';
+import { installProcessErrorGuards } from './process-errors.js';
+import { runInWorkflowStep, assertWorkflowWaitBoundary, assertWorkflowStreamsClosed } from './step-scope.js';
+import { errorDetails } from './error-details.js';
 
 const DURABLE_EVENT_METADATA_KEYS = [
   'traceparent',
@@ -120,8 +126,10 @@ export interface PlatformWorkerOptions extends WorkerOptions {
   tenantId?: string;
   /** Deployment ID */
   deploymentId?: string;
-  /** Auto-discover components from registries (default: false) */
+  /** Discover imported agents in addition to registerAgents (default: false). Other definitions are always discovered. */
   autoRegister?: boolean;
+  /** Contain detached user-code errors and fail their run (default: true). */
+  containProcessErrors?: boolean;
   /**
    * Worker assignment mode. Defaults to env `AGNT5_WORKER_MODE`, then `pull`.
    * Set to `pull` to use worker-side polling instead of push dispatch.
@@ -336,6 +344,8 @@ class SimpleContext implements Context {
 
   allocateActivationKey(kind: string, name: string): string {
     const namespace = `${kind}:${name}`;
+    const nestedOrdinal = nextActivationOrdinal(namespace);
+    if (nestedOrdinal !== undefined) return `${namespace}:${nestedOrdinal}`;
     const ordinal = this._activationSequences.get(namespace) ?? 0;
     this._activationSequences.set(namespace, ordinal + 1);
     return `${namespace}:${ordinal}`;
@@ -354,6 +364,7 @@ class SimpleContext implements Context {
   }
 
   async sleep(durationMs: number, name?: string): Promise<void> {
+    assertWorkflowWaitBoundary(this);
     validateSleepDuration(durationMs);
     if (durationMs === 0) {
       return;
@@ -432,6 +443,13 @@ class SimpleContext implements Context {
    */
   loadReplayState(metadata: Record<string, string> | undefined): void {
     if (!metadata) return;
+
+    if (metadata.signal_name && metadata.signal_payload !== undefined) {
+      const cacheKey = `signal:${metadata.signal_name}:${metadata.waiting_step || metadata.signal_name}`;
+      let payload: unknown = metadata.signal_payload;
+      try { payload = JSON.parse(metadata.signal_payload); } catch { /* string payload */ }
+      this._stepCache.set(cacheKey, payload);
+    }
 
     // First, rehydrate any historical responses from step_events. These are
     // accumulated by the emit path below and propagated through the gateway's
@@ -733,8 +751,10 @@ class SimpleContext implements Context {
       options?: HITLOption[];
       allowCustom?: boolean;
       skippable?: boolean;
+      timeoutMs?: number;
     },
   ): Promise<string | null> {
+    assertWorkflowWaitBoundary(this);
     const pauseIndex = this._pauseIndex++;
 
     // Resume path: response was injected from metadata before handler ran.
@@ -757,6 +777,10 @@ class SimpleContext implements Context {
       step_name: stepName,
       question,
     };
+    if (options?.timeoutMs !== undefined) {
+      validateSleepDuration(options.timeoutMs);
+      metadata.wait_timeout_ms = String(options.timeoutMs);
+    }
     if (options?.inputType) metadata.input_type = options.inputType;
     if (options?.allowCustom !== undefined) metadata.allow_custom = String(options.allowCustom);
     if (options?.skippable !== undefined) metadata.skippable = String(options.skippable);
@@ -816,6 +840,7 @@ class SimpleContext implements Context {
     throw new WaitingForUserInputError({
       runId: this.runId,
       question,
+      timeoutMs: options?.timeoutMs,
       inputType: options?.inputType,
       options: options?.options,
       pauseIndex,
@@ -827,13 +852,33 @@ class SimpleContext implements Context {
     });
   }
 
-  async waitForSignal<T = unknown>(_signalName: string, _name?: string): Promise<T> {
-    throw new ConfigurationError('ctx.waitForSignal is only supported by workerless workflows');
+  async waitForSignal<T = unknown>(signalName: string, name?: string, options?: { timeoutMs?: number }): Promise<T> {
+    assertWorkflowWaitBoundary(this);
+    if (!this._workflowCid) throw new ConfigurationError('ctx.waitForSignal requires a managed or workerless workflow');
+    if (!signalName.trim()) throw new ConfigurationError('signalName must not be empty');
+    const waitingStep = name || signalName;
+    const key = `signal:${signalName}:${waitingStep}`;
+    if (this._stepCache.has(key)) return this._stepCache.get(key) as T;
+    const checkpointState = Object.fromEntries(this._stepCache);
+    const metadata: Record<string, string> = {
+      pause_reason: 'signal', signal_name: signalName, waiting_step: waitingStep,
+      completed_steps: JSON.stringify(checkpointState),
+      workflow_state: JSON.stringify(Object.fromEntries(this.state)),
+    };
+    if (options?.timeoutMs !== undefined) {
+      validateSleepDuration(options.timeoutMs);
+      metadata.wait_timeout_ms = String(options.timeoutMs);
+    }
+    await this.persistWorkflowState();
+    if (this.metadata.dispatch_mode !== 'pull' && this._emitter) {
+      await this._emitter.emit(workflowPaused(this._workflowCid, this._runCid!, { reason: 'signal', pauseData: {}, metadata }));
+    }
+    throw new SuspensionRequestedError({ runId: this.runId, reason: 'signal', signalName, waitingStep, checkpointState, timeoutMs: options?.timeoutMs });
   }
 
   /** Run a step body inside a `workflow.step.<name>` span. Replays don't get one. */
   private runStepSpan<T>(stepName: string, fn: () => T | Promise<T>): Promise<T> {
-    return withSpan(`workflow.step.${stepName}`, () => fn(), {
+    return withSpan(`workflow.step.${stepName}`, () => runInWorkflowStep(fn), {
       componentType: 'step',
       attributes: { run_id: this.runId, step_name: stepName },
     });
@@ -857,7 +902,7 @@ class SimpleContext implements Context {
     fn: () => T | Promise<T>,
     options?: StepOptions,
   ): Promise<T> {
-    const ordinal = this._stepCounter++;
+    const ordinal = nextActivationOrdinal('step') ?? this._stepCounter++;
     const stepKey = stableStepKey(stepName, ordinal, options?.key);
 
     if (this._activationClient) {
@@ -869,6 +914,7 @@ class SimpleContext implements Context {
         stepName,
         ordinal,
         explicitKey: options?.key,
+        input: options?.input,
       });
       const startMs = Date.now();
       let decision: ActivationDecision | undefined;
@@ -968,12 +1014,14 @@ class SimpleContext implements Context {
  * Worker class for running AGNT5 functions with platform integration
  */
 export class Worker {
+  private readonly disposeProcessGuards?: () => void;
   private serviceName: string;
   private options: PlatformWorkerOptions;
   private nativeWorker: any;
   private isInitialized = false;
 
   constructor(serviceName: string, options: Partial<PlatformWorkerOptions> = {}) {
+    if (options.containProcessErrors !== false) this.disposeProcessGuards = installProcessErrorGuards();
     this.serviceName = serviceName;
     this.options = {
       ...options,
@@ -1156,6 +1204,29 @@ export class Worker {
     // handler aborts it when a CancelExecution arrives for this run; handlers
     // observe it via ctx.signal.
     const abortController = new AbortController();
+    let detachedError: unknown;
+    let active = true;
+    let rejectDetached!: (error: unknown) => void;
+    const detachedFailure = new Promise<never>((_resolve, reject) => { rejectDetached = reject; });
+    detachedFailure.catch(() => {});
+    const executeUser = <T>(execute: () => T | Promise<T>): Promise<T> =>
+      Promise.race([Promise.resolve().then(execute), detachedFailure]);
+    // Node reports rejected promises after the current microtask queue and
+    // detached timers on the next turn. Let those reports reach this run
+    // before committing a successful or paused outcome.
+    const checkExecutionOutcome = async () => {
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      if (detachedError !== undefined) throw detachedError;
+      throwIfAborted(abortController.signal);
+    };
+    const onDetachedError = (error: unknown) => {
+      if (!active) return false;
+      if (detachedError !== undefined) return true;
+      detachedError = error instanceof Error ? error : new Error(String(error));
+      rejectDetached(detachedError);
+      abortController.abort(detachedError);
+      return true;
+    };
     this.inflight.set(runId, abortController);
 
     // The run's root span, parented to the dispatch traceparent so the run,
@@ -1182,12 +1253,16 @@ export class Worker {
         tenantId: message.metadata?.tenant_id,
         metadata: message.metadata,
         runtime,
+        onDetachedError,
       },
       () => runInSpan(runSpan, async () => {
         // Create EventEmitter wired to NAPI worker for event emission
         // sdk-core stamps pull_completion_lifecycle_v1 only on non-streaming
         // pull assignments whose session negotiated the capability.
         const emitter = new EventEmitter(runId, durableEventMetadata(message.metadata || {}), {
+          beforeTerminal: async event => {
+            if (['run.completed', 'workflow.completed', 'workflow.paused'].includes(event.eventType)) await checkExecutionOutcome();
+          },
           deferLifecycle:
             isPullDispatch && message.metadata?.pull_completion_lifecycle_v1 === 'true',
         });
@@ -1223,6 +1298,7 @@ export class Worker {
           // Create context with emitter
           const contextMetadata: Record<string, string> = {
             ...workflowDispatchMetadata(message.metadata),
+            component_type: message.componentType,
             component_name: message.metadata.component_name || message.componentName,
             activation_definition_version:
               message.metadata.activation_definition_version ||
@@ -1314,12 +1390,20 @@ export class Worker {
               // their parent (matches sdk-python's function→agent parenting).
               ctx.pushCorrelation(fnCid);
               try {
-                result = await fn.handler(ctx, inputData);
+                result = await executeUser(() => fn.handler(ctx, inputData));
                 if (result && typeof result[Symbol.asyncIterator] === 'function') {
                   let emitted = 0;
-                  for await (const chunk of result as AsyncIterable<unknown>) {
-                    await emitter.emit(outputDelta(fnCid, runCid, String(chunk), emitted));
-                    emitted += 1;
+                  const iterator = (result as AsyncIterable<unknown>)[Symbol.asyncIterator]();
+                  try {
+                    while (true) {
+                      const next = await executeUser(() => iterator.next());
+                      if (next.done) break;
+                      await emitter.emit(outputDelta(fnCid, runCid, String(next.value), emitted));
+                      emitted += 1;
+                    }
+                  } finally {
+                    // Cleanup must not delay a detached-error or cancellation response.
+                    void iterator.return?.().catch(error => console.error('Stream cleanup failed', error));
                   }
                   result = { emitted };
                 }
@@ -1373,7 +1457,8 @@ export class Worker {
               // events parented to the workflow.
               ctx.pushCorrelation(wfCid);
               try {
-                result = await wf.handler(ctx, inputData);
+                result = await executeUser(() => wf.handler(ctx, inputData));
+                assertWorkflowStreamsClosed(ctx);
                 await ctx.persistWorkflowState();
                 const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
 
@@ -1389,7 +1474,8 @@ export class Worker {
                 // the run.failed emission and return a success response to
                 // the coordinator (the run is in the paused status already).
                 if (wfError instanceof WaitingForUserInputError ||
-                    wfError instanceof DurableSleepSuspensionError) {
+                    wfError instanceof DurableSleepSuspensionError ||
+                    wfError instanceof SuspensionRequestedError) {
                   throw wfError;
                 }
 
@@ -1427,7 +1513,7 @@ export class Worker {
 
                 console.log(`💬 Inbound chat event: source=${source}, bot=${message.componentName}`);
 
-                const challengeResult = await chatbot.handleWebhook(source, headers, body, botToken);
+                const challengeResult = await executeUser(() => chatbot.handleWebhook(source, headers, body, botToken));
                 result = challengeResult ?? {};
                 break;
               }
@@ -1454,13 +1540,22 @@ export class Worker {
               const userMessage = inputData.prompt || inputData.message || JSON.stringify(inputData);
               let agentResult: AgentResult | undefined;
 
-              for await (const event of agent.stream(userMessage, ctx, history)) {
-                if ('output' in event && 'toolCalls' in event && 'context' in event) {
-                  agentResult = event as AgentResult;
-                } else {
-                  // Forward AgentEvent to platform via emitter
-                  await emitter.emit(event as AgentEvent);
+              const iterator = agent.stream(userMessage, ctx, history, { managedSpan: true })[Symbol.asyncIterator]();
+              try {
+                while (true) {
+                  const next = await executeUser(() => iterator.next());
+                  if (next.done) break;
+                  const event = next.value;
+                  if ('output' in event && 'toolCalls' in event && 'context' in event) {
+                    agentResult = event as AgentResult;
+                  } else {
+                    // Forward AgentEvent to platform via emitter
+                    await emitter.emit(event as AgentEvent);
+                  }
                 }
+              } finally {
+                // A pending user operation must not hold the failure response.
+                void iterator.return?.().catch(error => console.error('Agent stream cleanup failed', error));
               }
 
               if (!agentResult) {
@@ -1517,7 +1612,7 @@ export class Worker {
 
               try {
                 // The run span is already `tool.<name>`; don't open a second one.
-                result = await tool.invoke(ctx, inputData, undefined, { span: false });
+                result = await executeUser(() => tool.invoke(ctx, inputData, undefined, { span: false }));
                 const durationMs = Number((BigInt(Date.now()) * 1_000_000n - startTimeNs) / 1_000_000n);
 
                 // ── tool.completed ──
@@ -1566,7 +1661,7 @@ export class Worker {
                 },
               };
 
-              const scorerResult = await scorerConfig.handler(scorerCtx, scorerRequest);
+              const scorerResult = await executeUser(() => scorerConfig.handler(scorerCtx, scorerRequest));
               result = {
                 score: scorerResult.score,
                 passed: scorerResult.passed,
@@ -1581,6 +1676,7 @@ export class Worker {
               throw new Error(`Unknown component type: ${message.componentType}`);
           }
 
+          await checkExecutionOutcome();
           ctx.logger.info(
             `run.completed | ${message.componentType} ${message.componentName} | run_id=${runId}`,
           );
@@ -1600,7 +1696,22 @@ export class Worker {
             eventType: 'run.completed',
           });
         } catch (error) {
+          // A suspension can beat Node's detached-error notification too.
+          try { await checkExecutionOutcome(); }
+          catch (outcomeError) { error = outcomeError; }
           runError = error;
+          // Cancellation already has a gateway terminal, even if the handler
+          // was about to return a pause instead of observing the signal.
+          if (abortController.signal.aborted && detachedError === undefined) {
+            runError = undefined;
+            runSpan.setAttribute('agnt5.cancelled', 'true');
+            console.log(`🛑 Invocation cancelled: ${message.componentName} (run ${runCid})`);
+            return JSON.stringify({
+              invocationId: message.invocationId,
+              outputJson: JSON.stringify({ _cancelled: true }),
+              eventType: 'run.cancelled',
+            });
+          }
           if (error instanceof DurableSleepSuspensionError) {
             return JSON.stringify({
               invocationId: message.invocationId,
@@ -1619,6 +1730,17 @@ export class Worker {
                 definitionDigest: Array.from(error.definitionDigest),
                 continuation: Array.from(error.continuation),
                 delayMs: error.delayMs,
+              },
+            });
+          }
+
+          if (error instanceof SuspensionRequestedError) {
+            return JSON.stringify({
+              invocationId: message.invocationId, eventType: 'workflow.paused',
+              metadata: {
+                pause_reason: error.reason, signal_name: error.signalName, waiting_step: error.waitingStep,
+                completed_steps: JSON.stringify(error.checkpointState),
+                ...(error.timeoutMs !== undefined ? { wait_timeout_ms: String(error.timeoutMs) } : {}),
               },
             });
           }
@@ -1642,6 +1764,7 @@ export class Worker {
               metadata: {
                 pause_reason: 'user_input_required',
                 pause_index: String(error.pauseIndex),
+                ...(error.timeoutMs !== undefined ? { wait_timeout_ms: String(error.timeoutMs) } : {}),
                 question: error.question,
                 ...(error.stepName ? { step_name: error.stepName } : {}),
                 ...(error.inputType ? { input_type: error.inputType } : {}),
@@ -1653,21 +1776,6 @@ export class Worker {
                   ? { completed_steps: JSON.stringify(error.checkpointState) }
                   : {}),
               },
-            });
-          }
-
-          // Cooperative cancellation: the handler errored because its
-          // ctx.signal was aborted (CancelExecution). The gateway already
-          // authored run.cancelled as the terminal event, so do NOT emit
-          // run.failed — return cleanly with no error.
-          if (abortController.signal.aborted) {
-            runError = undefined;
-            runSpan.setAttribute('agnt5.cancelled', 'true');
-            console.log(`🛑 Invocation cancelled: ${message.componentName} (run ${runCid})`);
-            return JSON.stringify({
-              invocationId: message.invocationId,
-              outputJson: JSON.stringify({ _cancelled: true }),
-              eventType: 'run.cancelled',
             });
           }
 
@@ -1690,7 +1798,7 @@ export class Worker {
             try {
               await emitter.emit(runFailed(runCid, parentCid, {
                 errorCode: 'EXECUTION_ERROR',
-                errorMessage: (error as Error).message,
+                ...errorDetails(error),
                 attempt,
                 maxAttempts,
                 componentName: message.componentName,
@@ -1703,8 +1811,9 @@ export class Worker {
           console.error(`❌ Execution failed:`, error);
           return JSON.stringify({
             invocationId: message.invocationId,
-            error: (error as Error).message,
+            error: errorDetails(error).errorMessage,
             errorCode: 'EXECUTION_ERROR',
+            ...errorDetails(error),
             eventType: 'run.failed',
           });
         } finally {
@@ -1732,6 +1841,8 @@ export class Worker {
         }
       }),
     )).finally(() => {
+      abortController.abort();
+      active = false;
       this.inflight.delete(runId);
     });
   }
@@ -1812,6 +1923,7 @@ export class Worker {
    * Start the worker and connect to platform
    */
   async run(): Promise<void> {
+    try {
     await this.initialize();
 
     console.log(`
@@ -1894,6 +2006,12 @@ export class Worker {
         inputSchema: serializedSchema(tool.inputSchema),
         outputSchema: serializedSchema(tool.outputSchema, 'output'),
       });
+    }
+
+    if (this.options.autoRegister) {
+      for (const [name, agent] of AgentRegistry.all()) {
+        if (!this.agents.has(name)) this.agents.set(name, agent);
+      }
     }
 
     // MCP servers defined in code (AGNT5-1569) publish agents as tools; the
@@ -2000,7 +2118,10 @@ export class Worker {
     console.log('🔗 Connecting to platform...\n');
 
     // Run the worker (this will block until shutdown)
-    await this.nativeWorker.run();
+      await this.nativeWorker.run();
+    } finally {
+      this.disposeProcessGuards?.();
+    }
   }
 }
 

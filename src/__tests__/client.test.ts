@@ -100,6 +100,21 @@ describe('RunResponse', () => {
     expect(resp.output).toBe('Nested output');
   });
 
+  it('retains the exception class when its message is empty', () => {
+    const result = new RunResponse({ status: 'failed', error: '', error_type: 'TypeError' });
+    expect(result.error).toEqual({ code: 'EXECUTION_FAILED', message: '', type: 'TypeError' });
+  });
+
+  it.each([
+    { error: { code: 'FUNCTION_ERROR', message: 'boom', type: 'TypeError', stack: 'TypeError: boom at handler' } },
+    { error: null, error_message: 'boom', error_type: 'TypeError', error_stack: 'TypeError: boom at handler' },
+    { error: 'boom', error_type: 'TypeError', error_stack: 'TypeError: boom at handler' },
+    { error_message: 'boom', metadata: { error_type: 'TypeError', error_stack: 'TypeError: boom at handler' } },
+  ])('retains exception class and stack across failure response shapes', raw => {
+    const result = new RunResponse({ run_id: 'failed', status: 'failed', ...raw });
+    expect(result.error).toMatchObject({ message: 'boom', type: 'TypeError', stack: 'TypeError: boom at handler' });
+  });
+
   it('should parse error_message and error_code from the current backend response shape', () => {
     const resp = new RunResponse({
       run_id: 'run-6',

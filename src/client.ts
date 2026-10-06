@@ -13,6 +13,7 @@ import { BatchResult, BatchStatusResult } from './batch.js';
 import type { BatchConfig, BatchItemInput, CancelBatchResult } from './batch.js';
 import { EvalResponse, BatchEvalResult, BatchEvalItemResult, LLMJudge, EvaluatorPreset, normalizeBatchEvalItems, normalizeScorerSpecs } from './eval.js';
 import type { BatchEvalItem } from './eval.js';
+import { abortable, combineSignals, throwIfAborted } from './cancellation.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -55,6 +56,10 @@ function responseWaitMs(value: number = 300000): number {
 }
 
 export interface RunOptions extends InvocationOptions {
+  signal?: AbortSignal;
+  parentRunId?: string;
+  rootRunId?: string;
+  traceparent?: string;
   /** Gateway response wait in milliseconds (default 300000); zero returns an accepted receipt. */
   waitTimeoutMs?: number;
   /** HTTP deadline in milliseconds; defaults to at least the response wait plus 10 seconds. */
@@ -98,6 +103,8 @@ export type RunStatus =
 
 /** Structured error detail from a failed run */
 export interface RunErrorDetail {
+  type?: string;
+  stack?: string;
   code: string;
   message: string;
   details?: Record<string, any>;
@@ -115,6 +122,8 @@ interface RawRunResponse {
   error?: any;
   error_message?: string;
   error_code?: string;
+  error_type?: string;
+  error_stack?: string;
   duration_ms?: number;
   trace_id?: string;
   component?: string;
@@ -196,18 +205,24 @@ export class RunResponse<T = any> {
     this.metadata = raw.metadata;
 
     // Parse error — could be a string or a structured object
-    if (raw.error || raw.error_message) {
+    if (raw.error || raw.error_message || (raw.status === 'failed' && (raw.error_type || raw.metadata?.error_type || raw.error?.type))) {
       if (typeof raw.error === 'string') {
         this.error = { code: raw.error_code || 'EXECUTION_FAILED', message: raw.error };
-      } else if (typeof raw.error === 'object') {
+      } else if (raw.error && typeof raw.error === 'object') {
         this.error = {
           code: raw.error.code || raw.error_code || 'EXECUTION_FAILED',
           message: raw.error.message || String(raw.error),
           details: raw.error.details,
         };
-      } else if (raw.error_message) {
-        this.error = { code: raw.error_code || 'EXECUTION_FAILED', message: raw.error_message };
+      } else {
+        this.error = { code: raw.error_code || 'EXECUTION_FAILED', message: raw.error_message ?? 'Execution failed' };
       }
+    }
+    if (this.error) {
+      const type = raw.error?.type ?? raw.error_type ?? raw.metadata?.error_type;
+      const stack = raw.error?.stack ?? raw.error_stack ?? raw.metadata?.error_stack;
+      if (typeof type === 'string') this.error.type = type;
+      if (typeof stack === 'string') this.error.stack = stack;
     }
   }
 
@@ -438,15 +453,18 @@ export class Client {
    */
   private async withRetry<T>(
     operation: () => Promise<T>,
-    maxRetries?: number
+    maxRetries?: number,
+    signal?: AbortSignal,
   ): Promise<T> {
     const retries = maxRetries ?? this.maxRetries;
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
+      throwIfAborted(signal);
       try {
         return await operation();
       } catch (error) {
+        throwIfAborted(signal);
         lastError = error as Error;
 
         // Don't retry on these errors
@@ -461,11 +479,20 @@ export class Client {
         if (attempt === retries) break;
 
         const delay = this.retryDelayMs * Math.pow(2, attempt);
-        await new Promise(resolve => setTimeout(resolve, delay));
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try { await abortable(() => new Promise<void>(resolve => { timer = setTimeout(resolve, delay); }), signal); }
+        finally { if (timer !== undefined) clearTimeout(timer); }
       }
     }
 
     throw lastError;
+  }
+
+  private async withRequestSignal<T>(timeoutMs: number, signal: AbortSignal | undefined, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    throwIfAborted(signal);
+    const combined = combineSignals(signal, AbortSignal.timeout(timeoutMs));
+    try { return await abortable(() => operation(combined.signal!), combined.signal); }
+    finally { combined.dispose(); }
   }
 
   /**
@@ -476,7 +503,7 @@ export class Client {
   async run<T = any>(component: string, inputData: any = {}, options: RunOptions = {}): Promise<RunResponse<T>> {
     const waitMs = responseWaitMs(options.waitTimeoutMs);
     const timeoutMs = options.timeoutMs ?? Math.max(this.timeout, waitMs + 10000);
-    return this.withRetry(async () => {
+    return this.withRetry(() => this.withRequestSignal(timeoutMs, options.signal, async signal => {
       const componentType = options.componentType || 'function';
       const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/run`;
 
@@ -501,7 +528,7 @@ export class Client {
           'X-AGNT5-Wait-Timeout-Ms': String(waitMs),
         },
         body: JSON.stringify(inputData),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal,
       });
 
       if (!response.ok) {
@@ -513,125 +540,137 @@ export class Client {
       const data = (await response.json()) as RawRunResponse;
       const result = new RunResponse<T>(data);
       return result;
-    }, options.maxRetries);
+    }), options.maxRetries, options.signal);
   }
 
   /**
    * Submit a component for async execution and return immediately.
    */
-  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId' | 'idempotencyKey'> = {}): Promise<SubmitResponse> {
-    const componentType = options.componentType || 'function';
-    const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/submit`;
+  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId' | 'idempotencyKey' | 'signal' | 'parentRunId' | 'rootRunId' | 'traceparent'> = {}): Promise<SubmitResponse> {
+    return this.withRequestSignal(this.timeout, options.signal, async requestSignal => {
+      const componentType = options.componentType || 'function';
+      const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/submit`;
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: this.buildHeaders(
-        options.idempotencyKey !== undefined
-          ? { 'Idempotency-Key': options.idempotencyKey }
-          : undefined,
-        options.tenant,
-        {
-          deploymentId: options.deploymentId,
-          includeAmbientDeploymentId: false,
-        },
-      ),
-      body: JSON.stringify(inputData),
-      signal: AbortSignal.timeout(this.timeout),
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: this.buildHeaders(
+          {
+            ...(options.idempotencyKey !== undefined ? { 'Idempotency-Key': options.idempotencyKey } : {}),
+            ...(options.parentRunId ? { 'X-Parent-Run-ID': options.parentRunId } : {}),
+            ...(options.rootRunId ? { 'X-Root-Run-ID': options.rootRunId } : {}),
+            ...(options.traceparent ? { traceparent: options.traceparent } : {}),
+          },
+          options.tenant,
+          {
+            deploymentId: options.deploymentId,
+            includeAmbientDeploymentId: false,
+          },
+        ),
+        body: JSON.stringify(inputData),
+        signal: requestSignal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: Submission failed`);
+      }
+
+      const data = (await response.json()) as any;
+      return {
+        runId: data.run_id || data.runId || '',
+        status: (data.status as RunStatus) || 'enqueued',
+        traceId: data.trace_id,
+        component: data.component,
+        createdAt: data.created_at,
+      };
     });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: Submission failed`);
-    }
-
-    const data = (await response.json()) as any;
-    return {
-      runId: data.run_id || data.runId || '',
-      status: (data.status as RunStatus) || 'enqueued',
-      traceId: data.trace_id,
-      component: data.component,
-      createdAt: data.created_at,
-    };
   }
 
   /**
    * Get the current status of a run.
    */
-  async getStatus(runId: string): Promise<RunResponse> {
-    const url = `${this.gatewayUrl}/v1/status/${runId}`;
+  async getStatus(runId: string, signal?: AbortSignal): Promise<RunResponse> {
+    return this.withRequestSignal(this.timeout, signal, async requestSignal => {
+      const url = `${this.gatewayUrl}/v1/status/${runId}`;
 
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: this.buildHeaders(),
-      signal: AbortSignal.timeout(this.timeout),
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.buildHeaders(),
+        signal: requestSignal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: Failed to get status`);
+      }
+
+      const data = (await response.json()) as RawRunResponse;
+      return new RunResponse(data);
     });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: Failed to get status`);
-    }
-
-    const data = (await response.json()) as RawRunResponse;
-    return new RunResponse(data);
   }
 
   /**
    * Get the result of a completed run.
    */
-  async getResult<T = any>(runId: string): Promise<RunResponse<T>> {
-    const url = `${this.gatewayUrl}/v1/result/${runId}`;
+  async getResult<T = any>(runId: string, signal?: AbortSignal): Promise<RunResponse<T>> {
+    return this.withRequestSignal(this.timeout, signal, async requestSignal => {
+      const url = `${this.gatewayUrl}/v1/result/${runId}`;
 
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: this.buildHeaders(),
-      signal: AbortSignal.timeout(this.timeout),
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.buildHeaders(),
+        signal: requestSignal,
+      });
+
+      if (response.status === 404) {
+        const errorData = (await response.json().catch(() => ({}))) as any;
+        const errorMsg = errorData.error || 'Run not found or not complete';
+        const currentStatus = errorData.status || 'unknown';
+        throw new RunError(`${errorMsg} (status: ${currentStatus})`, runId);
+      }
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: Failed to get result`);
+      }
+
+      const data = (await response.json()) as RawRunResponse;
+      return new RunResponse<T>(data);
     });
-
-    if (response.status === 404) {
-      const errorData = (await response.json().catch(() => ({}))) as any;
-      const errorMsg = errorData.error || 'Run not found or not complete';
-      const currentStatus = errorData.status || 'unknown';
-      throw new RunError(`${errorMsg} (status: ${currentStatus})`, runId);
-    }
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: Failed to get result`);
-    }
-
-    const data = (await response.json()) as RawRunResponse;
-    return new RunResponse<T>(data);
   }
 
   /**
    * Get the output payload for a completed run, dereferencing workerless
    * output_ref payloads when the runtime stored large output out of band.
    */
-  async getOutput<T = any>(runId: string): Promise<T> {
-    const url = `${this.gatewayUrl}/v1/runs/${encodeURIComponent(runId)}/output`;
+  async getOutput<T = any>(runId: string, signal?: AbortSignal): Promise<T> {
+    return this.withRequestSignal(this.timeout, signal, async requestSignal => {
+      const url = `${this.gatewayUrl}/v1/runs/${encodeURIComponent(runId)}/output`;
 
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: this.buildHeaders(),
-      signal: AbortSignal.timeout(this.timeout),
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.buildHeaders(),
+        signal: requestSignal,
+      });
+
+      if (response.status === 404) {
+        throw new RunError('Run not found', runId);
+      }
+
+      if (!response.ok) {
+        const errorData = (await response.json().catch(() => ({}))) as any;
+        const message = errorData.message || errorData.error || `HTTP ${response.status}: Failed to get output`;
+        throw createErrorFromResponse(response.status, message, runId, url);
+      }
+
+      const data = (await response.json()) as { output?: T };
+      return data.output as T;
     });
-
-    if (response.status === 404) {
-      throw new RunError('Run not found', runId);
-    }
-
-    if (!response.ok) {
-      const errorData = (await response.json().catch(() => ({}))) as any;
-      const message = errorData.message || errorData.error || `HTTP ${response.status}: Failed to get output`;
-      throw createErrorFromResponse(response.status, message, runId, url);
-    }
-
-    const data = (await response.json()) as { output?: T };
-    return data.output as T;
   }
 
   /**
    * Return the final output for a completed response, dereferencing output_ref
    * payloads when workerless stored large output out of band.
    */
-  async resolveOutput<T = any>(result: RunResponse<T>): Promise<T | undefined> {
+  async resolveOutput<T = any>(result: RunResponse<T>, signal?: AbortSignal): Promise<T | undefined> {
+    throwIfAborted(signal);
     result.raiseForStatus();
     if (!result.isSuccess) {
       return undefined;
@@ -640,7 +679,7 @@ export class Client {
       if (!result.runId) {
         throw new RunError('Run output reference cannot be dereferenced without a run ID', result.runId, result.status);
       }
-      return await this.getOutput<T>(result.runId);
+      return await this.getOutput<T>(result.runId, signal);
     }
     return result.output;
   }

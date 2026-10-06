@@ -438,9 +438,6 @@ describe('Agent', () => {
       maxIterations: 3
     });
 
-    const result = await agent.run('Test');
-
-    // Should stop after max iterations
-    expect(result.toolCalls.length).toBeLessThanOrEqual(3);
+    await expect(agent.run('Test')).rejects.toMatchObject({ name: 'MaxIterationsExceededError', maxIterations: 3 });
   });
 });

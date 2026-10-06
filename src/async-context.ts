@@ -21,6 +21,8 @@ import type { Context } from './types.js';
  * Propagated context data available throughout an async execution chain.
  */
 export interface PropagatedContext {
+  /** Returns true when an active run owns the detached error. */
+  onDetachedError?: (error: unknown) => boolean;
   /** Current run ID */
   runId: string;
   /** Session ID for multi-turn conversations */
