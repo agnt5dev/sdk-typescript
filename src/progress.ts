@@ -8,8 +8,10 @@
  * Reports are side-band: nothing reads them back into the run, so they can't
  * change what a workflow does when it replays. They are cheap to make often:
  * each run writes at most one record a second, always the latest report, and
- * sends it without holding up the run. Progress never goes backwards: a
- * report below the last one is dropped, as MCP requires.
+ * sends it without holding up the run. The latest report is always written
+ * before the run finishes. Progress never goes backwards, as MCP requires:
+ * within an execution the SDK drops a report below the last one, and across
+ * executions of a run the runtime ignores one.
  */
 
 /** What `ctx.progress(progress, options)` takes besides how far. */
@@ -75,37 +77,57 @@ function sameReport(a: ProgressReport, b: ProgressReport): boolean {
 /**
  * Coalesces one run's reports into at most one record per interval.
  *
- * `report` never blocks. The first report goes out at once; later ones wait
- * out the interval and only the latest is sent. `close` drops anything not
- * yet sent: once a run has finished, a report would only say something stale.
+ * `report` never blocks. The first report is handed to `send` at once, in
+ * the same call; later ones wait out the interval and only the latest is
+ * sent. Each report travels with its `source` (where it sits in the event
+ * tree), kept only when the report is accepted. `drain` hands over the
+ * report still waiting and stops the reporter: call it before the run ends.
+ *
+ * The never-backwards filter covers this reporter's reports, one execution
+ * of a run. Across executions (a retry, a resumed workflow) the runtime
+ * enforces it: the MCP edge and `get_run` ignore a report below the run's
+ * last figure.
  */
-export class ProgressReporter {
+export class ProgressReporter<S = undefined> {
   private last?: ProgressReport;
-  private pending?: ProgressReport;
+  private pending?: { report: ProgressReport; source: S };
   private timer?: ReturnType<typeof setTimeout>;
   private sending = false;
   private nextAt = 0;
   private closed = false;
 
   constructor(
-    private readonly send: (report: ProgressReport) => Promise<void>,
+    private readonly send: (report: ProgressReport, source: S) => Promise<void>,
     private readonly intervalMs: number = PROGRESS_INTERVAL_MS,
   ) {}
 
   /** Queue a report. False when it was dropped: it went backwards, repeated
    * the last one, or the run has finished. */
-  report(report: ProgressReport): boolean {
+  report(report: ProgressReport, source?: S): boolean {
     if (this.closed) return false;
     if (this.last && (report.progress < this.last.progress || sameReport(report, this.last))) {
       return false;
     }
     this.last = report;
-    this.pending = report;
+    this.pending = { report, source: source as S };
     this.schedule();
     return true;
   }
 
+  /** Hand over the report still waiting, if any, and stop. */
+  drain(): void {
+    if (this.closed) return;
+    const pending = this.pending;
+    this.stop();
+    if (pending) void this.deliver(pending);
+  }
+
+  /** Stop without sending what is waiting. */
   close(): void {
+    this.stop();
+  }
+
+  private stop(): void {
     this.closed = true;
     this.pending = undefined;
     if (this.timer) {
@@ -116,7 +138,13 @@ export class ProgressReporter {
 
   private schedule(): void {
     if (this.timer || this.sending || !this.pending || this.closed) return;
-    const delay = Math.max(0, this.nextAt - Date.now());
+    const delay = this.nextAt - Date.now();
+    if (delay <= 0) {
+      // Nothing sent lately: send now, before the caller can return and
+      // end the run.
+      void this.flush();
+      return;
+    }
     this.timer = setTimeout(() => {
       this.timer = undefined;
       void this.flush();
@@ -126,18 +154,24 @@ export class ProgressReporter {
   }
 
   private async flush(): Promise<void> {
-    const report = this.pending;
+    const pending = this.pending;
     this.pending = undefined;
-    if (!report || this.closed) return;
+    if (!pending || this.closed) return;
     this.sending = true;
     this.nextAt = Date.now() + this.intervalMs;
     try {
-      await this.send(report);
-    } catch {
-      // Progress is best effort: never fail the run over it.
+      await this.deliver(pending);
     } finally {
       this.sending = false;
       this.schedule();
+    }
+  }
+
+  private async deliver(pending: { report: ProgressReport; source: S }): Promise<void> {
+    try {
+      await this.send(pending.report, pending.source);
+    } catch {
+      // Progress is best effort: never fail the run over it.
     }
   }
 }

@@ -109,8 +109,7 @@ export class EventEmitter {
   private hasQueuedTransient = false;
   private emissionChain: Promise<void> = Promise.resolve();
   private readonly deferLifecycle: boolean;
-  private progressReporter?: ProgressReporter;
-  private progressSource?: ProgressSource;
+  private progressReporter?: ProgressReporter<ProgressSource>;
 
   constructor(
     runId: string,
@@ -145,8 +144,9 @@ export class EventEmitter {
    */
   emit(event: BaseEvent): Promise<void> {
     if (TERMINAL_EVENT_TYPES.has(event.eventType)) {
-      // Once the run has finished, a report not yet sent is stale.
-      this.progressReporter?.close();
+      // The waiting progress report goes ahead of the record that ends the
+      // run; nothing reported after it is sent.
+      this.progressReporter?.drain();
     }
     const operation = this.emissionChain.then(() => this.emitOrdered(event));
     // Keep later fire-and-forget log events ordered even if their caller does
@@ -157,8 +157,9 @@ export class EventEmitter {
 
   /** Persist any trailing lifecycle batch before the worker returns a result. */
   flush(): Promise<void> {
-    // flush() ends the run: nothing reported after it is worth sending.
-    this.progressReporter?.close();
+    // flush() ends the run: the waiting progress report goes ahead of it,
+    // and nothing reported after it is sent.
+    this.progressReporter?.drain();
     const operation = this.emissionChain.then(() => this.flushPendingCheckpoints());
     this.emissionChain = operation.catch(() => undefined);
     return operation;
@@ -167,20 +168,22 @@ export class EventEmitter {
   /**
    * `ctx.progress` for this run. Reports are coalesced to at most one a
    * second, the latest, and each is appended to the journal at once (see
-   * {@link appendNow}). False when the report was dropped: it went
-   * backwards, repeated the last one, the run has finished, or there is no
-   * worker to send it.
+   * {@link appendNow}); the last one is appended before the run finishes.
+   * `source` is kept only with an accepted report. False when the report was
+   * dropped: it went backwards, repeated the last one, the run has finished,
+   * or there is no worker to send it.
+   *
+   * The never-backwards filter is per emitter, one execution of the run; the
+   * runtime enforces it across executions (retries, resumed workflows).
    */
   reportProgress(report: ProgressReport, source: ProgressSource): boolean {
     if (!this.nativeWorker) return false;
-    this.progressSource = source;
     if (!this.progressReporter) {
-      this.progressReporter = new ProgressReporter(async (latest) => {
-        const at = this.progressSource ?? source;
-        await this.appendNow(progressUpdate(at.name, at.correlationId, at.parentCorrelationId, latest));
-      });
+      this.progressReporter = new ProgressReporter<ProgressSource>((latest, at) =>
+        this.appendNow(progressUpdate(at.name, at.correlationId, at.parentCorrelationId, latest)),
+      );
     }
-    return this.progressReporter.report(report);
+    return this.progressReporter.report(report, source);
   }
 
   /**

@@ -175,11 +175,15 @@ export interface Context {
    * the tool call hears each report as `notifications/progress`.
    *
    * Call it as often as you like: it never blocks, and each run writes at
-   * most one report a second, always the latest. Progress never goes
-   * backwards, as MCP requires: a report below the last one is dropped, and
-   * one with the same figure is sent only when its message or total changed.
-   * Reports never feed back into the run, so replaying a workflow can't
-   * change what it does. Locally, without a worker, a report goes nowhere.
+   * most one report a second, always the latest; the latest is always
+   * written before the run finishes. Progress never goes backwards, as MCP
+   * requires: a report below the last one is dropped, and one with the same
+   * figure is sent only when its message or total changed. The SDK applies
+   * that within one execution; across executions of the same run (a retry, a
+   * resumed workflow) the MCP edge and `get_run` ignore a report below the
+   * run's last figure. Reports never feed back into the run, so replaying a
+   * workflow can't change what it does. Locally, without a worker, a report
+   * goes nowhere.
    *
    * Throws `TypeError` for a `progress` or `total` that isn't a number or a
    * `message` that isn't a string, and `RangeError` for a value that isn't
