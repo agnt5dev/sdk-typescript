@@ -1,4 +1,4 @@
-import { runInWorkflowStep } from './step-scope.js';
+import { assertWorkflowWaitBoundary, runInWorkflowStep } from './step-scope.js';
 import type { Context, Logger, StepOptions } from './types.js';
 import type { EventEmitter } from './event-emitter.js';
 import { emptyRuntimeContext } from './runtime-context.js';
@@ -324,6 +324,7 @@ export class ContextImpl implements Context {
     if (Date.now() + this._workerlessYieldBeforeMs < this._workerlessDeadlineMs) {
       return;
     }
+    assertWorkflowWaitBoundary(this);
     throw new SuspensionRequestedError({
       runId: this.runId,
       reason,
@@ -333,6 +334,7 @@ export class ContextImpl implements Context {
   }
 
   async sleep(durationMs: number, _name?: string): Promise<void> {
+    if (this._activationClient || currentActivation()) assertWorkflowWaitBoundary(this);
     validateSleepDuration(durationMs);
     if (durationMs === 0) {
       return;
@@ -389,6 +391,7 @@ export class ContextImpl implements Context {
       timeoutMs?: number;
     },
   ): Promise<string | null> {
+    if (this._activationClient || currentActivation()) assertWorkflowWaitBoundary(this);
     if (options?.timeoutMs !== undefined) throw new ConfigurationError('Wait timeouts require a managed or workerless workflow');
     const pauseIndex = this._pauseIndex++;
     const responseKey = `user_response:${this.runId}:${pauseIndex}`;

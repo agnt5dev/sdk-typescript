@@ -67,6 +67,24 @@ describe('workerless execution boundaries', () => {
     for (const [, init] of fetch.mock.calls as any) expect(init.headers['X-Tenant-ID']).toBe('dispatch-tenant');
   });
 
+  it.each([null, false, { approved: true }])('preserves consumed signals across sequential suspensions (%s)', async firstSignal => {
+    const work = vi.fn(async () => 1);
+    const parent = workflow('parent', async ctx => {
+      await ctx.step('work', work);
+      const first = await ctx.waitForSignal('first', 'approval');
+      const second = await ctx.waitForSignal('second', 'finish');
+      return { first, second };
+    });
+    const handler = serve({ workflows: [parent], allowUnsigned: true });
+    const first = await invoke(handler);
+    expect(first).toMatchObject({ status: 'suspended', signal_name: 'first' });
+    const second = await invoke(handler, first.checkpoint, { signal_name: 'first', waiting_step: 'approval', signal_payload: JSON.stringify(firstSignal) });
+    expect(second).toMatchObject({ status: 'suspended', signal_name: 'second' });
+    const completed = await invoke(handler, second.checkpoint, { signal_name: 'second', waiting_step: 'finish', signal_payload: 'true' });
+    expect(completed).toMatchObject({ status: 'completed', output: { first: firstSignal, second: true } });
+    expect(work).toHaveBeenCalledOnce();
+  });
+
   it.each([false, true])('closes a standalone child context (throws=%s)', async throws => {
     const parent = new ContextImpl('parent', 'parent', 0, 'parent', { storage: 'memory' });
     const close = vi.spyOn(ContextImpl.prototype, 'close');

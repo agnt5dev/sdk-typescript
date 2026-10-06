@@ -640,34 +640,37 @@ export class Client {
    * Get the output payload for a completed run, dereferencing workerless
    * output_ref payloads when the runtime stored large output out of band.
    */
-  async getOutput<T = any>(runId: string): Promise<T> {
-    const url = `${this.gatewayUrl}/v1/runs/${encodeURIComponent(runId)}/output`;
+  async getOutput<T = any>(runId: string, signal?: AbortSignal): Promise<T> {
+    return this.withRequestSignal(this.timeout, signal, async requestSignal => {
+      const url = `${this.gatewayUrl}/v1/runs/${encodeURIComponent(runId)}/output`;
 
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: this.buildHeaders(),
-      signal: AbortSignal.timeout(this.timeout),
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.buildHeaders(),
+        signal: requestSignal,
+      });
+
+      if (response.status === 404) {
+        throw new RunError('Run not found', runId);
+      }
+
+      if (!response.ok) {
+        const errorData = (await response.json().catch(() => ({}))) as any;
+        const message = errorData.message || errorData.error || `HTTP ${response.status}: Failed to get output`;
+        throw createErrorFromResponse(response.status, message, runId, url);
+      }
+
+      const data = (await response.json()) as { output?: T };
+      return data.output as T;
     });
-
-    if (response.status === 404) {
-      throw new RunError('Run not found', runId);
-    }
-
-    if (!response.ok) {
-      const errorData = (await response.json().catch(() => ({}))) as any;
-      const message = errorData.message || errorData.error || `HTTP ${response.status}: Failed to get output`;
-      throw createErrorFromResponse(response.status, message, runId, url);
-    }
-
-    const data = (await response.json()) as { output?: T };
-    return data.output as T;
   }
 
   /**
    * Return the final output for a completed response, dereferencing output_ref
    * payloads when workerless stored large output out of band.
    */
-  async resolveOutput<T = any>(result: RunResponse<T>): Promise<T | undefined> {
+  async resolveOutput<T = any>(result: RunResponse<T>, signal?: AbortSignal): Promise<T | undefined> {
+    throwIfAborted(signal);
     result.raiseForStatus();
     if (!result.isSuccess) {
       return undefined;
@@ -676,7 +679,7 @@ export class Client {
       if (!result.runId) {
         throw new RunError('Run output reference cannot be dereferenced without a run ID', result.runId, result.status);
       }
-      return await this.getOutput<T>(result.runId);
+      return await this.getOutput<T>(result.runId, signal);
     }
     return result.output;
   }

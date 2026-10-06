@@ -8,6 +8,7 @@ import { retrySleep } from './function-execution.js';
 import { throwIfAborted } from './cancellation.js';
 import { getCurrentSpanInfo } from './tracing.js';
 import type { Context, WorkflowHandler } from './types.js';
+import { encodeActivationOutput, decodeActivationOutput } from './activation-output.js';
 
 /** Gateway invocation identity v1: project-scoped UUIDv5 of a framed caller key. */
 export function invocationRunId(projectId: string, key: string): string {
@@ -48,7 +49,7 @@ export async function runChildWorkflow<T>(ctx: Context, name: string, input: unk
       if (['completed', 'failed', 'cancelled', 'timeout'].includes(status.status)) {
         const result = await client.getResult<T>(submitted.runId, ctx.signal);
         if (!result.isSuccess) throw new RunError(result.error?.message ?? `Child workflow '${name}' ${result.status}`, submitted.runId, result.status);
-        return await client.resolveOutput(result) as T;
+        return await client.resolveOutput(result, ctx.signal) as T;
       }
       await retrySleep(250, ctx.signal);
     }
@@ -66,8 +67,8 @@ export async function runChildWorkflow<T>(ctx: Context, name: string, input: unk
   let decision: ActivationDecision | undefined;
   const start = Date.now();
   const { result } = await activationClient.run(request, () => runWithActivation(decision!, () => join(idempotencyKey, childRunId)), {
-    encodeOutput: value => new TextEncoder().encode(JSON.stringify(value ?? null)),
-    decodeOutput: value => JSON.parse(new TextDecoder().decode(value)) as T,
+    encodeOutput: encodeActivationOutput,
+    decodeOutput: decodeActivationOutput<T>,
     latencyMs: () => Date.now() - start,
     onAdmitted: admitted => { decision = admitted; },
     failureErrorCode: 'CHILD_FAILED',

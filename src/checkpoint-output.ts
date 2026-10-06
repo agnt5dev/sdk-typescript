@@ -1,10 +1,35 @@
 import type { Context } from './types.js';
 import { abortable } from './cancellation.js';
 import { trackWorkflowStream } from './step-scope.js';
+import { canonicalActivationValue } from './activation.js';
+import { ActivationError, ActivationErrorCode } from './errors.js';
 
 type Operation = 'next' | 'throw' | 'return';
-type StreamRecord = { operation: Operation; result: IteratorResult<unknown> };
+type StreamRecord = { operation: Operation; argumentSignature: string; result: IteratorResult<unknown> };
 type Output<T> = { kind: 'value'; value: T } | { kind: 'stream'; records: StreamRecord[] };
+
+/** Error stacks vary on replay; preserve their semantic fields and custom data. */
+function iteratorArgumentSignature(value: unknown, ancestors = new Set<object>()): string {
+  if (value === undefined) return '["undefined"]';
+  if (value && typeof value === 'object') {
+    if (ancestors.has(value)) throw new ActivationError(ActivationErrorCode.InvalidArgument, 'Streaming function iterator arguments must not contain cycles');
+    ancestors.add(value);
+    const signature = (nested: unknown) => iteratorArgumentSignature(nested, ancestors);
+    try {
+      if (value instanceof Error) {
+        const properties = Object.getOwnPropertyNames(value).filter(key => !['stack', 'name', 'message', 'cause'].includes(key)).sort()
+          .map(key => [key, signature((value as unknown as Record<string, unknown>)[key])]);
+        return JSON.stringify(['error', value.constructor.name, value.name, value.message,
+          signature((value as Error & { cause?: unknown }).cause), properties]);
+      }
+      if (Array.isArray(value)) return JSON.stringify(['array', value.map(signature)]);
+      if ([Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+        return JSON.stringify(['object', Object.keys(value).sort().map(key => [key, signature((value as Record<string, unknown>)[key])])]);
+      }
+    } finally { ancestors.delete(value); }
+  }
+  return new TextDecoder().decode(canonicalActivationValue(value));
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -56,12 +81,13 @@ export async function checkpointFunctionOutput<T>(
       if (!requests.length) await abortable(() => wake.promise, ctx.signal);
       wake = deferred<void>();
       active = requests.shift()!;
+      const argumentSignature = iteratorArgumentSignature(active.argument);
       const method = iterator![active.operation];
       let result: IteratorResult<unknown>;
       if (method) result = await method.call(iterator, active.argument);
       else if (active.operation === 'throw') throw active.argument;
       else result = { done: true, value: active.argument };
-      records.push({ operation: active.operation, result });
+      records.push({ operation: active.operation, argumentSignature, result });
       if (result.done) {
         // Final next()/return() resolves only after the checkpoint is acknowledged.
         finalReply = () => active!.reply.resolve(result);
@@ -78,15 +104,19 @@ export async function checkpointFunctionOutput<T>(
     else if (output.kind === 'value') delivered.resolve(output.value);
     else {
       let index = 0;
-      const replay = (operation: Operation, argument?: unknown): Promise<IteratorResult<unknown>> => {
+      const replay = async (operation: Operation, argument?: unknown): Promise<IteratorResult<unknown>> => {
         const record = output.records[index];
-        if (!record) return operation === 'throw' ? Promise.reject(argument) : Promise.resolve({ done: true, value: operation === 'return' ? argument : undefined });
-        if (record.operation !== operation) return Promise.reject(new Error('Streaming function replay changed iterator operations'));
+        if (!record) {
+          if (operation === 'throw') throw argument;
+          return { done: true, value: operation === 'return' ? argument : undefined };
+        }
+        if (record.operation !== operation) throw new ActivationError(ActivationErrorCode.NonDeterministicReplay, 'Streaming function replay changed iterator operations');
+        if (record.argumentSignature !== iteratorArgumentSignature(argument)) throw new ActivationError(ActivationErrorCode.NonDeterministicReplay, 'Streaming function replay changed iterator arguments');
         index++;
-        return Promise.resolve(record.result);
+        return record.result;
       };
       delivered.resolve({
-        next: () => replay('next'),
+        next: (value?: unknown) => replay('next', value),
         throw: (error?: unknown) => replay('throw', error),
         return: (value?: unknown) => replay('return', value),
         [Symbol.asyncIterator]() { return this; },

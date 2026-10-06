@@ -18,6 +18,7 @@ import {
   sha256,
   stableStepKey,
   stepActivationRequest,
+  runWithActivation,
   timerActivationRequest,
 } from '../activation.js';
 import { ContextImpl } from '../context.js';
@@ -92,6 +93,14 @@ class RecordingTransport implements ActivationTransport {
 }
 
 describe('durable activation V1 contract', () => {
+  it.each(['user', 'sleep', 'budget'])('rejects a standalone context %s wait within an admitted activation', async wait => {
+    const ctx = new ContextImpl('inv', 'run', 0, 'waits', { storage: 'memory', workerlessDeadlineMs: Date.now() });
+    await expect(runWithActivation({ kind: 'EXECUTE', activationId: 'tool', attempt: 1, acceptedJournalOffset: 1n }, async () => {
+      if (wait === 'user') return ctx.waitForUser('Continue?');
+      if (wait === 'sleep') return ctx.sleep(1);
+      return ctx.yieldIfNeeded();
+    })).rejects.toMatchObject({ name: 'ConfigurationError' });
+  });
   it('matches the frozen proto activation-kind values', () => {
     expect(ActivationKind.Step).toBe(1);
     expect(ActivationKind.Function).toBe(2);

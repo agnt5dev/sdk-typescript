@@ -4,6 +4,7 @@ import { abortable, throwIfAborted } from './cancellation.js';
 import { ActivationError, ActivationErrorCode } from './errors.js';
 import type { Context, FunctionOptions } from './types.js';
 import { isControlFlow } from './control-flow.js';
+import { encodeActivationOutput, decodeActivationOutput } from './activation-output.js';
 export { isControlFlow } from './control-flow.js';
 
 function attempts(options: FunctionOptions): number {
@@ -43,8 +44,8 @@ export async function executeFunction<T>(ctx: Context, name: string, input: unkn
       throwIfAborted(ctx.signal);
       return runWithActivation(decision!, () => execute(attemptContext(ctx, decision!.attempt - 1)));
     }, {
-      encodeOutput: value => new TextEncoder().encode(JSON.stringify(value ?? null)),
-      decodeOutput: value => JSON.parse(new TextDecoder().decode(value)) as T,
+      encodeOutput: encodeActivationOutput,
+      decodeOutput: decodeActivationOutput<T>,
       latencyMs: () => Date.now() - start,
       onAdmitted: admitted => { decision = admitted; },
       maxAttempts,

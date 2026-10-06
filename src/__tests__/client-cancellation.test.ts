@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Client } from '../client.js';
+import { Client, RunResponse } from '../client.js';
+
+const referencedOutput = new RunResponse({ run_id: 'run', status: 'completed', output_ref: { kind: 'agnt5.object_store.ref.v1', ref: 'output.json' } });
 
 const requests = [
   ['run', (client: Client, signal: AbortSignal) => client.run('work', {}, { signal, timeoutMs: 20 })],
   ['submit', (client: Client, signal: AbortSignal) => client.submit('work', {}, { signal })],
   ['status', (client: Client, signal: AbortSignal) => client.getStatus('run', signal)],
   ['result', (client: Client, signal: AbortSignal) => client.getResult('run', signal)],
+  ['output', (client: Client, signal: AbortSignal) => client.getOutput('run', signal)],
+  ['referenced output', (client: Client, signal: AbortSignal) => client.resolveOutput(referencedOutput, signal)],
 ] as const;
 
 function stalledFetch() {

@@ -5,6 +5,8 @@ import { fn, FunctionRegistry } from '../function.js';
 import { workflow, WorkflowRegistry } from '../workflow.js';
 import { executeChildWorkflow, withTimeout } from '../workflow-utils.js';
 import { invocationRunId } from '../child-workflow.js';
+import { ActivationError, ActivationErrorCode } from '../errors.js';
+import { tool } from '../tool.js';
 
 const metadata = { run_id: 'parent', project_id: 'project', dispatch_mode: 'pull', worker_session_id: 'session', lease_id: 'lease', activation_artifact_sha256: Buffer.alloc(32, 1).toString('base64'), activation_definition_version: 'v1' };
 function nativeWorker() {
@@ -133,6 +135,115 @@ describe('workflow execution boundaries', () => {
     const result = await dispatch(nativeWorker(), { durable_activation_v1: 'true' });
     expect(result).toMatchObject({ eventType: 'run.failed', errorType: 'ConfigurationError' });
     expect(result.error).toContain('between workflow steps');
+  });
+
+  it.each(['user', 'signal', 'sleep'])('fails a durable tool activation that attempts a %s wait', async wait => {
+    const waitingTool = tool(`wait-${wait}`, { description: 'unsafe tool' }, async ctx => {
+      if (wait === 'user') return ctx.waitForUser('Continue?');
+      if (wait === 'signal') return ctx.waitForSignal('approval');
+      return ctx.sleep(100, 'delay');
+    });
+    workflow('parent-workflow', async ctx => waitingTool._tool.invoke(ctx, {}));
+    const native = nativeWorker();
+    const result = await dispatch(native, { durable_activation_v1: 'true' });
+    expect(result).toMatchObject({ eventType: 'run.failed', errorType: 'ConfigurationError' });
+    expect(native.failActivation).toHaveBeenCalledOnce();
+    expect(native.failActivation.mock.calls[0][0].errorCode).toBe('TOOL_FAILED');
+    expect(native.completeActivation).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, null, false, { kind: 'undefined', version: 1 }])('preserves nested function output across activation recovery (%s)', async output => {
+    const handler = vi.fn(async () => output);
+    const nested = fn('nested-output').retry({ maxAttempts: 2, initialIntervalMs: 0 }).run(handler);
+    const observed: unknown[] = [];
+    workflow('parent-workflow', async ctx => ctx.step('outer', async () => {
+      const value = await nested(ctx);
+      observed.push(value);
+      if (observed.length === 1) throw new ActivationError(ActivationErrorCode.StaleAuthority, 'dispatch lost after nested completion');
+      return 'recovered';
+    }));
+    const native = nativeWorker();
+    expect((await dispatch(native, { durable_activation_v1: 'true' })).eventType).toBe('run.failed');
+    expect((await dispatch(native, { durable_activation_v1: 'true' })).eventType).toBe('run.completed');
+    expect(observed).toEqual([output, output]);
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])('preserves iterator arguments and rejects a changed next/throw/return argument (activation=%s)', async activation => {
+    for (const operation of ['next', 'throw', 'return']) {
+      WorkflowRegistry.clear();
+      let argument: unknown = operation === 'throw' ? new AggregateError([new TypeError('original')], 'failed') : { value: 'original', optional: undefined };
+      const handler = vi.fn(async function* () {
+        try { const input = yield 'start'; yield input; }
+        catch (error) { yield (error as Error).message; }
+      });
+      const streamed = fn(`protocol-${operation}`).run(handler as any);
+      workflow('parent-workflow', async ctx => {
+        const iterator = await streamed(ctx) as any;
+        await iterator.next();
+        await iterator[operation](argument);
+        if (operation !== 'return') await iterator.next();
+        await ctx.waitForUser('Continue?');
+        return 'done';
+      });
+      const native = nativeWorker();
+      const flags = activation ? { durable_activation_v1: 'true' } : {};
+      const paused = await dispatch(native, flags);
+      expect(paused.eventType).toBe('workflow.paused');
+      const resumed = { ...flags, ...paused.metadata, user_response: 'yes' };
+      // Reconstructed Error stacks differ even when their semantic data is unchanged.
+      argument = operation === 'throw' ? new AggregateError([new TypeError('original')], 'failed') : { optional: undefined, value: 'original' };
+      expect((await dispatch(native, resumed)).eventType).toBe('run.completed');
+      argument = operation === 'throw' ? new AggregateError([new TypeError('changed')], 'failed') : { value: 'changed', optional: undefined };
+      const result = await dispatch(native, resumed);
+      expect(result).toMatchObject({ eventType: 'run.failed', errorType: 'ActivationError' });
+      expect(result.error).toContain('NON_DETERMINISTIC_REPLAY');
+      expect(handler).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('cancels the parent while downloading a child output reference', async () => {
+    const child = workflow('child', async () => 'unused');
+    workflow('parent-workflow', async ctx => child(ctx, {}));
+    const worker = new Worker('boundaries', { containProcessErrors: false });
+    (worker as any).nativeWorker = nativeWorker();
+    let downloading!: () => void;
+    const started = new Promise<void>(resolve => { downloading = resolve; });
+    let outputSignal: AbortSignal | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: any) => {
+      if (url.endsWith('/output')) {
+        outputSignal = init.signal;
+        downloading();
+        return new Promise<Response>((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+      }
+      return new Response(JSON.stringify({ run_id: 'child', status: 'completed', output_ref: { kind: 'agnt5.object_store.ref.v1', ref: 'output.json' } }));
+    }));
+    const pending = (worker as any).processMessage({ invocationId: 'parent', componentName: 'parent-workflow', componentType: 'workflow', inputJson: '{}', metadata });
+    await started;
+    (worker as any).inflight.get('parent').abort(new Error('parent cancelled'));
+    const result = JSON.parse(await pending);
+    expect(result.eventType).toBe('run.cancelled');
+    expect(outputSignal?.aborted).toBe(true);
+  });
+
+  it('preserves an undefined child output across replay', async () => {
+    const child = workflow('child', async () => undefined);
+    const observed: unknown[] = [];
+    workflow('parent-workflow', async ctx => {
+      observed.push(await child(ctx, {}));
+      await ctx.waitForUser('Continue?');
+      return 'done';
+    });
+    let childRun = '';
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: any) => {
+      if (url.endsWith('/submit')) childRun = invocationRunId('project', init.headers['Idempotency-Key']);
+      return new Response(JSON.stringify({ run_id: childRun, status: 'completed' }));
+    }));
+    const native = nativeWorker();
+    const paused = await dispatch(native, { durable_activation_v1: 'true' });
+    expect(paused.eventType).toBe('workflow.paused');
+    expect((await dispatch(native, { durable_activation_v1: 'true', ...paused.metadata, user_response: 'yes' })).eventType).toBe('run.completed');
+    expect(observed).toEqual([undefined, undefined]);
   });
 
   it('pauses, resumes, and preserves completed steps across multiple signals', async () => {

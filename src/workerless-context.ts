@@ -116,6 +116,7 @@ export class WorkerlessContext implements Context {
     if (Date.now() + this.workerlessYieldBeforeMs < this.workerlessDeadlineMs) {
       return;
     }
+    assertWorkflowWaitBoundary(this);
     throw new SuspensionRequestedError({
       runId: this.runId,
       reason,
@@ -188,7 +189,9 @@ export class WorkerlessContext implements Context {
     if (options?.timeoutMs !== undefined) validateWaitTimeout(options.timeoutMs);
     const waitingStep = name || signalName;
     const responseKey = `${signalName}:${waitingStep}`;
-    if (this.checkpoints.has(`signal:${responseKey}`)) return this.checkpoints.get(`signal:${responseKey}`) as T;
+    const checkpointKey = `step:signal:${responseKey}`;
+    this.visitedStepCheckpointKeys.add(checkpointKey);
+    if (this.checkpoints.has(checkpointKey)) return this.checkpoints.get(checkpointKey) as T;
     if (this.signalResponses.has(responseKey)) {
       return this.signalResponses.get(responseKey) as T;
     }
@@ -252,7 +255,7 @@ export class WorkerlessContext implements Context {
       const waitingStep = metadata.waiting_step || signalName;
       const value = decodeSignalPayload(signalPayload);
       this.signalResponses.set(`${signalName}:${waitingStep}`, value);
-      this.checkpoints.set(`signal:${signalName}:${waitingStep}`, value);
+      this.checkpoints.set(`step:signal:${signalName}:${waitingStep}`, value);
     }
   }
 

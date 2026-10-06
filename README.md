@@ -66,7 +66,8 @@ is recorded.
 A nested streaming function keeps its checkpoint open until its iterator
 finishes or is closed. Consume it with `for await`, or call `return()` before
 the workflow waits or returns. Completed streams replay their recorded iterator
-operations without calling the handler again. A stream is not retried after
+operations and validate their arguments without calling the handler again.
+Changed arguments raise `NON_DETERMINISTIC_REPLAY`. A stream is not retried after
 its iterator has been exposed to the caller.
 
 Calling a registered workflow from a managed workflow, or using
@@ -76,7 +77,8 @@ URL and credentials for the parent's project, and their own worker capacity.
 Standalone child calls use a separate local context.
 
 Call `ctx.waitForUser`, `ctx.waitForSignal`, and durable `ctx.sleep` between
-steps. A wait inside an unfinished step raises `ConfigurationError`. Signal
+steps. A wait inside an unfinished step or an active tool/function activation
+raises `ConfigurationError`. Signal
 responses and completed steps survive subsequent pauses. For managed and
 workerless user/signal waits, `{ timeoutMs }` sets a durable wait deadline;
 expiration fails the run with `WAIT_TIMEOUT`. This needs a runtime version

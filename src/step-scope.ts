@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ConfigurationError } from './errors.js';
+import { currentActivation } from './activation.js';
 const steps = new AsyncLocalStorage<boolean>();
 export const inWorkflowStep = (): boolean => steps.getStore() === true;
 export const runInWorkflowStep = <T>(execute: () => T): T => steps.run(true, execute);
@@ -18,5 +19,5 @@ export function assertWorkflowStreamsClosed(ctx: object): void {
 
 export function assertWorkflowWaitBoundary(ctx?: object): void {
   if (ctx) assertWorkflowStreamsClosed(ctx);
-  if (inWorkflowStep()) throw new ConfigurationError('Managed waits must be called between workflow steps');
+  if (inWorkflowStep() || currentActivation()) throw new ConfigurationError('Managed waits must be called between workflow steps and outside active activations');
 }
