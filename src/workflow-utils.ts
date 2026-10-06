@@ -10,6 +10,9 @@
 
 import type { Context, WorkflowHandler } from './types.js';
 import { WorkflowRegistry } from './workflow.js';
+import { SagaCompensationError } from './errors.js';
+import { runChildWorkflow } from './child-workflow.js';
+import { isControlFlow } from './control-flow.js';
 
 /**
  * Run multiple async tasks in parallel and return results in order.
@@ -104,14 +107,14 @@ export async function executeChildWorkflow<TInput = any, TOutput = any>(
     handler = config.handler as WorkflowHandler<TInput, TOutput>;
   } else {
     handler = workflowNameOrHandler;
-    workflowName = (handler as any).name || 'anonymous-child-workflow';
+    workflowName = (handler as any)._agnt5_config?.name || (handler as any).name || 'anonymous-child-workflow';
+    handler = (handler as any)._agnt5_config?.handler || handler;
   }
 
   ctx.logger.info(`Starting child workflow: ${workflowName}`);
 
   try {
-    // Execute child workflow with parent context
-    const result = await handler(ctx, input);
+    const result = await runChildWorkflow(ctx, workflowName, input, handler);
     ctx.logger.info(`Child workflow completed: ${workflowName}`);
     return result;
   } catch (error) {
@@ -289,16 +292,23 @@ export async function withTimeout<TInput = any, TOutput = any>(
   timeoutMs: number
 ): Promise<TOutput> {
   const { TimeoutError } = await import('./errors.js');
-
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0) {
+    throw new RangeError('timeoutMs must be a non-negative safe integer');
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => {
+    timer = setTimeout(() => {
       reject(new TimeoutError(`Workflow execution timed out after ${timeoutMs}ms`, timeoutMs, 'withTimeout'));
     }, timeoutMs);
   });
 
   const workflowPromise = executeChildWorkflow(ctx, workflowNameOrHandler, input);
 
-  return Promise.race([workflowPromise, timeoutPromise]);
+  try {
+    return await Promise.race([workflowPromise, timeoutPromise]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -310,7 +320,7 @@ export async function withTimeout<TInput = any, TOutput = any>(
  * @param ctx - Workflow context
  * @param steps - Array of [action, compensation] tuples
  * @returns Result from the final step
- * @throws Error from failed step after compensation
+ * @throws Original error when compensation succeeds; SagaCompensationError when rollback is incomplete
  *
  * @example
  * ```typescript
@@ -332,8 +342,11 @@ export async function withTimeout<TInput = any, TOutput = any>(
  */
 export async function saga<T = any>(
   ctx: Context,
-  steps: Array<[() => Promise<T>, () => Promise<void>]>
+  steps: Array<[() => Promise<T>, () => Promise<void>]>,
+  options?: { name?: string },
 ): Promise<T> {
+  const name = options?.name ?? (ctx as any).allocateActivationKey?.('saga', 'saga') ?? 'saga';
+  const checkpoint = <R>(key: string, execute: () => Promise<R>): Promise<R> => ctx.step(key, execute, { key });
   const completedSteps: Array<() => Promise<void>> = [];
   let lastResult: T | undefined;
 
@@ -342,25 +355,30 @@ export async function saga<T = any>(
       const [action, compensation] = steps[i];
 
       ctx.logger.info(`Executing saga step ${i + 1}/${steps.length}`);
-      lastResult = await action();
+      lastResult = await checkpoint(`${name}:forward:${i}`, action);
 
       completedSteps.push(compensation);
     }
 
     return lastResult!;
   } catch (error) {
+    if (isControlFlow(error) || ctx.signal?.aborted) throw error;
     ctx.logger.error(`Saga failed at step ${completedSteps.length + 1}, executing compensations`);
 
+    const compensationErrors: unknown[] = [];
     // Execute compensations in reverse order
     for (let i = completedSteps.length - 1; i >= 0; i--) {
       try {
         ctx.logger.info(`Executing compensation ${i + 1}/${completedSteps.length}`);
-        await completedSteps[i]();
+        await checkpoint(`${name}:compensate:${i}`, async () => { await completedSteps[i](); return null; });
       } catch (compensationError) {
+        if (isControlFlow(compensationError) || ctx.signal?.aborted) throw compensationError;
+        compensationErrors.push(compensationError);
         ctx.logger.error(`Compensation ${i + 1} failed: ${(compensationError as Error).message}`);
       }
     }
 
+    if (compensationErrors.length) throw new SagaCompensationError(error, compensationErrors);
     throw error;
   }
 }

@@ -19,11 +19,10 @@ const searchWeb = tool('search_web', {
     },
     required: ['query'],
   },
-  handler: async (_ctx: Context, args: { query: string }) => {
-    // Simulated search
-    await new Promise(resolve => setTimeout(resolve, 100));
-    return `Search results for "${args.query}": [Result 1, Result 2, Result 3]`;
-  },
+}, async (_ctx: Context, args: { query: string }) => {
+  // Simulated search
+  await new Promise(resolve => setTimeout(resolve, 100));
+  return `Search results for "${args.query}": [Result 1, Result 2, Result 3]`;
 });
 
 const getWeather = tool('get_weather', {
@@ -35,10 +34,9 @@ const getWeather = tool('get_weather', {
     },
     required: ['location'],
   },
-  handler: async (_ctx: Context, args: { location: string }) => {
-    await new Promise(resolve => setTimeout(resolve, 80));
-    return `Weather in ${args.location}: 72°F, Sunny`;
-  },
+}, async (_ctx: Context, args: { location: string }) => {
+  await new Promise(resolve => setTimeout(resolve, 80));
+  return `Weather in ${args.location}: 72°F, Sunny`;
 });
 
 const getNews = tool('get_news', {
@@ -50,20 +48,20 @@ const getNews = tool('get_news', {
     },
     required: ['category'],
   },
-  handler: async (_ctx: Context, args: { category: string }) => {
-    await new Promise(resolve => setTimeout(resolve, 120));
-    return `Latest ${args.category} news: [Headline 1, Headline 2]`;
-  },
+}, async (_ctx: Context, args: { category: string }) => {
+  await new Promise(resolve => setTimeout(resolve, 120));
+  return `Latest ${args.category} news: [Headline 1, Headline 2]`;
 });
 
 // ─── Agent with parallel tool calls ─────────────────────────────────
 
 async function agentParallelTools() {
-  const model = new LM({ provider: 'openai', model: 'gpt-4o-mini' });
+  const model = LM.openai({ apiKey: process.env.OPENAI_API_KEY });
 
   const agent = new Agent({
     name: 'research-assistant',
     model,
+    modelName: 'openai/gpt-4o-mini',
     tools: [searchWeb, getWeather, getNews],
     instructions: `You are a research assistant. When asked for a briefing,
       use ALL available tools in a single response to gather information efficiently.
@@ -78,31 +76,28 @@ async function agentParallelTools() {
 
 // ─── Workflow with parallel execution ───────────────────────────────
 
-import { workflow, parallel, gather } from '../src/index.js';
+import { workflow, parallel } from '../src/index.js';
 
-const parallelDataPipeline = workflow('parallel-pipeline', {
-  description: 'Process data from multiple sources in parallel',
-  handler: async (ctx, input: { query: string }) => {
-    // Run three data fetches in parallel
-    const results = await gather(
-      ctx.step('fetch-db', async () => {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        return { source: 'database', count: 42 };
-      }),
-      ctx.step('fetch-api', async () => {
-        await new Promise(resolve => setTimeout(resolve, 150));
-        return { source: 'api', count: 17 };
-      }),
-      ctx.step('fetch-cache', async () => {
-        await new Promise(resolve => setTimeout(resolve, 50));
-        return { source: 'cache', count: 99 };
-      }),
-    );
+const parallelDataPipeline = workflow('parallel-pipeline', async (ctx, input: { query: string }) => {
+  // Run three data fetches in parallel
+  const results = await parallel([
+    ctx.step('fetch-db', async () => {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return { source: 'database', count: 42 };
+    }),
+    ctx.step('fetch-api', async () => {
+      await new Promise(resolve => setTimeout(resolve, 150));
+      return { source: 'api', count: 17 };
+    }),
+    ctx.step('fetch-cache', async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      return { source: 'cache', count: 99 };
+    }),
+  ]);
 
-    // Aggregate results
-    const total = results.reduce((sum, r) => sum + (r as any).count, 0);
-    return { results, totalCount: total };
-  },
+  // Aggregate results
+  const total = results.reduce((sum, r) => sum + (r as any).count, 0);
+  return { results, totalCount: total };
 });
 
 async function main() {

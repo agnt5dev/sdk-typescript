@@ -39,6 +39,8 @@ struct JsInvocationResponse {
     output_json: Option<String>,
     error: Option<String>,
     error_code: Option<String>,
+    error_type: Option<String>,
+    error_stack: Option<String>,
     event_type: Option<String>,
     metadata: Option<HashMap<String, String>>,
     worker_suspension: Option<JsWorkerSuspension>,
@@ -93,6 +95,12 @@ fn component_response(
     let mut metadata = response.metadata.unwrap_or_default();
     if let Some(error_code) = response.error_code {
         metadata.insert("error_code".to_string(), error_code);
+    }
+    if let Some(error_type) = response.error_type {
+        metadata.insert("error_type".to_string(), error_type);
+    }
+    if let Some(error_stack) = response.error_stack {
+        metadata.insert("error_stack".to_string(), error_stack);
     }
     let result = if let Some(suspension) = response.worker_suspension {
         if !success {
@@ -1889,7 +1897,7 @@ impl Span {
         // caller's attributes rather than leaving it empty (AGNT5-1320).
         let run_id = metadata.get("run_id").cloned().unwrap_or_default();
 
-        let span = agnt5_sdk_core::create_component_span(
+        let mut span = agnt5_sdk_core::create_component_span(
             &name,
             &comp_type,
             "", // service_name — set via init_telemetry global
@@ -1898,6 +1906,13 @@ impl Span {
             parent_context,
             Some(&metadata),
         );
+
+        // JavaScript already supplies a qualified name. Core also prefixes
+        // component names, so normalize once at this language boundary.
+        {
+            use opentelemetry::trace::Span as OtelSpan;
+            span.update_name(component_span_name(&name, &comp_type));
+        }
 
         // Extract trace_id and span_id from the created span
         let (trace_id, span_id) = {
@@ -2225,7 +2240,7 @@ mod tests {
         let message = component_response(
             "worker-1",
             &pull_request(),
-            r#"{"invocationId":"run-1","error":"boom","errorCode":"EXECUTION_ERROR","eventType":"run.failed"}"#,
+            r#"{"invocationId":"run-1","error":"boom","errorCode":"EXECUTION_ERROR","errorType":"TypeError","errorStack":"TypeError: boom\n    at handler","eventType":"run.failed"}"#,
         )
         .expect("pull completion");
 
@@ -2238,6 +2253,11 @@ mod tests {
         assert!(!response.success);
         assert_eq!(response.event_type, "run.failed");
         assert_eq!(response.error_message, "boom");
+        assert_eq!(
+            response.metadata.get("error_type").map(String::as_str),
+            Some("TypeError")
+        );
+        assert!(response.metadata["error_stack"].contains("at handler"));
         assert_eq!(
             response.metadata.get("error_code").map(String::as_str),
             Some("EXECUTION_ERROR")
@@ -2370,4 +2390,54 @@ pub fn structured_assertions(input_json: String) -> napi::Result<String> {
     let input: serde_json::Value =
         serde_json::from_str(&input_json).map_err(|e| napi::Error::from_reason(e.to_string()))?;
     Ok(agnt5_sdk_core::eval::structured_assertions(&input).to_string())
+}
+
+fn component_span_name(name: &str, component_type: &str) -> String {
+    if name.starts_with(&format!("{component_type}."))
+        || (component_type == "step" && name.starts_with("workflow.step."))
+    {
+        name.to_string()
+    } else {
+        format!("{component_type}.{name}")
+    }
+}
+
+#[cfg(test)]
+mod span_name_tests {
+    #[test]
+    fn exported_native_span_uses_the_canonical_name() {
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        opentelemetry::global::set_tracer_provider(provider.clone());
+        let span = super::Span::create(
+            "workflow.order".into(),
+            Some("workflow".into()),
+            None,
+            None,
+            None,
+            None,
+        );
+        span.end().unwrap();
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].name, "workflow.order");
+        provider.shutdown().unwrap();
+    }
+
+    #[test]
+    fn component_names_are_qualified_once() {
+        for (name, kind, expected) in [
+            ("workflow.order", "workflow", "workflow.order"),
+            ("order", "workflow", "workflow.order"),
+            ("agent.helper", "agent", "agent.helper"),
+            ("workflow.step.validate", "step", "workflow.step.validate"),
+            ("function.lookup", "function", "function.lookup"),
+        ] {
+            assert_eq!(super::component_span_name(name, kind), expected);
+        }
+    }
 }

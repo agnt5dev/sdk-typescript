@@ -24,9 +24,15 @@ import type {
   ToolCall as LMToolCall,
 } from './lm.js';
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { withSpan } from './tracing.js';
+import { abortable, combineSignals, throwIfAborted } from './cancellation.js';
 import {
   ActivationError,
   ActivationErrorCode,
+  MaxIterationsExceededError,
+  HandoffDepthExceededError,
+  ConfigurationError,
 } from './errors.js';
 import {
   ChildJoinPolicy,
@@ -139,6 +145,7 @@ export interface GenerationConfig {
  * @deprecated Use GenerateRequest from lm.js instead
  */
 export interface GenerateRequest {
+  signal?: AbortSignal;
   model: string;
   messages: Message[];
   systemPrompt?: string;
@@ -371,6 +378,24 @@ export class AgentRegistry {
 /**
  * Agent configuration options
  */
+export interface AgentRunOptions {
+  /** @internal The persistent worker already owns this agent span. */
+  managedSpan?: boolean;
+  signal?: AbortSignal;
+  /** Maximum nested delegations, shared by every agent in this run. Default: 10. */
+  maxHandoffDepth?: number;
+  /** @internal Runtime-owned child lifecycle. */
+  managedActivationId?: string;
+}
+interface AgentRunScope {
+  depth: number;
+  maxDepth: number;
+  signal?: AbortSignal;
+  managedActivationId?: string;
+  messages?: Message[];
+}
+const agentRuns = new AsyncLocalStorage<AgentRunScope>();
+
 export interface AgentOptions {
   /** Agent name/identifier */
   name: string;
@@ -390,6 +415,7 @@ export interface AgentOptions {
   temperature?: number;
   /** Maximum reasoning iterations */
   maxIterations?: number;
+  maxHandoffDepth?: number;
   /** Provider-hosted tools that run server-side. */
   builtInTools?: BuiltInTool[];
   /** Provider-neutral prompt cache policy. */
@@ -475,6 +501,7 @@ export class Agent {
   /** Whether the caller explicitly set a temperature (vs the 0.7 default). */
   private readonly temperatureExplicit: boolean;
   readonly maxIterations: number;
+  readonly maxHandoffDepth: number;
   readonly builtInTools: BuiltInTool[];
   readonly cache?: PromptCache;
   /** @deprecated Use cache. */
@@ -503,7 +530,10 @@ export class Agent {
     // the default (0.7) while still honoring an explicit value.
     this.temperatureExplicit = options.temperature !== undefined;
     this.temperature = options.temperature ?? 0.7;
-    this.maxIterations = options.maxIterations || 10;
+    this.maxIterations = options.maxIterations ?? 10;
+    this.maxHandoffDepth = options.maxHandoffDepth ?? 10;
+    if (!Number.isSafeInteger(this.maxIterations) || this.maxIterations < 1) throw new RangeError('maxIterations must be a positive integer');
+    if (!Number.isSafeInteger(this.maxHandoffDepth) || this.maxHandoffDepth < 0) throw new RangeError('maxHandoffDepth must be a non-negative integer');
     this.builtInTools = options.builtInTools ?? [];
     let cache = normalizePromptCache(options.cache);
     if (options.cacheControl !== undefined || options.cacheTtl !== undefined) {
@@ -559,11 +589,7 @@ export class Agent {
     // Register handoff targets
     if (options.handoffs) {
       for (const item of options.handoffs) {
-        const h = item instanceof Handoff ? item : new Handoff(item);
-        this.handoffs.push(h);
-        // Create and register the transfer tool
-        const transferTool = this.createHandoffTool(h);
-        this.tools.set(transferTool.name, transferTool);
+        this.addHandoff(item);
       }
     }
 
@@ -637,7 +663,7 @@ export class Agent {
           ctx,
           message,
           passHistory
-            ? resolvedHandoffHistory((ctx as any)._agentConversation ?? [])
+            ? resolvedHandoffHistory(agentRuns.getStore()?.messages ?? [])
             : undefined,
           h.joinPolicy,
         );
@@ -664,13 +690,15 @@ export class Agent {
     );
   }
 
-  /**
-   * Activation id of the durable CHILD record currently managing this
-   * agent's `stream()`. While set, the runtime journals `agent.*` for the
-   * delegated run and the stream uses it as the agent correlation id so
-   * iterations parent to that record.
-   */
-  private _activationManaged?: string;
+  /** Add a delegation target after construction, including cyclic graphs. */
+  addHandoff(target: Agent | Handoff): this {
+    const handoff = target instanceof Handoff ? target : new Handoff(target);
+    if (this.tools.has(handoff.toolName)) throw new ConfigurationError(`Tool '${handoff.toolName}' already exists`);
+    this.handoffs.push(handoff);
+    const tool = this.createHandoffTool(handoff);
+    this.tools.set(tool.name, tool);
+    return this;
+  }
 
   private async runDelegatedChild(
     ctx: Context,
@@ -722,13 +750,8 @@ export class Agent {
       }
       const admitted = decision;
       return runWithActivation(admitted, async () => {
-        this._activationManaged = admitted.activationId;
-        try {
-          const result = await this.run(message, ctx, history);
-          return { output: result.output, toolCalls: result.toolCalls };
-        } finally {
-          this._activationManaged = undefined;
-        }
+        const result = await this.run(message, ctx, history, { managedActivationId: admitted.activationId });
+        return { output: result.output, toolCalls: result.toolCalls };
       });
     }, {
       encodeOutput: value => new TextEncoder().encode(JSON.stringify(value)),
@@ -869,6 +892,7 @@ export class Agent {
     if (this.isNewLM) {
       return {
         model: this.modelName,
+        signal: agentRuns.getStore()?.signal,
         systemPrompt: this.composeSystemPrompt(),
         messages: messages as LMMessage[],
         tools: toolDefs.length > 0 ? toolDefs.map(t => this.convertToolSchema(t)) : undefined,
@@ -882,6 +906,7 @@ export class Agent {
 
     return {
       model: this.modelName,
+      signal: agentRuns.getStore()?.signal,
       systemPrompt: this.composeSystemPrompt(),
       messages,
       tools: toolDefs.length > 0 ? toolDefs : undefined,
@@ -900,7 +925,7 @@ export class Agent {
     }
 
     const legacyModel = this.model as LanguageModel;
-    return this.normalizeGenerateResponse(await legacyModel.generate(request as GenerateRequest));
+    return this.normalizeGenerateResponse(await abortable(() => legacyModel.generate(request as GenerateRequest), request.signal));
   }
 
   private canStreamModel(toolDefs: ToolSchema[]): boolean {
@@ -1471,11 +1496,41 @@ export class Agent {
     userMessage: string,
     context?: Context,
     history?: Message[],
+    options: AgentRunOptions = {},
+  ): AsyncGenerator<AgentEvent | AgentResult, void, undefined> {
+    const parent = agentRuns.getStore();
+    const maxDepth = parent?.maxDepth ?? options.maxHandoffDepth ?? this.maxHandoffDepth;
+    if (!Number.isSafeInteger(maxDepth) || maxDepth < 0) throw new RangeError('maxHandoffDepth must be a non-negative integer');
+    const depth = parent ? parent.depth + 1 : 0;
+    if (depth > maxDepth) throw new HandoffDepthExceededError(maxDepth);
+    const cancellation = combineSignals(parent?.signal, context?.signal, options.signal);
+    const scope: AgentRunScope = { depth, maxDepth, signal: cancellation.signal, managedActivationId: options.managedActivationId };
+    const iterator = this.streamLoop(userMessage, context, history);
+    const source: AsyncIterable<AgentEvent | AgentResult> = {
+      [Symbol.asyncIterator]: () => ({
+        next: () => agentRuns.run(scope, () => abortable(() => iterator.next(), scope.signal)),
+        return: () => agentRuns.run(scope, () => iterator.return()),
+      }),
+    };
+    try {
+      throwIfAborted(scope.signal);
+      const traced = options.managedSpan ? source : await withSpan(`agent.${this.name}`, () => source, {
+        componentType: 'agent', followAsyncIterable: true,
+        attributes: context ? { run_id: context.runId } : undefined,
+      });
+      yield* traced;
+    } finally { cancellation.dispose(); }
+  }
+
+  private async *streamLoop(
+    userMessage: string,
+    context?: Context,
+    history?: Message[],
   ): AsyncGenerator<AgentEvent | AgentResult, void, undefined> {
     // When a durable CHILD activation manages this run, the runtime journals
     // the `agent.*` boundary itself: skip the decorative lifecycle and parent
     // iterations to the activation record.
-    const managed = this._activationManaged;
+    const managed = agentRuns.getStore()?.managedActivationId;
     const agentCorrelationId = managed ?? randomUUID();
 
     // Create context if not provided
@@ -1492,7 +1547,8 @@ export class Agent {
     // Stash conversation on context for handoff history passing
     const messages: Message[] = history ? [...history] : [];
     messages.push(Message.user(userMessage));
-    (ctx as any)._agentConversation = messages;
+    const scope = agentRuns.getStore();
+    if (scope) scope.messages = messages;
 
     const toolNames = Array.from(this.tools.keys());
     const allToolCalls: AgentResult['toolCalls'] = [];
@@ -1522,6 +1578,7 @@ export class Agent {
       }
 
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
+        throwIfAborted(agentRuns.getStore()?.signal);
         const iterCorrelationId = randomUUID();
 
         // ── IterationStarted ──
@@ -1722,7 +1779,7 @@ export class Agent {
               // HITL: WaitingForUserInputError must propagate to pause the
               // workflow — do NOT treat it as a tool failure or the LLM will
               // retry the tool in the next iteration.
-              if ((error as any)?.name === 'WaitingForUserInputError') {
+              if (agentRuns.getStore()?.signal?.aborted || ['WaitingForUserInputError', 'SuspensionRequestedError', 'DurableSleepSuspensionError', 'MaxIterationsExceededError', 'HandoffDepthExceededError', 'ActivationError'].includes((error as any)?.name)) {
                 throw error;
               }
               if (!journaled) yield toolCallFailed(tcId, iterCorrelationId, {
@@ -1794,29 +1851,7 @@ export class Agent {
         }
       }
 
-      // Max iterations reached
-      completedIterations = this.maxIterations;
-      const finalOutput = messages[messages.length - 1]?.content || 'No output generated';
-
-      let agentResult: AgentResult = {
-        output: finalOutput,
-        toolCalls: allToolCalls,
-        context: ctx,
-        handoffTo: null,
-        handoffMetadata: {},
-      };
-      agentResult = await this.runAfterAgentCallback(ctx, userMessage, history, agentResult);
-
-      if (!managed) yield agentCompleted(this.name, agentCorrelationId, {
-        iterations: completedIterations,
-        toolCallsCount: agentResult.toolCalls.length,
-        handoffTo: agentResult.handoffTo,
-        outputLength: agentResult.output.length,
-        output: agentResult.output,
-        toolCalls: agentResult.toolCalls,
-      });
-
-      yield agentResult;
+      throw new MaxIterationsExceededError(this.name, this.maxIterations);
     } catch (error) {
       if (!managed) yield agentFailed(this.name, agentCorrelationId, {
         iterations: completedIterations,
@@ -1844,10 +1879,11 @@ export class Agent {
     userMessage: string,
     context?: Context,
     history?: Message[],
+    options: AgentRunOptions = {},
   ): Promise<AgentResult> {
     let result: AgentResult | undefined;
 
-    for await (const event of this.stream(userMessage, context, history)) {
+    for await (const event of this.stream(userMessage, context, history, options)) {
       // The last yielded value that has 'output' is the AgentResult
       if ('output' in event && 'toolCalls' in event && 'context' in event) {
         result = event as AgentResult;

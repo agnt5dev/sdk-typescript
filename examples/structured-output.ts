@@ -10,14 +10,15 @@ import { LM, systemMessage, userMessage, jsonSchemaFormat, Agent, tool } from '.
 // ─── 1. JSON schema response format ────────────────────────────────
 
 async function structuredExtraction() {
-  const model = new LM({ provider: 'openai', model: 'gpt-4o-mini' });
+  const model = LM.openai({ apiKey: process.env.OPENAI_API_KEY });
 
   const response = await model.generate({
+    model: 'openai/gpt-4o-mini',
     messages: [
       systemMessage('Extract structured data from user text. Respond in JSON.'),
       userMessage('My name is Alice, I work at Acme Corp as a senior engineer, and I love TypeScript.'),
     ],
-    responseFormat: jsonSchemaFormat('person_info', {
+    config: { responseFormat: jsonSchemaFormat('person_info', {
       type: 'object',
       properties: {
         name: { type: 'string' },
@@ -26,10 +27,10 @@ async function structuredExtraction() {
         interests: { type: 'array', items: { type: 'string' } },
       },
       required: ['name', 'company', 'role'],
-    }),
+    }) },
   });
 
-  console.log('Extracted:', JSON.parse(response.content));
+  console.log('Extracted:', JSON.parse(response.text));
 }
 
 // ─── 2. Agent with structured tool output ───────────────────────────
@@ -43,23 +44,23 @@ const extractEntities = tool('extract_entities', {
     },
     required: ['text'],
   },
-  handler: async (_ctx, args: { text: string }) => {
-    // Simulated entity extraction
-    const entities = {
-      people: ['Alice', 'Bob'],
-      organizations: ['Acme Corp'],
-      locations: ['San Francisco'],
-    };
-    return JSON.stringify(entities);
-  },
+}, async (_ctx, args: { text: string }) => {
+  // Simulated entity extraction
+  const entities = {
+    people: ['Alice', 'Bob'],
+    organizations: ['Acme Corp'],
+    locations: ['San Francisco'],
+  };
+  return JSON.stringify(entities);
 });
 
 async function agentWithStructuredOutput() {
-  const model = new LM({ provider: 'openai', model: 'gpt-4o-mini' });
+  const model = LM.openai({ apiKey: process.env.OPENAI_API_KEY });
 
   const agent = new Agent({
     name: 'entity-extractor',
     model,
+    modelName: 'openai/gpt-4o-mini',
     tools: [extractEntities],
     instructions: 'You extract entities from text. Use the extract_entities tool and summarize findings.',
   });
@@ -72,24 +73,20 @@ async function agentWithStructuredOutput() {
 
 import { fn } from '../src/index.js';
 
-const analyzeText = fn('analyze-text', {
-  description: 'Analyze text and return structured metrics',
-  handler: async (_ctx, text: string) => {
-    return {
-      wordCount: text.split(/\s+/).length,
-      charCount: text.length,
-      sentenceCount: text.split(/[.!?]+/).filter(Boolean).length,
-      averageWordLength: text.replace(/\s+/g, '').length / text.split(/\s+/).length,
-    };
-  },
-});
+const analyzeText = fn<string, { wordCount: number; charCount: number; sentenceCount: number; averageWordLength: number }>('analyze-text').run(async (_ctx, text) => ({
+  wordCount: text.split(/\s+/).length,
+  charCount: text.length,
+  sentenceCount: text.split(/[.!?]+/).filter(Boolean).length,
+  averageWordLength: text.replace(/\s+/g, '').length / text.split(/\s+/).length,
+}));
 
 async function main() {
   console.log('=== Structured output examples ===\n');
 
   // Run the local function
-  const metrics = await analyzeText.handler(
-    { invocationId: '', runId: '', attempt: 0, serviceName: '', logger: console, get: async () => undefined, set: async () => {}, delete: async () => false, step: async (_, fn) => fn() } as any,
+  const { ContextImpl } = await import('../src/index.js');
+  const metrics = await analyzeText(
+    new ContextImpl('example', 'example', 0, 'structured-output', { storage: 'memory' }),
     'The quick brown fox jumps over the lazy dog. It was a sunny day.',
   );
   console.log('Text metrics:', metrics);

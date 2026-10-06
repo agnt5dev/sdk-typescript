@@ -3,7 +3,42 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction};
 use napi_derive::napi;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::env;
+use std::sync::{Mutex, OnceLock};
+use tokio::sync::watch;
+
+static CANCELLATIONS: OnceLock<Mutex<HashMap<String, watch::Sender<bool>>>> = OnceLock::new();
+fn cancellations() -> &'static Mutex<HashMap<String, watch::Sender<bool>>> {
+    CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn cancellation_receiver(id: Option<&str>) -> Result<Option<watch::Receiver<bool>>> {
+    id.map(|id| {
+        cancellations()
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|sender| sender.subscribe())
+            .ok_or_else(|| Error::from_reason("Unknown model cancellation token"))
+    })
+    .transpose()
+}
+async fn cancelled(receiver: &mut Option<watch::Receiver<bool>>) {
+    match receiver {
+        Some(receiver) => {
+            if *receiver.borrow() {
+                return;
+            }
+            while receiver.changed().await.is_ok() {
+                if *receiver.borrow() {
+                    return;
+                }
+            }
+            std::future::pending::<()>().await;
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
 
 use agnt5_sdk_core::error::{Result as SdkResult, SdkError};
 use agnt5_sdk_core::lm::{
@@ -579,6 +614,7 @@ impl TryFrom<JsGenerationConfig> for GenerationConfig {
 
 #[napi(object)]
 pub struct JsGenerateRequest {
+    pub cancellation_id: Option<String>,
     pub model: String,
     pub prompt_ref: Option<JsPromptRef>,
     pub system_prompt: Option<String>,
@@ -1531,15 +1567,40 @@ impl LanguageModel {
         })
     }
 
+    /// Register synchronously before starting I/O, including immediate cancellation.
+    #[napi]
+    pub fn create_cancellation(&self, id: String) -> Result<()> {
+        let mut entries = cancellations().lock().unwrap();
+        if entries.contains_key(&id) {
+            return Err(Error::from_reason("Duplicate model cancellation token"));
+        }
+        entries.insert(id, watch::channel(false).0);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn cancel_cancellation(&self, id: String) {
+        if let Some(sender) = cancellations().lock().unwrap().get(&id) {
+            sender.send_replace(true);
+        }
+    }
+
+    #[napi]
+    pub fn release_cancellation(&self, id: String) {
+        cancellations().lock().unwrap().remove(&id);
+    }
+
     /// Generate a completion
     #[napi]
     pub async fn generate(&self, request: JsGenerateRequest) -> Result<JsGenerateResponse> {
+        let mut cancellation = cancellation_receiver(request.cancellation_id.as_deref())?;
         let req: GenerateRequest = request.try_into()?;
-        let response = self
-            .provider
-            .generate(req)
-            .await
-            .map_err(|e| Error::from_reason(format!("Generate failed: {}", e)))?;
+        let response = tokio::select! {
+            biased;
+            _ = cancelled(&mut cancellation) => return Err(Error::from_reason("Model call cancelled")),
+            response = self.provider.generate(req) => response
+                .map_err(|e| Error::from_reason(format!("Generate failed: {}", e)))?,
+        };
         Ok(response.into())
     }
 
@@ -1574,14 +1635,22 @@ impl LanguageModel {
         request: JsGenerateRequest,
         callback: ThreadsafeFunction<JsStreamChunk, ErrorStrategy::Fatal>,
     ) -> Result<()> {
+        let mut cancellation = cancellation_receiver(request.cancellation_id.as_deref())?;
         let req: GenerateRequest = request.try_into()?;
-        let mut stream_handle = self
-            .provider
-            .stream(req)
-            .await
-            .map_err(|e| Error::from_reason(format!("Stream failed: {}", e)))?;
+        let mut stream_handle = tokio::select! {
+            biased;
+            _ = cancelled(&mut cancellation) => return Err(Error::from_reason("Model call cancelled")),
+            stream = self.provider.stream(req) => stream
+                .map_err(|e| Error::from_reason(format!("Stream failed: {}", e)))?,
+        };
 
-        while let Some(chunk_result) = stream_handle.next().await {
+        loop {
+            let next = tokio::select! {
+                biased;
+                _ = cancelled(&mut cancellation) => return Err(Error::from_reason("Model stream cancelled")),
+                next = stream_handle.next() => next,
+            };
+            let Some(chunk_result) = next else { break };
             match chunk_result {
                 Ok(StreamChunk::Delta { content, .. }) => {
                     let js_chunk = JsStreamChunk {

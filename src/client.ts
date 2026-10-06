@@ -55,6 +55,10 @@ function responseWaitMs(value: number = 300000): number {
 }
 
 export interface RunOptions extends InvocationOptions {
+  signal?: AbortSignal;
+  parentRunId?: string;
+  rootRunId?: string;
+  traceparent?: string;
   /** Gateway response wait in milliseconds (default 300000); zero returns an accepted receipt. */
   waitTimeoutMs?: number;
   /** HTTP deadline in milliseconds; defaults to at least the response wait plus 10 seconds. */
@@ -519,16 +523,19 @@ export class Client {
   /**
    * Submit a component for async execution and return immediately.
    */
-  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId' | 'idempotencyKey'> = {}): Promise<SubmitResponse> {
+  async submit(component: string, inputData: any = {}, options: Pick<RunOptions, 'componentType' | 'tenant' | 'deploymentId' | 'idempotencyKey' | 'signal' | 'parentRunId' | 'rootRunId' | 'traceparent'> = {}): Promise<SubmitResponse> {
     const componentType = options.componentType || 'function';
     const url = `${this.gatewayUrl}/v1/${componentType}s/${component}/submit`;
 
     const response = await fetch(url, {
       method: 'POST',
       headers: this.buildHeaders(
-        options.idempotencyKey !== undefined
-          ? { 'Idempotency-Key': options.idempotencyKey }
-          : undefined,
+        {
+          ...(options.idempotencyKey !== undefined ? { 'Idempotency-Key': options.idempotencyKey } : {}),
+          ...(options.parentRunId ? { 'X-Parent-Run-ID': options.parentRunId } : {}),
+          ...(options.rootRunId ? { 'X-Root-Run-ID': options.rootRunId } : {}),
+          ...(options.traceparent ? { traceparent: options.traceparent } : {}),
+        },
         options.tenant,
         {
           deploymentId: options.deploymentId,
@@ -536,7 +543,7 @@ export class Client {
         },
       ),
       body: JSON.stringify(inputData),
-      signal: AbortSignal.timeout(this.timeout),
+      signal: options.signal ?? AbortSignal.timeout(this.timeout),
     });
 
     if (!response.ok) {
@@ -556,13 +563,13 @@ export class Client {
   /**
    * Get the current status of a run.
    */
-  async getStatus(runId: string): Promise<RunResponse> {
+  async getStatus(runId: string, signal?: AbortSignal): Promise<RunResponse> {
     const url = `${this.gatewayUrl}/v1/status/${runId}`;
 
     const response = await fetch(url, {
       method: 'GET',
       headers: this.buildHeaders(),
-      signal: AbortSignal.timeout(this.timeout),
+      signal: signal ?? AbortSignal.timeout(this.timeout),
     });
 
     if (!response.ok) {
@@ -576,13 +583,13 @@ export class Client {
   /**
    * Get the result of a completed run.
    */
-  async getResult<T = any>(runId: string): Promise<RunResponse<T>> {
+  async getResult<T = any>(runId: string, signal?: AbortSignal): Promise<RunResponse<T>> {
     const url = `${this.gatewayUrl}/v1/result/${runId}`;
 
     const response = await fetch(url, {
       method: 'GET',
       headers: this.buildHeaders(),
-      signal: AbortSignal.timeout(this.timeout),
+      signal: signal ?? AbortSignal.timeout(this.timeout),
     });
 
     if (response.status === 404) {

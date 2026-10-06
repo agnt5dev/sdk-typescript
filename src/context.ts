@@ -1,3 +1,4 @@
+import { runInWorkflowStep } from './step-scope.js';
 import type { Context, Logger, StepOptions } from './types.js';
 import type { EventEmitter } from './event-emitter.js';
 import { emptyRuntimeContext } from './runtime-context.js';
@@ -19,6 +20,7 @@ import { getLoadedNativeBindings } from '#native-loader';
 import {
   ActivationClient,
   currentActivation,
+  nextActivationOrdinal,
   runWithActivation,
   stepActivationRequest,
 } from './activation.js';
@@ -236,6 +238,8 @@ export class ContextImpl implements Context {
 
   allocateActivationKey(kind: string, name: string): string {
     const namespace = `${kind}:${name}`;
+    const nestedOrdinal = nextActivationOrdinal(namespace);
+    if (nestedOrdinal !== undefined) return `${namespace}:${nestedOrdinal}`;
     const ordinal = this._activationSequences.get(namespace) ?? 0;
     this._activationSequences.set(namespace, ordinal + 1);
     return `${namespace}:${ordinal}`;
@@ -263,7 +267,7 @@ export class ContextImpl implements Context {
   }
 
   async step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T> {
-    const ordinal = this._activationStepCounter++;
+    const ordinal = nextActivationOrdinal('step') ?? this._activationStepCounter++;
     if (this._activationClient) {
       const request = await stepActivationRequest({
         metadata: this.metadata || {},
@@ -273,6 +277,7 @@ export class ContextImpl implements Context {
         stepName,
         ordinal,
         explicitKey: options?.key,
+        input: options?.input,
       });
       const startMs = Date.now();
       let decision: ActivationDecision | undefined;
@@ -283,7 +288,7 @@ export class ContextImpl implements Context {
             'step activation executed without admitted authority',
           );
         }
-        return runWithActivation(decision, fn);
+        return runWithActivation(decision, () => runInWorkflowStep(fn));
       }, {
         encodeOutput: encodeJson,
         decodeOutput: value => decodeJson<T>(value),
@@ -303,7 +308,7 @@ export class ContextImpl implements Context {
     }
 
     // Execute step
-    const result = await fn();
+    const result = await runInWorkflowStep(fn);
 
     // Checkpoint result
     await this.storage.setCheckpoint(checkpointKey, result);
@@ -381,8 +386,10 @@ export class ContextImpl implements Context {
       options?: HITLOption[];
       allowCustom?: boolean;
       skippable?: boolean;
+      timeoutMs?: number;
     },
   ): Promise<string | null> {
+    if (options?.timeoutMs !== undefined) throw new ConfigurationError('Wait timeouts require a managed or workerless workflow');
     const pauseIndex = this._pauseIndex++;
     const responseKey = `user_response:${this.runId}:${pauseIndex}`;
     const stepName = `wait_for_user_${pauseIndex}`;
@@ -415,7 +422,7 @@ export class ContextImpl implements Context {
   }
 
   async waitForSignal<T = unknown>(_signalName: string, _name?: string): Promise<T> {
-    throw new ConfigurationError('ctx.waitForSignal is only supported by managed worker runtimes');
+    throw new ConfigurationError('ctx.waitForSignal requires a managed or workerless workflow');
   }
 
   /**

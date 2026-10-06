@@ -1,10 +1,11 @@
+import { checkpointFunctionOutput } from './checkpoint-output.js';
 import type {
   Context,
   FunctionHandler,
   JSONSchema,
   RetryPolicy,
   BackoffPolicy,
-} from './types';
+} from './types.js';
 import type { WorkerlessFlowControlPolicy } from './flow-control.js';
 import {
   functionCompleted,
@@ -18,6 +19,8 @@ import {
 import { FunctionRegistry } from './function-registry.js';
 import { withSpan } from './tracing.js';
 import type { FunctionOptions } from './types.js';
+import { executeFunction } from './function-execution.js';
+import { inWorkflowStep, runInWorkflowStep } from './step-scope.js';
 
 /**
  * Function builder for creating durable functions
@@ -131,7 +134,7 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
 
     const handlerName = this.name;
 
-    const wrapped = async (ctx: Context, ...args: TInput[]): Promise<TOutput> => {
+    const lifecycle = async (ctx: Context, ...args: TInput[]): Promise<TOutput> => {
       const anyCtx = ctx as any;
       const hasEmit = ctx && typeof anyCtx.emit === 'function';
       const hasStack = ctx && typeof anyCtx.pushCorrelation === 'function';
@@ -155,7 +158,7 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
       }
 
       const activationId: string | undefined = anyCtx.activation?.activationId;
-      const ownsStepBoundary = !activationId;
+      const ownsStepBoundary = !activationId && !inWorkflowStep();
       const stepName: string | undefined = ownsStepBoundary
         ? anyCtx.nextStepName?.(handlerName) ?? `${handlerName}_0`
         : undefined;
@@ -253,6 +256,20 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
           anyCtx.popCorrelation();
         }
       }
+    };
+
+    const wrapped = async (ctx: Context, ...args: TInput[]): Promise<TOutput> => {
+      const anyCtx = ctx as any;
+      const checkpointed = !inWorkflowStep() && !anyCtx.activation && typeof ctx?.step === 'function' &&
+        (ctx.metadata?.component_type === 'workflow' || anyCtx._workflowCid);
+      if (!checkpointed) {
+        return executeFunction(ctx, handlerName, args, this.config, attemptCtx => lifecycle(attemptCtx, ...args));
+      }
+      const name = anyCtx.nextStepName?.(handlerName) ?? handlerName;
+      return checkpointFunctionOutput<TOutput>(ctx, name, args, (consume, canRetry) =>
+        runInWorkflowStep(() => executeFunction(ctx, handlerName, args, this.config,
+          async attemptCtx => consume(await lifecycle(attemptCtx, ...args)), canRetry)));
+
     };
 
     (wrapped as any)._agnt5_config = {

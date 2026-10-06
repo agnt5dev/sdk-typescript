@@ -23,7 +23,8 @@
  */
 
 import { ActivationError, ActivationErrorCode, ConfigurationError } from './errors.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { abortable, combineSignals, throwIfAborted } from './cancellation.js';
 import type { Context, JSONSchema, RecoveryPolicy } from './types.js';
 import { getCurrentContext } from './async-context.js';
 import { getCurrentSpanInfo } from './tracing.js';
@@ -165,6 +166,8 @@ export interface ToolChoiceOption {
 }
 
 export interface GenerateRequest {
+  /** Cancels provider I/O and streaming. Combined with the runtime signal. */
+  signal?: AbortSignal;
   model: string;
   prompt?: Prompt;
   /** @deprecated Use prompt for managed AGNT5 prompts. */
@@ -700,7 +703,7 @@ export class LM {
    * ```typescript
    * const lm = LM.openai({ apiKey: process.env.OPENAI_API_KEY });
    * const response = await lm.generate({
-   *   model: 'gpt-4',
+   *   model: 'openai/gpt-4',
    *   messages: [{ role: 'user', content: 'Hello!' }]
    * });
    * ```
@@ -716,7 +719,7 @@ export class LM {
    * ```typescript
    * const lm = LM.anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
    * const response = await lm.generate({
-   *   model: 'claude-3-5-sonnet-20241022',
+   *   model: 'anthropic/claude-3-5-sonnet-20241022',
    *   messages: [{ role: 'user', content: 'Hello!' }]
    * });
    * ```
@@ -854,7 +857,7 @@ export class LM {
    * @example
    * ```typescript
    * const response = await lm.generate({
-   *   model: 'gpt-4',
+   *   model: 'openai/gpt-4',
    *   messages: [
    *     { role: 'system', content: 'You are a helpful assistant.' },
    *     { role: 'user', content: 'What is 2+2?' }
@@ -868,6 +871,14 @@ export class LM {
    * ```
    */
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
+    const cancellation = combineSignals(request.signal, getCurrentContext()?.executionContext?.signal);
+    try {
+      throwIfAborted(cancellation.signal);
+      return await this.generateResolved({ ...request, signal: cancellation.signal });
+    } finally { cancellation.dispose(); }
+  }
+
+  private async generateResolved(request: GenerateRequest): Promise<GenerateResponse> {
     request = applyRuntimeOverrides(request);
     if (request.prompt || request.promptRef) {
       return await runManagedPrompt(request);
@@ -882,7 +893,7 @@ export class LM {
   private async generateNative(request: GenerateRequest): Promise<GenerateResponse> {
     const { __runtimeOverridesApplied: _runtimeOverridesApplied, ...nativeRequest } = request;
     const model = validateModelForProvider(request.model, this.providerName);
-    const response = await this.model.generate({
+    const response = await this.withCancellation<GenerateResponse>(request.signal, cancellationId => this.model.generate({
       ...nativeRequest,
       ...nativeSpanParent(),
       prompt: undefined,
@@ -890,8 +901,24 @@ export class LM {
       promptRef: undefined,
       config: normalizeGenerationConfigForNative(request.config, this.providerName),
       model,
-    });
+      signal: cancellationId ? undefined : request.signal,
+      cancellationId,
+    }));
     return normalizeNativeResponse(response, request.config?.responseFormat);
+  }
+
+  private async withCancellation<T>(signal: AbortSignal | undefined, execute: (id?: string) => Promise<T>): Promise<T> {
+    throwIfAborted(signal);
+    if (!signal || typeof this.model.createCancellation !== 'function') return await abortable(() => execute(), signal);
+    const id = randomUUID();
+    this.model.createCancellation(id);
+    const abort = () => this.model.cancelCancellation(id);
+    signal.addEventListener('abort', abort, { once: true });
+    try { return await abortable(() => execute(id), signal); }
+    finally {
+      signal.removeEventListener('abort', abort);
+      this.model.releaseCancellation(id);
+    }
   }
 
   private async generateDurable(
@@ -987,7 +1014,7 @@ export class LM {
    * @example
    * ```typescript
    * await lm.stream({
-   *   model: 'gpt-4',
+   *   model: 'openai/gpt-4',
    *   messages: [{ role: 'user', content: 'Tell me a story' }]
    * }, (chunk) => {
    *   if (chunk.chunkType === 'delta' && chunk.content) {
@@ -1002,6 +1029,16 @@ export class LM {
     request: GenerateRequest,
     callback: (chunk: StreamChunk) => void
   ): Promise<void> {
+    const cancellation = combineSignals(request.signal, getCurrentContext()?.executionContext?.signal);
+    try {
+      throwIfAborted(cancellation.signal);
+      return await this.streamResolved({ ...request, signal: cancellation.signal }, chunk => {
+        if (!cancellation.signal?.aborted) callback(chunk);
+      });
+    } finally { cancellation.dispose(); }
+  }
+
+  private async streamResolved(request: GenerateRequest, callback: (chunk: StreamChunk) => void): Promise<void> {
     request = applyRuntimeOverrides(request);
     if (request.prompt || request.promptRef) {
       callback({ chunkType: 'completed', response: await runManagedPrompt(request) });
@@ -1020,7 +1057,7 @@ export class LM {
   ): Promise<void> {
     const { __runtimeOverridesApplied: _runtimeOverridesApplied, ...nativeRequest } = request;
     const model = validateModelForProvider(request.model, this.providerName);
-    return await this.model.stream({
+    return await this.withCancellation(request.signal, cancellationId => this.model.stream({
       ...nativeRequest,
       ...nativeSpanParent(),
       prompt: undefined,
@@ -1028,9 +1065,11 @@ export class LM {
       promptRef: undefined,
       config: normalizeGenerationConfigForNative(request.config, this.providerName),
       model,
+      signal: cancellationId ? undefined : request.signal,
+      cancellationId,
     }, (chunk: StreamChunk) => callback(chunk.chunkType === 'completed' && chunk.response
       ? { ...chunk, response: normalizeNativeResponse(chunk.response, request.config?.responseFormat) }
-      : chunk));
+      : chunk)));
   }
 
   private async streamDurable(
@@ -1198,6 +1237,7 @@ async function runManagedPrompt(request: GenerateRequest): Promise<GenerateRespo
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal: request.signal,
   });
   if (!response.ok) {
     throw new ConfigurationError(`Managed prompt request failed: ${response.status} ${await response.text()}`);

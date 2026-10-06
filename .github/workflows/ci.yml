@@ -62,6 +62,9 @@ jobs:
       - name: Build TypeScript
         run: npm run build:ts
 
+      - name: Verify model and component examples
+        run: npm run verify:examples
+
       - name: Install workerd smoke dependencies
         run: npm ci --prefix examples/workerless-cloudflare --ignore-scripts --no-audit --no-fund
 
@@ -71,8 +74,11 @@ jobs:
       - name: Build native Rust module
         run: npx napi build --platform --manifest-path native/Cargo.toml --output-dir .
 
-      - name: Test SDK-core assertion contract through native bindings
-        run: npx vitest run src/__tests__/structured-assertions.test.ts
+      - name: Test native tracing and cancellation contracts
+        run: cargo test --manifest-path native/Cargo.toml --lib --no-default-features
+
+      - name: Test SDK through native bindings
+        run: npx vitest run --maxWorkers=4 --minWorkers=1
 
       - name: Show sccache stats
         if: always()

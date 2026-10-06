@@ -67,6 +67,7 @@ vi.mock('#native-loader', () => ({
 }));
 
 const { Worker } = await import('../worker.js');
+const { Agent, AgentRegistry } = await import('../agent.js');
 const { FunctionRegistry, fn } = await import('../function.js');
 const { WorkflowRegistry, workflow } = await import('../workflow.js');
 const { ToolRegistry, tool } = await import('../tool.js');
@@ -87,6 +88,7 @@ async function dispatch(
 ) {
   const worker = new Worker('orders', { serviceVersion: '0.1.0' });
   currentWorker = worker;
+  if (componentType === 'agent') worker.registerAgents([...AgentRegistry.all().values()]);
   const response = await (worker as any).processMessage({
     invocationId: RUN_ID,
     componentName: name,
@@ -108,6 +110,7 @@ function span(name: string): RecordedSpan {
 describe('worker run spans', () => {
   beforeEach(() => {
     spans.length = 0;
+    AgentRegistry.clear();
     FunctionRegistry.clear();
     WorkflowRegistry.clear();
     ToolRegistry.clear();
@@ -142,7 +145,7 @@ describe('worker run spans', () => {
     expect(run.error).toBe('inventory service unavailable');
 
     const validate = span('function.validate_order');
-    expect(validate.parentSpanId).toBe(run.spanId);
+    expect(validate.parentSpanId).toBe(span('workflow.step.validate_order_0').spanId);
     expect(validate.error).toBeNull();
 
     const step = span('workflow.step.check_stock');
@@ -158,6 +161,22 @@ describe('worker run spans', () => {
     expect(spans.every((s) => s.ended)).toBe(true);
   });
 
+  it('records a top-level agent span once', async () => {
+    new Agent({ name: 'top_agent', instructions: '', model: { generate: async () => ({ text: 'done' }) } });
+    expect((await dispatch('top_agent', 'agent')).eventType).toBe('run.completed');
+    expect(spans.filter(record => record.name === 'agent.top_agent')).toHaveLength(1);
+  });
+
+  it('records a nested agent span under its workflow', async () => {
+    const agent = new Agent({ name: 'nested', instructions: '', model: { generate: async () => ({ text: 'done' }) } });
+    workflow('agent_parent', async ctx => (await agent.run('go', ctx)).output);
+    expect((await dispatchWorkflow('agent_parent')).eventType).toBe('run.completed');
+    const child = span('agent.nested');
+    expect(child.componentType).toBe('agent');
+    expect(child.parentSpanId).toBe(span('workflow.agent_parent').spanId);
+    expect(child.ended).toBe(true);
+  });
+
   it('records a healthy run without errors', async () => {
     registerOrderWorkflow('fulfil_order', false);
 
@@ -166,6 +185,7 @@ describe('worker run spans', () => {
 
     expect(spans.map((s) => s.name)).toEqual([
       'workflow.fulfil_order',
+      'workflow.step.validate_order_0',
       'function.validate_order',
       'workflow.step.check_stock',
       'tool.lookup_inventory',
@@ -192,7 +212,7 @@ describe('worker run spans', () => {
       traceparent: `00-${TRACE_ID}-${DISPATCH_SPAN_ID}-00`,
     });
 
-    expect(spans.length).toBe(4);
+    expect(spans.length).toBe(5);
     expect(spans.every((s) => s.sampled === false)).toBe(true);
   });
 

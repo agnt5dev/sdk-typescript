@@ -1,4 +1,5 @@
 import { SuspensionRequestedError, WaitingForUserInputError } from './errors.js';
+import { runInWorkflowStep, assertWorkflowWaitBoundary, assertWorkflowStreamsClosed } from './step-scope.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import { emptyRuntimeContext } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
@@ -89,7 +90,7 @@ export class WorkerlessContext implements Context {
     }
     this.warnIfPotentialUnsafeStepChange(stepName, checkpointKey);
 
-    const result = await fn();
+    const result = await runInWorkflowStep(fn);
     this.checkpoints.set(checkpointKey, result);
     return result;
   }
@@ -110,6 +111,7 @@ export class WorkerlessContext implements Context {
   }
 
   async sleep(durationMs: number, name?: string): Promise<void> {
+    assertWorkflowWaitBoundary(this);
     validateSleepDuration(durationMs);
     if (durationMs === 0) {
       return;
@@ -141,8 +143,11 @@ export class WorkerlessContext implements Context {
       options?: HITLOption[];
       allowCustom?: boolean;
       skippable?: boolean;
+      timeoutMs?: number;
     },
   ): Promise<string | null> {
+    assertWorkflowWaitBoundary(this);
+    if (options?.timeoutMs !== undefined) validateWaitTimeout(options.timeoutMs);
     const pauseIndex = this.pauseIndex++;
     if (this.userResponses.has(pauseIndex)) {
       return this.userResponses.get(pauseIndex)!;
@@ -152,6 +157,7 @@ export class WorkerlessContext implements Context {
     throw new WaitingForUserInputError({
       runId: this.runId,
       question,
+      timeoutMs: options?.timeoutMs,
       inputType: options?.inputType,
       options: options?.options,
       pauseIndex,
@@ -163,9 +169,12 @@ export class WorkerlessContext implements Context {
     });
   }
 
-  async waitForSignal<T = unknown>(signalName: string, name?: string): Promise<T> {
+  async waitForSignal<T = unknown>(signalName: string, name?: string, options?: { timeoutMs?: number }): Promise<T> {
+    assertWorkflowWaitBoundary(this);
+    if (options?.timeoutMs !== undefined) validateWaitTimeout(options.timeoutMs);
     const waitingStep = name || signalName;
     const responseKey = `${signalName}:${waitingStep}`;
+    if (this.checkpoints.has(`signal:${responseKey}`)) return this.checkpoints.get(`signal:${responseKey}`) as T;
     if (this.signalResponses.has(responseKey)) {
       return this.signalResponses.get(responseKey) as T;
     }
@@ -176,6 +185,7 @@ export class WorkerlessContext implements Context {
       checkpointState: this.checkpointSnapshot(),
       signalName,
       waitingStep,
+      timeoutMs: options?.timeoutMs,
     });
   }
 
@@ -226,7 +236,9 @@ export class WorkerlessContext implements Context {
     const signalPayload = metadata.signal_payload;
     if (signalName && signalPayload !== undefined) {
       const waitingStep = metadata.waiting_step || signalName;
-      this.signalResponses.set(`${signalName}:${waitingStep}`, decodeSignalPayload(signalPayload));
+      const value = decodeSignalPayload(signalPayload);
+      this.signalResponses.set(`${signalName}:${waitingStep}`, value);
+      this.checkpoints.set(`signal:${signalName}:${waitingStep}`, value);
     }
   }
 
@@ -415,4 +427,8 @@ function jsonSafe(value: unknown): unknown {
     return output;
   }
   return value;
+}
+
+function validateWaitTimeout(ms: number): void {
+  if (!Number.isSafeInteger(ms) || ms < 0) throw new RangeError('timeoutMs must be a non-negative safe integer');
 }

@@ -103,6 +103,7 @@ dependencies = [
  "napi-build",
  "napi-derive",
  "opentelemetry",
+ "opentelemetry_sdk",
  "prost 0.14.4",
  "reqwest",
  "serde",

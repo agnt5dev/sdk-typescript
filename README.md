@@ -34,8 +34,8 @@ const worker = new Worker('hello-typescript');
 await worker.run();
 ```
 
-Imported functions, workflows, agents, tools, and scorers register with the
-worker. See [`examples/simple-worker.ts`](examples/simple-worker.ts) for a
+Imported functions, workflows, tools, and scorers register with the worker.
+Enable `autoRegister` to include agents, or call `worker.registerAgents(...)`. See [`examples/simple-worker.ts`](examples/simple-worker.ts) for a
 complete entrypoint.
 
 ## Durable workflows
@@ -56,7 +56,37 @@ export const prepareReport = workflow(
 ```
 
 Keep step names and ordering stable across retries so completed work can be
-reused.
+reused. Direct calls to functions created with `fn(...).run(...)` also create a
+checkpoint when called from a managed workflow. An explicit `ctx.step` keeps
+its boundary when it contains a function call. Nested functions honor their
+retry and backoff settings; `ctx.attempt` is zero-based. Make external effects
+idempotent, because an interrupted attempt can execute again before its result
+is recorded.
+
+A nested streaming function keeps its checkpoint open until its iterator
+finishes or is closed. Consume it with `for await`, or call `return()` before
+the workflow waits or returns. Completed streams replay their recorded iterator
+operations without calling the handler again.
+
+Calling a registered workflow from a managed workflow, or using
+`executeChildWorkflow`, submits a separate child run and joins its result.
+The submission uses a stable idempotency key. Child workflows need a gateway
+URL and credentials for the parent's project, and their own worker capacity.
+Standalone child calls use a separate local context.
+
+Call `ctx.waitForUser`, `ctx.waitForSignal`, and durable `ctx.sleep` between
+steps. A wait inside an unfinished step raises `ConfigurationError`. Signal
+responses and completed steps survive subsequent pauses. For managed and
+workerless user/signal waits, `{ timeoutMs }` sets a durable wait deadline;
+expiration fails the run with `WAIT_TIMEOUT`. This needs a runtime version
+that supports wait deadlines. It differs from the client's response wait
+setting described below.
+
+`saga(ctx, steps, { name: 'order' })` checkpoints forward actions and reverse
+compensations. Keep the name stable across dispatches. A pause unwinds without
+starting compensation. Failed compensations do not stop the remaining rollback;
+`SagaCompensationError` preserves the original cause and every compensation
+error. Compensations must also be idempotent.
 
 In pull-worker workflows, `await ctx.set(key, value)` and
 `await ctx.delete(key)` wait for durable state-change acknowledgments.
@@ -65,6 +95,24 @@ the worker persists the final `WorkflowEntity` snapshot with the active lease
 and a version check, matching Python's workflow state persistence. State
 writes are ordered within each workflow; independent workflows can proceed
 concurrently. Standalone in-process contexts retain their local state behavior.
+
+## Agent limits and cancellation
+
+An agent raises `MaxIterationsExceededError` when it exhausts `maxIterations`.
+`maxHandoffDepth` defaults to 10 and applies across the whole handoff chain;
+exceeding it raises `HandoffDepthExceededError`.
+
+Pass an abort signal as `agent.run(input, ctx, history, { signal })` or in an
+LM generation request. The SDK combines it with the run's cancellation signal.
+Native and edge LM providers cancel HTTP generation and streaming. Custom model
+implementations receive the signal and must honor it to stop their own I/O.
+
+Set `autoRegister: true` to discover registered agents, or use
+`worker.registerAgents(...)` for an explicit agent list. Auto-discovery of agents
+is disabled when the option is omitted. Workers contain
+detached promise rejections and timer exceptions, fail their originating run,
+and retain the error class and stack. `containProcessErrors: false` disables
+those process guards for applications that own process error handling.
 
 ## Package entrypoints
 

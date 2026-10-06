@@ -267,11 +267,13 @@ async function postJson(
   headers: Record<string, string>,
   body: JsonObject,
   provider: string,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
+    signal,
   });
   if (!response.ok) throw await apiError(response, provider);
   return response;
@@ -435,6 +437,7 @@ class ChatCompletionsEdgeProvider implements EdgeLanguageModel {
       this.headers(),
       chatPayload(request, this.model(request.model), false),
       this.provider,
+      request.signal,
     );
     return responseFromChat(await response.json() as JsonObject);
   }
@@ -445,6 +448,7 @@ class ChatCompletionsEdgeProvider implements EdgeLanguageModel {
       this.headers(),
       chatPayload(request, this.model(request.model), true),
       this.provider,
+      request.signal,
     );
     await streamChatResponse(response, callback);
   }
@@ -479,7 +483,7 @@ class AzureEdgeProvider implements EdgeLanguageModel {
       request,
       modelWithoutProvider(request.model, 'azure'),
       false,
-    ), 'azure');
+    ), 'azure', request.signal);
     return responseFromChat(await response.json() as JsonObject);
   }
 
@@ -489,6 +493,7 @@ class AzureEdgeProvider implements EdgeLanguageModel {
       this.headers(),
       chatPayload(request, modelWithoutProvider(request.model, 'azure'), true),
       'azure',
+      request.signal,
     );
     await streamChatResponse(response, callback);
   }
@@ -521,12 +526,12 @@ class OpenAIResponsesEdgeProvider implements EdgeLanguageModel {
   constructor(private readonly config: LooseConfig) {}
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
-    const response = await postJson(this.url(), this.headers(), this.payload(request, false), 'openai');
+    const response = await postJson(this.url(), this.headers(), this.payload(request, false), 'openai', request.signal);
     return responseFromOpenAI(await response.json() as JsonObject);
   }
 
   async stream(request: GenerateRequest, callback: (chunk: StreamChunk) => void): Promise<void> {
-    const response = await postJson(this.url(), this.headers(), this.payload(request, true), 'openai');
+    const response = await postJson(this.url(), this.headers(), this.payload(request, true), 'openai', request.signal);
     let terminal: JsonObject | undefined;
     let text = '';
     let id = '';
@@ -734,12 +739,12 @@ class AnthropicEdgeProvider implements EdgeLanguageModel {
   constructor(private readonly config: LooseConfig) {}
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
-    const response = await postJson(this.url(), this.headers(), this.payload(request, false), 'anthropic');
+    const response = await postJson(this.url(), this.headers(), this.payload(request, false), 'anthropic', request.signal);
     return responseFromAnthropic(await response.json() as JsonObject);
   }
 
   async stream(request: GenerateRequest, callback: (chunk: StreamChunk) => void): Promise<void> {
-    const response = await postJson(this.url(), this.headers(), this.payload(request, true), 'anthropic');
+    const response = await postJson(this.url(), this.headers(), this.payload(request, true), 'anthropic', request.signal);
     const state = {
       id: '', model: modelWithoutProvider(request.model, 'anthropic'), text: '',
       finishReason: undefined as string | undefined,
@@ -927,13 +932,13 @@ class GoogleEdgeProvider implements EdgeLanguageModel {
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
     const model = modelWithoutProvider(modelWithoutProvider(request.model, 'gemini'), 'google');
-    const response = await postJson(this.modelUrl(model, 'generateContent'), {}, this.payload(request), 'google');
+    const response = await postJson(this.modelUrl(model, 'generateContent'), {}, this.payload(request), 'google', request.signal);
     return responseFromGoogle(await response.json() as JsonObject, model);
   }
 
   async stream(request: GenerateRequest, callback: (chunk: StreamChunk) => void): Promise<void> {
     const model = modelWithoutProvider(modelWithoutProvider(request.model, 'gemini'), 'google');
-    const response = await postJson(this.modelUrl(model, 'streamGenerateContent', true), {}, this.payload(request), 'google');
+    const response = await postJson(this.modelUrl(model, 'streamGenerateContent', true), {}, this.payload(request), 'google', request.signal);
     let text = '';
     let finishReason: string | undefined;
     let usage: JsonObject | undefined;
@@ -1192,7 +1197,7 @@ class BedrockEdgeProvider implements EdgeLanguageModel {
     const url = `${this.endpoint(region)}/model/${encodeURIComponent(model)}/converse`;
     const serialized = JSON.stringify(body);
     const headers = await this.signedHeaders(url, serialized, region);
-    const response = await fetch(url, { method: 'POST', headers, body: serialized });
+    const response = await fetch(url, { method: 'POST', headers, body: serialized, signal: request.signal });
     if (!response.ok) throw await apiError(response, 'bedrock');
     return responseFromBedrock(await response.json() as JsonObject, model);
   }

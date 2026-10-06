@@ -1,3 +1,4 @@
+import { assertWorkflowStreamsClosed } from './step-scope.js';
 import { isSuspensionRequested, isWaitingForUserInput } from './errors.js';
 import { AgentRegistry, Message } from './agent.js';
 import type { Agent, Message as AgentMessage } from './agent.js';
@@ -636,12 +637,13 @@ async function handleInvoke<Env, RuntimeContext>(
       checkpoints: checkpointStorageFromPayload(payload.checkpoint),
       workerlessDeadlineMs: payload.budget?.deadline_ms,
       workerlessYieldBeforeMs: payload.budget?.yield_before_timeout_ms,
-      metadata: payload.metadata,
+      metadata: { ...payload.metadata, component_type: componentType, component_name: componentName },
     },
   );
 
   try {
     const output = await component.invoke(ctx, input.value);
+    assertWorkflowStreamsClosed(ctx);
     const checkpoint = checkpointPayloadFromStorage(ctx.checkpointSnapshot());
     const events = ctx.eventsSnapshot();
     ctx.close();
@@ -657,6 +659,7 @@ async function handleInvoke<Env, RuntimeContext>(
         reason: err.reason,
         checkpoint,
       };
+      if (err.timeoutMs !== undefined) suspended.wait_timeout_ms = err.timeoutMs;
       if (err.readyAtMs !== undefined) {
         suspended.ready_at_ms = err.readyAtMs;
       }
@@ -691,6 +694,7 @@ async function handleInvoke<Env, RuntimeContext>(
         options: err.options,
         allow_custom: err.allowCustom,
         skippable: err.skippable,
+        ...(err.timeoutMs !== undefined ? { wait_timeout_ms: err.timeoutMs } : {}),
       };
       if (err.stepEvents && Object.keys(err.stepEvents).length > 0) {
         suspended.step_events = err.stepEvents;

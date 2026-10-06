@@ -82,12 +82,13 @@ async function agentWithMCPTools() {
     const tools = mcp.getTools();
     console.log(`Converted ${tools.length} MCP tools for agent use`);
 
-    const model = new LM({ provider: 'openai', model: 'gpt-4o-mini' });
+    const model = LM.openai({ apiKey: process.env.OPENAI_API_KEY });
 
     // Create agent with MCP-provided tools
     const researcher = new Agent({
       name: 'researcher',
       model,
+    modelName: 'openai/gpt-4o-mini',
       tools,
       instructions: 'You are a research assistant. Use the available tools to find information.',
     });
