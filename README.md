@@ -238,3 +238,18 @@ The score is the fraction of assertions that pass; `score_threshold` defaults to
 [SDK-core contract](https://github.com/agnt5dev/sdk-core/tree/82e98e984749f80a31ff6302ba508d55974c608d/crates/eval-scorers)
 for supported expressions and execution limits. Edge clients may submit recipes
 for runtime execution; local evaluation requires Node and the matching native binding.
+
+## Serverless signing
+
+Pass `signingSecret` to `serve()` from `@agnt5/sdk/serverless` or to the Node or
+Cloudflare adapter. Use a string or a resolver that reads your provider's
+environment bindings. Invokes with no resolved secret return HTTP 503
+(`WORKERLESS_SIGNING_SECRET_REQUIRED`) before running user code. Missing or
+invalid signatures with a configured secret return 401. The manifest remains
+available for discovery.
+
+For local development only, `serve({ allowUnsigned: true })` permits unsigned
+invokes when no secret resolves and logs a warning at startup. It still verifies
+requests when a secret is configured. Missing static secrets warn at startup;
+an empty request-time resolver warns on its first failed invoke. AGNT5 activation
+and dispatch still require a signing secret, regardless of this SDK option.

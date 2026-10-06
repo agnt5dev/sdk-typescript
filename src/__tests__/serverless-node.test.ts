@@ -1,7 +1,7 @@
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FunctionRegistry } from '../function.js';
 import { ToolRegistry } from '../tool.js';
 import { serveNode, workflow } from '../serverless-node.js';
@@ -16,7 +16,7 @@ describe('@agnt5/sdk/serverless/node', () => {
 
   it('serves manifests through a Node HTTP handler', async () => {
     workflow('hello', async (_ctx, input: { name?: string }) => ({ message: `hello ${input.name ?? 'world'}` }));
-    const handler = serveNode({ serviceName: 'serverless-node' });
+    const handler = serveNode({ allowUnsigned: true, serviceName: 'serverless-node' });
     const response = mockResponse();
 
     await handler(mockRequest('GET', '/.well-known/agnt5'), response);
@@ -38,7 +38,7 @@ describe('@agnt5/sdk/serverless/node', () => {
 
   it('adapts Node request bodies and responses to the generic workerless handler', async () => {
     workflow('hello', async (_ctx, input: { name: string }) => ({ message: `hello ${input.name}` }));
-    const handler = serveNode();
+    const handler = serveNode({ allowUnsigned: true });
     const response = mockResponse();
 
     await handler(mockRequest('POST', '/agnt5/invoke', JSON.stringify({
@@ -56,8 +56,21 @@ describe('@agnt5/sdk/serverless/node', () => {
     });
   });
 
+  it('rejects invokes without a signing secret before executing user code', async () => {
+    const run = vi.fn(async () => 'executed');
+    workflow('probe', run);
+    const handler = serveNode();
+    const response = mockResponse();
+    await handler(mockRequest('POST', '/agnt5/invoke', JSON.stringify({
+      component_type: 'workflow', component_name: 'probe', input: {},
+    })), response);
+    expect(response.statusCode).toBe(503);
+    expect(JSON.parse(response.text())).toMatchObject({ error: { code: 'WORKERLESS_SIGNING_SECRET_REQUIRED' } });
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it('returns 503 from Node handlers when serverless is disabled', async () => {
-    const handler = serveNode({ enabled: false });
+    const handler = serveNode({ allowUnsigned: true, enabled: false });
     const response = mockResponse();
 
     await handler(mockRequest('GET', '/.well-known/agnt5'), response);

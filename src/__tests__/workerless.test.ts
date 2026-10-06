@@ -29,7 +29,7 @@ describe('workerless serve()', () => {
       { inputSchema, triggers: [event('hello.requested')] },
     );
 
-    const handler = serve({ serviceName: 'local-workerless', workflows: [hello] });
+    const handler = serve({ allowUnsigned: true, serviceName: 'local-workerless', workflows: [hello] });
     const response = await handler.fetch(new Request('http://localhost:8787/.well-known/agnt5'));
     const manifest = await response.json() as any;
 
@@ -87,6 +87,7 @@ describe('workerless serve()', () => {
     });
 
     const handler = serve({
+      allowUnsigned: true,
       workflows: [selectedWorkflow],
       functions: [selectedFunction],
       tools: [selectedTool],
@@ -121,7 +122,7 @@ describe('workerless serve()', () => {
       },
     });
 
-    const handler = serve({ workflows: [], functions: [], tools: [], agents: [] });
+    const handler = serve({ allowUnsigned: true, workflows: [], functions: [], tools: [], agents: [] });
 
     expect(handler.manifest().components).toEqual([]);
   });
@@ -147,7 +148,7 @@ describe('workerless serve()', () => {
       .maxConcurrency(1)
       .run(async () => ({ ok: true }));
 
-    const handler = serve();
+    const handler = serve({ allowUnsigned: true });
     const response = await handler.fetch(new Request('http://localhost:8787/.well-known/agnt5'));
     const manifest = await response.json() as any;
     const triage = manifest.components.find((component: any) => component.name === 'triage');
@@ -179,7 +180,7 @@ describe('workerless serve()', () => {
   it('invokes a workflow and returns a completed response', async () => {
     workflow('hello', async (_ctx, input: { name: string }) => ({ message: `hello ${input.name}` }));
 
-    const handler = serve();
+    const handler = serve({ allowUnsigned: true });
     const response = await handler.fetch(new Request('http://localhost:8787/agnt5/invoke', {
       method: 'POST',
       body: JSON.stringify({
@@ -201,7 +202,7 @@ describe('workerless serve()', () => {
 
   it('returns 503 for protocol routes when disabled by option', async () => {
     workflow('hello', async (_ctx, input: { name: string }) => ({ message: `hello ${input.name}` }));
-    const handler = serve({ enabled: false });
+    const handler = serve({ allowUnsigned: true, enabled: false });
 
     const manifestResponse = await handler.fetch(new Request('http://localhost:8787/.well-known/agnt5'));
     const invokeResponse = await handler.fetch(new Request('http://localhost:8787/agnt5/invoke', {
@@ -246,7 +247,7 @@ describe('workerless serve()', () => {
     fn('double').run(async (_ctx, input: { value: number }) => ({ value: input.value * 2 }));
     tool('echo', { description: 'Echo input' }, async (_ctx, input: { value: string }) => input);
 
-    const handler = serve();
+    const handler = serve({ allowUnsigned: true });
     const functionResponse = await invoke(handler, 'function', 'double', { value: 4 });
     const toolResponse = await invoke(handler, 'tool', 'echo', { value: 'ok' });
 
@@ -276,7 +277,7 @@ describe('workerless serve()', () => {
       },
     });
 
-    const handler = serve();
+    const handler = serve({ allowUnsigned: true });
     const manifestResponse = await handler.fetch(new Request('http://localhost:8787/.well-known/agnt5'));
     const manifest = await manifestResponse.json() as any;
 
@@ -337,7 +338,7 @@ describe('workerless serve()', () => {
       throw new Error('nope');
     });
 
-    const handler = serve();
+    const handler = serve({ allowUnsigned: true });
     const response = await invoke(handler, 'workflow', 'boom', {});
     const body = await response.json() as any;
 
@@ -361,7 +362,7 @@ describe('workerless serve()', () => {
       return { page };
     });
 
-    const handler = serve();
+    const handler = serve({ allowUnsigned: true });
     const firstResponse = await invoke(handler, 'workflow', 'research', {});
     const first = await firstResponse.json() as any;
 
@@ -391,7 +392,7 @@ describe('workerless serve()', () => {
         return { page };
       });
 
-      const handler = serve();
+      const handler = serve({ allowUnsigned: true });
       const response = await invoke(handler, 'workflow', 'research', {}, {
         steps: {
           fetch: { title: 'old' },
@@ -426,7 +427,7 @@ describe('workerless serve()', () => {
       return { page };
     });
 
-    const handler = serve();
+    const handler = serve({ allowUnsigned: true });
     const response = await invoke(handler, 'workflow', 'research', {}, undefined, {
       deadline_ms: Date.now() - 1,
       yield_before_timeout_ms: 0,
@@ -475,7 +476,7 @@ describe('workerless serve()', () => {
         return { page, afterSleepCount };
       });
 
-      const handler = serve();
+      const handler = serve({ allowUnsigned: true });
       const firstResponse = await invoke(handler, 'workflow', 'delayed', {});
       const first = await firstResponse.json() as any;
 
@@ -538,7 +539,7 @@ describe('workerless serve()', () => {
       return { draft, reviewer };
     });
 
-    const handler = serve();
+    const handler = serve({ allowUnsigned: true });
     const firstResponse = await invoke(handler, 'workflow', 'review', {});
     const first = await firstResponse.json() as any;
 
@@ -588,7 +589,7 @@ describe('workerless serve()', () => {
       return { approved: signal.approved };
     });
 
-    const handler = serve();
+    const handler = serve({ allowUnsigned: true });
     const firstResponse = await invoke(handler, 'workflow', 'approval-signal', {});
     const first = await firstResponse.json() as any;
 
@@ -643,7 +644,7 @@ describe('workerless serve()', () => {
       return { approved: signal.approved };
     });
 
-    const handler = serve();
+    const handler = serve({ allowUnsigned: true });
     const firstResponse = await invoke(handler, 'workflow', 'streaming-review', {});
     const first = await firstResponse.json() as any;
 
@@ -762,7 +763,7 @@ describe('workerless serve()', () => {
     };
 
     try {
-      const handler = serve();
+      const handler = serve({ allowUnsigned: true });
       const response = await handler.fetch(new Request('http://localhost:8787/agnt5/invoke', {
         method: 'POST',
         body: JSON.stringify({
@@ -803,7 +804,7 @@ describe('workerless serve()', () => {
     };
 
     try {
-      const handler = serve();
+      const handler = serve({ allowUnsigned: true });
       const response = await handler.fetch(new Request('http://localhost:8787/agnt5/invoke', {
         method: 'POST',
         body: JSON.stringify({
@@ -851,7 +852,7 @@ describe('workerless serve()', () => {
     };
 
     try {
-      const handler = serve();
+      const handler = serve({ allowUnsigned: true });
       const response = await handler.fetch(new Request('http://localhost:8787/agnt5/invoke', {
         method: 'POST',
         body: JSON.stringify({
@@ -900,7 +901,7 @@ describe('workerless serve()', () => {
     };
 
     try {
-      const handler = serve();
+      const handler = serve({ allowUnsigned: true });
       const response = await handler.fetch(new Request('http://localhost:8787/agnt5/invoke', {
         method: 'POST',
         body: JSON.stringify({
@@ -943,7 +944,7 @@ describe('workerless serve()', () => {
     globalThis.fetch = async () => new Response(null, { status: 503 });
 
     try {
-      const handler = serve();
+      const handler = serve({ allowUnsigned: true });
       const response = await handler.fetch(new Request('http://localhost:8787/agnt5/invoke', {
         method: 'POST',
         body: JSON.stringify({
@@ -988,7 +989,7 @@ describe('workerless serve()', () => {
     });
 
     try {
-      const handler = serve();
+      const handler = serve({ allowUnsigned: true });
       const response = await handler.fetch(new Request('http://localhost:8787/agnt5/invoke', {
         method: 'POST',
         body: JSON.stringify({
