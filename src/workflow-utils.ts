@@ -13,6 +13,7 @@ import { WorkflowRegistry } from './workflow.js';
 import { SagaCompensationError } from './errors.js';
 import { runChildWorkflow } from './child-workflow.js';
 import { isControlFlow } from './control-flow.js';
+import { combineSignals } from './cancellation.js';
 
 /**
  * Run multiple async tasks in parallel and return results in order.
@@ -302,12 +303,21 @@ export async function withTimeout<TInput = any, TOutput = any>(
     }, timeoutMs);
   });
 
-  const workflowPromise = executeChildWorkflow(ctx, workflowNameOrHandler, input);
+  const joinController = new AbortController();
+  const cancellation = combineSignals(ctx.signal, joinController.signal);
+  const joinContext = new Proxy(ctx, { get(target, key) {
+    if (key === 'signal') return cancellation.signal;
+    const value = Reflect.get(target, key, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  const workflowPromise = executeChildWorkflow(joinContext, workflowNameOrHandler, input);
 
   try {
     return await Promise.race([workflowPromise, timeoutPromise]);
   } finally {
     clearTimeout(timer);
+    joinController.abort();
+    cancellation.dispose();
   }
 }
 

@@ -185,7 +185,7 @@ export class FunctionBuilder<TInput = any, TOutput = any> {
       await ctx.emit(
         functionStarted(fnCid, functionParentCid, {
           inputData: inputForEvent,
-          attempt: 0,
+          attempt: ctx.attempt ?? 0,
           componentName: handlerName,
         }),
       );

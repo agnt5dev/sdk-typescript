@@ -3,7 +3,7 @@ import { activationId } from '../activation.js';
 import { Worker } from '../worker.js';
 import { fn, FunctionRegistry } from '../function.js';
 import { workflow, WorkflowRegistry } from '../workflow.js';
-import { executeChildWorkflow } from '../workflow-utils.js';
+import { executeChildWorkflow, withTimeout } from '../workflow-utils.js';
 import { invocationRunId } from '../child-workflow.js';
 
 const metadata = { run_id: 'parent', project_id: 'project', dispatch_mode: 'pull', worker_session_id: 'session', lease_id: 'lease', activation_artifact_sha256: Buffer.alloc(32, 1).toString('base64'), activation_definition_version: 'v1' };
@@ -29,7 +29,7 @@ async function dispatch(native: ReturnType<typeof nativeWorker>, extra: Record<s
 }
 describe('workflow execution boundaries', () => {
   beforeEach(() => { FunctionRegistry.clear(); WorkflowRegistry.clear(); vi.spyOn(console, 'error').mockImplementation(() => {}); });
-  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
   it.each([false, true])('replays direct function calls (activation=%s)', async activation => {
     let calls = 0;
@@ -71,6 +71,21 @@ describe('workflow execution boundaries', () => {
     const result = await dispatch(native, { ...flags, ...paused.metadata, user_response: 'yes' });
     expect(JSON.parse(result.outputJson)).toEqual(['one', 'two']);
     expect(calls).toBe(1);
+  });
+
+  it.each([false, true])('does not retry a stream after exposing its iterator (activation=%s)', async activation => {
+    let calls = 0;
+    const streamed = fn('failed-stream').retry({ maxAttempts: 3, initialIntervalMs: 0 }).run(async function* () {
+      calls++; yield 'partial'; throw new TypeError('stream failed');
+    } as any);
+    const observed: unknown[] = [];
+    workflow('parent-workflow', async ctx => { for await (const chunk of await streamed(ctx) as any) observed.push(chunk); });
+    const native = nativeWorker();
+    const result = await dispatch(native, activation ? { durable_activation_v1: 'true' } : {});
+    expect(result).toMatchObject({ eventType: 'run.failed', errorType: 'TypeError', error: 'stream failed' });
+    expect(observed).toEqual(['partial']);
+    expect(calls).toBe(1);
+    if (activation) expect(native.failActivation.mock.calls.filter(([request]) => request.errorCode === 'FUNCTION_FAILED').map(([request]) => request.retryable)).toEqual([false]);
   });
 
   it.each([false, true])('bounds exhausted function retries (activation=%s)', async activation => {
@@ -120,9 +135,26 @@ describe('workflow execution boundaries', () => {
     expect((await dispatch(nativeWorker())).metadata.wait_timeout_ms).toBe('500');
   });
 
-  it('submits one separate child run and replays its result', async () => {
-    workflow('child', async () => { throw new Error('child must be dispatched separately'); });
-    workflow('parent-workflow', async ctx => executeChildWorkflow(ctx, 'child', { order: 1 }));
+  it('stops polling a child after a join timeout', async () => {
+    vi.useFakeTimers();
+    workflow('child', async () => 'child');
+    workflow('parent-workflow', async ctx => withTimeout(ctx, 'child', {}, 100));
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.endsWith('/submit') ? { run_id: 'child-run', status: 'queued' } : { run_id: 'child-run', status: 'running' }
+    ))));
+    const running = dispatch(nativeWorker());
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(running).resolves.toMatchObject({ eventType: 'run.failed', errorType: 'TimeoutError' });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([false, true])('submits direct workflow calls as separate children and replays their results (activation=%s)', async activation => {
+    const child = workflow('child', async () => { throw new Error('child must be dispatched separately'); });
+    workflow('parent-workflow', async ctx => {
+      const result = await child(ctx, { order: 1 });
+      await ctx.waitForUser('Continue?');
+      return result;
+    });
     let childRun = '';
     const fetch = vi.fn(async (url: string, init: any) => {
       if (url.endsWith('/submit')) {
@@ -134,11 +166,14 @@ describe('workflow execution boundaries', () => {
     });
     vi.stubGlobal('fetch', fetch);
     const native = nativeWorker();
-    const flags = { durable_activation_v1: 'true' };
-    expect(JSON.parse((await dispatch(native, flags)).outputJson)).toEqual({ child: true });
-    expect(JSON.parse((await dispatch(native, flags)).outputJson)).toEqual({ child: true });
+    const flags = activation ? { durable_activation_v1: 'true' } : {};
+    const paused = await dispatch(native, flags);
+    expect(paused.eventType).toBe('workflow.paused');
+    const resumed = { ...flags, ...paused.metadata, user_response: 'yes' };
+    expect(JSON.parse((await dispatch(native, resumed)).outputJson)).toEqual({ child: true });
+    expect(JSON.parse((await dispatch(native, resumed)).outputJson)).toEqual({ child: true });
     expect(fetch.mock.calls.filter(([url]) => url.endsWith('/submit'))).toHaveLength(1);
     expect(childRun).not.toBe('parent');
-    expect(native.beginActivation.mock.calls[0][0].child.childRunId).toBe(childRun);
+    if (activation) expect(native.beginActivation.mock.calls[0][0].child.childRunId).toBe(childRun);
   });
 });

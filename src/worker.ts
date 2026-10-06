@@ -1288,6 +1288,7 @@ export class Worker {
           // Create context with emitter
           const contextMetadata: Record<string, string> = {
             ...workflowDispatchMetadata(message.metadata),
+            component_type: message.componentType,
             component_name: message.metadata.component_name || message.componentName,
             activation_definition_version:
               message.metadata.activation_definition_version ||

@@ -66,7 +66,8 @@ is recorded.
 A nested streaming function keeps its checkpoint open until its iterator
 finishes or is closed. Consume it with `for await`, or call `return()` before
 the workflow waits or returns. Completed streams replay their recorded iterator
-operations without calling the handler again.
+operations without calling the handler again. A stream is not retried after
+its iterator has been exposed to the caller.
 
 Calling a registered workflow from a managed workflow, or using
 `executeChildWorkflow`, submits a separate child run and joins its result.
