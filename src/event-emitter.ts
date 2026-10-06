@@ -8,7 +8,16 @@
  */
 
 import type { BaseEvent } from './events.js';
-import { isCheckpointEvent } from './events.js';
+import { isCheckpointEvent, progressUpdate } from './events.js';
+import { ProgressReporter } from './progress.js';
+import type { ProgressReport } from './progress.js';
+
+/** Where a progress report sits in the run's event tree. */
+export interface ProgressSource {
+  name: string;
+  correlationId: string;
+  parentCorrelationId: string | null;
+}
 
 const EXECUTION_AUTHORITY_METADATA_KEYS = [
   'dispatch_mode',
@@ -100,6 +109,8 @@ export class EventEmitter {
   private hasQueuedTransient = false;
   private emissionChain: Promise<void> = Promise.resolve();
   private readonly deferLifecycle: boolean;
+  private progressReporter?: ProgressReporter;
+  private progressSource?: ProgressSource;
 
   constructor(
     runId: string,
@@ -133,6 +144,10 @@ export class EventEmitter {
    * remains an immediate ordering barrier.
    */
   emit(event: BaseEvent): Promise<void> {
+    if (TERMINAL_EVENT_TYPES.has(event.eventType)) {
+      // Once the run has finished, a report not yet sent is stale.
+      this.progressReporter?.close();
+    }
     const operation = this.emissionChain.then(() => this.emitOrdered(event));
     // Keep later fire-and-forget log events ordered even if their caller does
     // not observe a rejection. Awaited lifecycle calls still receive it.
@@ -142,27 +157,70 @@ export class EventEmitter {
 
   /** Persist any trailing lifecycle batch before the worker returns a result. */
   flush(): Promise<void> {
+    // flush() ends the run: nothing reported after it is worth sending.
+    this.progressReporter?.close();
     const operation = this.emissionChain.then(() => this.flushPendingCheckpoints());
     this.emissionChain = operation.catch(() => undefined);
     return operation;
   }
 
-  private async emitOrdered(event: BaseEvent): Promise<void> {
-    if (!this.nativeWorker) {
-      return; // No worker — running locally or in tests
+  /**
+   * `ctx.progress` for this run. Reports are coalesced to at most one a
+   * second, the latest, and each is appended to the journal at once (see
+   * {@link appendNow}). False when the report was dropped: it went
+   * backwards, repeated the last one, the run has finished, or there is no
+   * worker to send it.
+   */
+  reportProgress(report: ProgressReport, source: ProgressSource): boolean {
+    if (!this.nativeWorker) return false;
+    this.progressSource = source;
+    if (!this.progressReporter) {
+      this.progressReporter = new ProgressReporter(async (latest) => {
+        const at = this.progressSource ?? source;
+        await this.appendNow(progressUpdate(at.name, at.correlationId, at.parentCorrelationId, latest));
+      });
     }
+    return this.progressReporter.report(report);
+  }
 
-    // Signal language-runtime admission before any checkpoint I/O or batching.
-    // SDK-core gates pull-slot ramp-up on this edge, so a blocked Node event
-    // loop cannot cause the worker to claim its entire concurrency budget.
-    if (
-      event.eventType === 'run.started' &&
-      typeof this.nativeWorker.markExecutionStarted === 'function'
-    ) {
-      this.nativeWorker.markExecutionStarted(this.runId);
-    }
+  /**
+   * Append an event to the run's journal now, whatever its type.
+   *
+   * For side-band records someone reads while the run is still going
+   * (`progress.update`). sdk-core holds the queued events of a non-streaming
+   * pull run until it completes, so a queued report would arrive too late.
+   * Lifecycle events emitted before it are persisted first.
+   */
+  appendNow(event: BaseEvent): Promise<void> {
+    const operation = this.emissionChain.then(() => this.appendNowOrdered(event));
+    this.emissionChain = operation.catch(() => undefined);
+    return operation;
+  }
 
+  private async appendNowOrdered(event: BaseEvent): Promise<void> {
+    if (!this.nativeWorker) return;
     this.sequence++;
+    const { eventData, metadata, timestampNs } = this.prepare(event);
+    metadata['cid'] = event.correlationId;
+    metadata['pcid'] = event.parentCorrelationId || '';
+    await this.flushPendingCheckpoints();
+    await this.nativeWorker.emitCheckpoint(
+      this.runId,
+      event.eventType,
+      eventData,
+      this.sequence,
+      metadata,
+      timestampNs,
+      5000, // timeout_ms
+    );
+  }
+
+  /** The event's wire payload, metadata and a strictly increasing timestamp. */
+  private prepare(event: BaseEvent): {
+    eventData: string;
+    metadata: Record<string, string>;
+    timestampNs: number;
+  } {
     if (event.timestampNs <= this.lastTimestampNs) {
       // Native transport accepts a JavaScript Number, whose precision at
       // epoch-nanosecond scale is coarser than 1ns. Advance by 1µs so
@@ -185,8 +243,26 @@ export class EventEmitter {
       const value = this.baseMetadata[key];
       if (value !== undefined) metadata[key] = value;
     }
+    return { eventData, metadata, timestampNs: Number(event.timestampNs) };
+  }
 
-    const timestampNs = Number(event.timestampNs);
+  private async emitOrdered(event: BaseEvent): Promise<void> {
+    if (!this.nativeWorker) {
+      return; // No worker — running locally or in tests
+    }
+
+    // Signal language-runtime admission before any checkpoint I/O or batching.
+    // SDK-core gates pull-slot ramp-up on this edge, so a blocked Node event
+    // loop cannot cause the worker to claim its entire concurrency budget.
+    if (
+      event.eventType === 'run.started' &&
+      typeof this.nativeWorker.markExecutionStarted === 'function'
+    ) {
+      this.nativeWorker.markExecutionStarted(this.runId);
+    }
+
+    this.sequence++;
+    const { eventData, metadata, timestampNs } = this.prepare(event);
 
     if (isCheckpointEvent(event.eventType)) {
       // Add correlation IDs to metadata (matches Python EventEmitter convention)

@@ -9,6 +9,8 @@ import { loadNativeBindings, tryLoadNativeBindings } from '#native-loader';
 import { emptyRuntimeContext } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
 import { isLogLevelEnabled, sendNativeLog } from './logging.js';
+import { progressReport } from './progress.js';
+import type { ProgressOptions } from './progress.js';
 
 function validateSleepDuration(durationMs: number): void {
   if (!Number.isSafeInteger(durationMs) || durationMs < 0) {
@@ -234,6 +236,11 @@ export class PlatformContext implements Context {
    */
   async emit(event: any): Promise<void> {
     // PlatformContext doesn't emit events directly — the worker's EventEmitter handles this.
+  }
+
+  /** Checked, then dropped: this adapter has no event path of its own. */
+  progress(progress: number, options?: ProgressOptions): void {
+    progressReport(progress, options);
   }
 
   /**

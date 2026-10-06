@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- `ctx.progress(progress, { total?, message? })` in functions and workflows (AGNT5-1569). It writes a `progress.update` record to the run's journal: Studio and `get_run` show the latest report, the AGNT5 run card draws a bar when `total` is known, and an MCP client that sent a progress token on the tool call hears each report as `notifications/progress`. It never blocks and is cheap to call in a loop: each run writes at most one report a second, always the latest, appended at once rather than held until the run completes. Progress never goes backwards: a report below the last one is dropped, and one with the same figure goes out only when its message or total changed. A `progress` or `total` that isn't a number, or a `message` that isn't a string, throws `TypeError`; a value that isn't finite or a `total` that isn't positive throws `RangeError`. Locally, workerless and in entity methods a report is checked, then dropped. `Context` gains a required `progress` method, so a hand-written `Context` implementation needs one. Reports reach MCP clients on runtimes with the matching MCP edge.
+
 ## [0.10.10] - 2026-10-05
 
 ### Added

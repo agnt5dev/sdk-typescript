@@ -2,6 +2,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { WorkerOptions, Context, Logger, StepOptions } from './types.js';
 import { callerFromMetadata } from './caller.js';
 import type { Caller } from './caller.js';
+import { progressReport } from './progress.js';
+import type { ProgressOptions } from './progress.js';
 import { FunctionRegistry } from './function.js';
 import { WorkflowRegistry } from './workflow.js';
 import type { TriggerSpec } from './workflow.js';
@@ -536,6 +538,16 @@ class SimpleContext implements Context {
     }
 
     await this._emitter.emit(event);
+  }
+
+  /** See {@link Context.progress}. A no-op without an emitter (local/test mode). */
+  progress(progress: number, options?: ProgressOptions): void {
+    const report = progressReport(progress, options);
+    this._emitter?.reportProgress(report, {
+      name: this.metadata.component_name || this.serviceName,
+      correlationId: this.getCurrentCorrelationId() ?? this.runId.slice(0, 8),
+      parentCorrelationId: this._runCid ?? null,
+    });
   }
 
   /** Push a correlation id onto the stack (parent context for nested events). */

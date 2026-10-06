@@ -11,6 +11,8 @@ import Database from 'better-sqlite3';
 import { join } from 'path';
 import { mkdirSync, existsSync } from 'fs';
 import { isLogLevelEnabled } from './logging.js';
+import { progressReport } from './progress.js';
+import type { ProgressOptions } from './progress.js';
 
 /**
  * Entity storage backend interface
@@ -468,6 +470,11 @@ class EntityContext implements Context {
         console.debug(`[DEBUG] ${message}`, meta || '');
       }
     };
+  }
+
+  /** Entity methods aren't runs a client watches: a report is checked, then dropped. */
+  progress(progress: number, options?: ProgressOptions): void {
+    progressReport(progress, options);
   }
 }
 

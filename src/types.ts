@@ -4,6 +4,7 @@ import type { HITLInputType, HITLOption } from './errors.js';
 import type { WorkerlessFlowControlPolicy } from './flow-control.js';
 import type { ActivationExecution } from './activation.js';
 import type { Caller } from './caller.js';
+import type { ProgressOptions } from './progress.js';
 
 export type RecoveryPolicy =
   | 'idempotent_retry'
@@ -156,6 +157,35 @@ export interface Context {
   // Event emission
   /** Emit an event to the platform (no-op when running locally without a worker) */
   emit(event: any): Promise<void>;
+
+  /**
+   * Report how far this run has got: `progress`, out of `options.total` when
+   * you know it (a positive number), and `options.message` saying what is
+   * happening now.
+   *
+   * ```ts
+   * for (const [i, doc] of docs.entries()) {
+   *   await embed(doc);
+   *   ctx.progress(i + 1, { total: docs.length, message: `Embedded ${doc.name}` });
+   * }
+   * ```
+   *
+   * Studio and `get_run` show the latest report, the AGNT5 run card draws a
+   * bar when `total` is known, and an MCP client that asked for progress on
+   * the tool call hears each report as `notifications/progress`.
+   *
+   * Call it as often as you like: it never blocks, and each run writes at
+   * most one report a second, always the latest. Progress never goes
+   * backwards, as MCP requires: a report below the last one is dropped, and
+   * one with the same figure is sent only when its message or total changed.
+   * Reports never feed back into the run, so replaying a workflow can't
+   * change what it does. Locally, without a worker, a report goes nowhere.
+   *
+   * Throws `TypeError` for a `progress` or `total` that isn't a number or a
+   * `message` that isn't a string, and `RangeError` for a value that isn't
+   * finite or a `total` that isn't positive.
+   */
+  progress(progress: number, options?: ProgressOptions): void;
 }
 
 /**

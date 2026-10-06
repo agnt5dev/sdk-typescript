@@ -362,6 +362,7 @@ export type {
 } from './runtime-context.js';
 export { callerFromMetadata } from './caller.js';
 export type { Caller } from './caller.js';
+export type { ProgressOptions } from './progress.js';
 
 // State management exports
 export {
