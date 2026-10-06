@@ -126,6 +126,7 @@ export {
   MCP_RUN_VIEW,
   MCP_SCHEMA_VERSION,
   validServerName,
+  viewRegistrationBytes,
 } from './mcp-publish.js';
 export type {
   MCPToolMode,

@@ -8,7 +8,7 @@ import { FunctionRegistry } from './function.js';
 import { WorkflowRegistry } from './workflow.js';
 import type { TriggerSpec } from './workflow.js';
 import { ToolRegistry } from './tool.js';
-import { MCPServerRegistry, validServerName } from './mcp-publish.js';
+import { MCPServerRegistry, checkViewsBudget, validServerName } from './mcp-publish.js';
 import { isZodSchema, toJsonSchemaDocument } from './schema-utils.js';
 import {
   BUILTIN_DETERMINISTIC_SCORER_NAMES,
@@ -1899,6 +1899,9 @@ export class Worker {
     // MCP servers defined in code (AGNT5-1569) publish agents as tools; the
     // worker serves those agents without a registerAgents call.
     const mcpServers = Array.from(MCPServerRegistry.all().values()).filter(server => server.published);
+    // Their views ride in this registration; past the budget it would be
+    // refused whole, so say why here instead.
+    checkViewsBudget(mcpServers);
     for (const server of mcpServers) {
       for (const tool of server.publishedToolList()) {
         if (tool.componentType === 'agent' && tool.target instanceof Agent && !this.agents.has(tool.componentName)) {

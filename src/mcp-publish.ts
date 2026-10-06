@@ -10,7 +10,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { JSONSchema } from './types.js';
 import type { MCPServer } from './mcp-server.js';
@@ -34,8 +34,9 @@ const NO_VIEW = 'none';
 /** The most one view's HTML may weigh, in bytes. */
 export const MCP_MAX_VIEW_BYTES = 2 * 1024 * 1024;
 /**
- * The most the views of all servers a worker publishes may weigh together:
- * they travel in the worker's registration, which AGNT5 accepts up to 4 MB.
+ * The most the views of the servers a worker publishes may take of its
+ * registration together, measured as they travel there
+ * ({@link viewRegistrationBytes}): AGNT5 accepts a registration up to 4 MB.
  */
 export const MCP_MAX_VIEWS_BYTES = 3 * 1024 * 1024;
 const RESERVED_VIEW_NAMES = new Set([MCP_RUN_VIEW, NO_VIEW]);
@@ -63,6 +64,8 @@ export type MCPToolMode = (typeof MCP_TOOL_MODES)[number];
 export class MCPView {
   /** The bundle, kept out of enumeration so logging a view stays short. */
   declare readonly html: string;
+  /** What the bundle takes of the worker's registration ({@link viewRegistrationBytes}). */
+  readonly registrationBytes: number;
 
   constructor(
     readonly name: string,
@@ -73,6 +76,7 @@ export class MCPView {
     html: string,
   ) {
     Object.defineProperty(this, 'html', { value: html, enumerable: false });
+    this.registrationBytes = viewRegistrationBytes(html);
   }
 
   toDefinition(): MCPViewDefinition {
@@ -204,6 +208,46 @@ export function toolDefinition(tool: PublishedTool): MCPToolDefinition {
 }
 
 /**
+ * How many bytes a view bundle takes in the worker's registration. The
+ * definition carrying it travels as a JSON string inside a JSON webhook, so
+ * the HTML is JSON-escaped twice: `"` and `\` take 4 bytes, `\b \f \n \r
+ * \t` take 3, other control characters 7, everything else its UTF-8 length.
+ * The platform measures the same way (`ViewRegistrationBytes`), whatever JSON
+ * encoder either side uses.
+ */
+export function viewRegistrationBytes(html: string): number {
+  let size = new TextEncoder().encode(html).length;
+  for (let i = 0; i < html.length; i++) {
+    const code = html.charCodeAt(i);
+    if (code === 0x22 || code === 0x5c) size += 3;
+    else if (code === 0x08 || code === 0x0c || code === 0x0a || code === 0x0d || code === 0x09) size += 2;
+    else if (code < 0x20) size += 6;
+  }
+  return size;
+}
+
+/**
+ * Refuse a worker whose published servers' views together pass
+ * {@link MCP_MAX_VIEWS_BYTES} of its registration: the registration would
+ * be rejected whole, taking every component with it.
+ */
+export function checkViewsBudget(servers: Iterable<MCPServer>): void {
+  let total = 0;
+  const sizes: string[] = [];
+  for (const server of servers) {
+    for (const view of server.views.values()) {
+      total += view.registrationBytes;
+      sizes.push(`${server.id}/${view.name} ${view.registrationBytes}`);
+    }
+  }
+  if (total > MCP_MAX_VIEWS_BYTES) {
+    throw new Error(
+      `this worker's MCP views take ${total} bytes of its registration together; the limit is ${MCP_MAX_VIEWS_BYTES} (${sizes.join(', ')})`,
+    );
+  }
+}
+
+/**
  * Check a view where the developer added it, so a missing build or an
  * oversized bundle fails at startup rather than as a rejected deployment.
  */
@@ -229,6 +273,11 @@ export function loadView(server: string, name: string, source: MCPViewSource): M
     const shown = path instanceof URL ? fileURLToPath(path) : path;
     let bytes: Uint8Array;
     try {
+      // Too big is refused before anything is read.
+      const onDisk = statSync(path).size;
+      if (onDisk > MCP_MAX_VIEW_BYTES) {
+        throw new Error(`view ${JSON.stringify(name)} is ${onDisk} bytes; the limit is ${MCP_MAX_VIEW_BYTES}`);
+      }
       bytes = readFileSync(path);
     } catch (error: any) {
       if (error?.code === 'ENOENT') {

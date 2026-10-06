@@ -222,9 +222,11 @@ export class MCPServer {
    * A view is one self-contained HTML file: give its text as `{ html }` or
    * the built file as `{ path }` (a path or file URL; for example Vite with
    * `vite-plugin-singlefile`). It is read now, so a missing build fails at
-   * startup. Up to 2 MB per view, and 3 MB for all the views a worker
-   * publishes; `name` follows the server-name rule, and `run` and `none` are
-   * reserved.
+   * startup. Up to 2 MB per view. Views travel in the worker's registration,
+   * so the views of all the servers it publishes may take up to 3 MB of it,
+   * measured JSON-escaped as they travel (`viewRegistrationBytes`); a worker
+   * past that refuses to start. `name` follows the server-name rule, and `run`
+   * and `none` are reserved.
    *
    * The view gets the tool's result over the MCP Apps bridge: its
    * `structuredContent` (the output, when it is an object) and its text. A
@@ -238,13 +240,13 @@ export class MCPServer {
     if (this.ownViews.has(name)) {
       throw new Error(`MCP server ${JSON.stringify(this.id)} already has a view named ${JSON.stringify(name)}`);
     }
-    let published = 0;
-    for (const server of MCPServerRegistry.all().values()) {
-      for (const other of server.views.values()) published += other.size;
-    }
-    if (published + view.size > MCP_MAX_VIEWS_BYTES) {
+    // The server's own views; the worker checks those of every server it
+    // publishes together when it registers.
+    let taken = view.registrationBytes;
+    for (const other of this.ownViews.values()) taken += other.registrationBytes;
+    if (taken > MCP_MAX_VIEWS_BYTES) {
       throw new Error(
-        `view ${JSON.stringify(name)} would make this worker's MCP views ${published + view.size} bytes together; the limit is ${MCP_MAX_VIEWS_BYTES}`,
+        `view ${JSON.stringify(name)} would make MCP server ${JSON.stringify(this.id)}'s views take ${taken} bytes of the registration; the limit is ${MCP_MAX_VIEWS_BYTES}`,
       );
     }
     this.ownViews.set(name, view);

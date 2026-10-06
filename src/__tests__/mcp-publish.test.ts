@@ -1,7 +1,7 @@
 /** Publishing MCPServer definitions with the deployment (AGNT5-1569). */
 
 import { createHash } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -15,6 +15,9 @@ import {
   MCP_MAX_VIEWS_BYTES,
   MCP_RUN_VIEW,
   MCPServerRegistry,
+  checkViewsBudget,
+  validServerName,
+  viewRegistrationBytes,
 } from '../mcp-publish.js';
 import { toJsonSchemaDocument } from '../schema-utils.js';
 import { ToolRegistry } from '../tool.js';
@@ -321,11 +324,42 @@ describe('MCPServer publishing', () => {
     expect(() => server.addFunction('lookup', lookupOrder, { view: 'chart' })).toThrow(/view must be/);
   });
 
-  it("holds a worker's views to one budget", () => {
-    const big = 'x'.repeat(MCP_MAX_VIEW_BYTES);
-    new MCPServer('one').addView('a', { html: big });
-    expect(() => new MCPServer('two').addView('b', { html: big })).toThrow(/bytes together/);
+  it('budgets views as they travel in the registration', () => {
+    // The definition is a JSON string inside a JSON webhook: escaped twice.
+    for (const html of [BOARD, '<script>const a = "x\\y";</script>', 'line\none\ttab\u0001', '✓ é 注 😀']) {
+      const twice = JSON.stringify(JSON.stringify(html).slice(1, -1)).slice(1, -1);
+      expect(viewRegistrationBytes(html)).toBe(Buffer.byteLength(twice));
+    }
+    // Within 2 MB, but four times that escaped twice: refused for the server.
+    const quotes = '"'.repeat(1024 * 1024);
+    expect(() => new MCPServer('one').addView('a', { html: quotes })).toThrow(
+      /take 4194304 bytes of the registration/,
+    );
     expect(MCP_MAX_VIEWS_BYTES).toBeLessThan(4 * 1024 * 1024);
+  });
+
+  it("budgets only the published servers' views, together", () => {
+    const big = 'x'.repeat(MCP_MAX_VIEW_BYTES);
+    const one = new MCPServer('one');
+    const two = new MCPServer('two');
+    one.addView('a', { html: big });
+    two.addView('b', { html: big }); // each server is within its own budget
+    new MCPServer('stdio-only').addView('c', { html: big });
+    expect(() => checkViewsBudget([one])).not.toThrow();
+    expect(() => checkViewsBudget([one, two])).toThrow(/take 4194304 bytes .* \(one\/a 2097152, two\/b 2097152\)/);
+  });
+
+  it('matches names whole and refuses oversized files before reading them', () => {
+    const { lookupOrder } = defineComponents();
+    const server = new MCPServer('support');
+    expect(() => server.addView('order\n', { html: BOARD })).toThrow(/lowercase/);
+    expect(() => server.addFunction('lookup\n', lookupOrder)).toThrow(/1 to 128/);
+    expect(validServerName('support\n')).toBe(false);
+
+    const huge = join(mkdtempSync(join(tmpdir(), 'agnt5-view-')), 'huge.html');
+    writeFileSync(huge, '');
+    truncateSync(huge, MCP_MAX_VIEW_BYTES + 1);
+    expect(() => server.addView('order', { path: huge })).toThrow(/limit is 2097152/);
   });
 
   it('does not publish stdio-only servers', () => {
@@ -365,6 +399,21 @@ describe('Worker MCP registration', () => {
     expect(byName.get('mcp_test_triage')).toBe('workflow');
     // The published agent is served without a registerAgents call.
     expect(byName.get('mcp_test_agent')).toBe('agent');
+  });
+
+  it("refuses to start past the views budget, counting only published servers' views", async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { lookupOrder } = defineComponents();
+    const big = 'x'.repeat(MCP_MAX_VIEW_BYTES);
+    const one = new MCPServer('one');
+    one.addFunction('lookup', lookupOrder, { view: one.addView('big', { html: big }) });
+    new MCPServer('stdio-only').addView('big', { html: big }); // not published
+    await new Worker('ts-worker').run();
+    expect((globalThis as any).__agnt5RegisteredComponents.some((c: any) => c.name === 'one')).toBe(true);
+
+    const two = new MCPServer('two');
+    two.addFunction('lookup', lookupOrder, { view: two.addView('big', { html: big }) });
+    await expect(new Worker('ts-worker').run()).rejects.toThrow(/bytes of its registration together/);
   });
 
   it('logs, but still registers, a server name the platform will refuse', async () => {
