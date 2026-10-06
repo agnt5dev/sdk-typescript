@@ -34,7 +34,7 @@ export async function checkpointFunctionOutput<T>(
   let iterator: AsyncIterator<unknown> | undefined;
   const send = (operation: Operation, argument?: unknown): Promise<IteratorResult<unknown>> => {
     if (failed) return Promise.reject(failure);
-    if (closed) return operation === 'throw' ? Promise.reject(argument) : Promise.resolve({ done: true, value: argument });
+    if (closed) return operation === 'throw' ? Promise.reject(argument) : Promise.resolve({ done: true, value: operation === 'return' ? argument : undefined });
     const reply = deferred<IteratorResult<unknown>>();
     requests.push({ operation, argument, reply });
     wake.resolve();
@@ -80,7 +80,7 @@ export async function checkpointFunctionOutput<T>(
       let index = 0;
       const replay = (operation: Operation, argument?: unknown): Promise<IteratorResult<unknown>> => {
         const record = output.records[index];
-        if (!record) return operation === 'throw' ? Promise.reject(argument) : Promise.resolve({ done: true, value: argument });
+        if (!record) return operation === 'throw' ? Promise.reject(argument) : Promise.resolve({ done: true, value: operation === 'return' ? argument : undefined });
         if (record.operation !== operation) return Promise.reject(new Error('Streaming function replay changed iterator operations'));
         index++;
         return Promise.resolve(record.result);

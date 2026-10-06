@@ -73,6 +73,27 @@ describe('workflow execution boundaries', () => {
     expect(calls).toBe(1);
   });
 
+  it.each([false, true])('preserves the exhausted iterator protocol (activation=%s)', async activation => {
+    const streamed = fn('iterator-protocol').run(async function* () { yield 1; return 2; } as any);
+    workflow('parent-workflow', async ctx => {
+      const iterator = (await streamed(ctx) as any)[Symbol.asyncIterator]();
+      expect(await iterator.next()).toEqual({ done: false, value: 1 });
+      expect(await iterator.next()).toEqual({ done: true, value: 2 });
+      expect(await iterator.next(99)).toEqual({ done: true, value: undefined });
+      expect(await iterator.return(17)).toEqual({ done: true, value: 17 });
+      const error = new TypeError('consumer error');
+      await expect(iterator.throw(error)).rejects.toBe(error);
+      await ctx.waitForUser('Continue?');
+      return 'done';
+    });
+    const native = nativeWorker();
+    const flags = activation ? { durable_activation_v1: 'true' } : {};
+    const paused = await dispatch(native, flags);
+    expect(paused.eventType).toBe('workflow.paused');
+    const resumed = await dispatch(native, { ...flags, ...paused.metadata, user_response: 'yes' });
+    expect(JSON.parse(resumed.outputJson)).toBe('done');
+  });
+
   it.each([false, true])('does not retry a stream after exposing its iterator (activation=%s)', async activation => {
     let calls = 0;
     const streamed = fn('failed-stream').retry({ maxAttempts: 3, initialIntervalMs: 0 }).run(async function* () {

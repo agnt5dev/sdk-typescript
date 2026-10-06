@@ -409,7 +409,7 @@ export interface AgentOptions {
   sandbox?: Sandbox;
   /** Handoff targets for agent-to-agent delegation */
   handoffs?: (Agent | Handoff)[];
-  /** Model name to use (e.g., "gpt-4o-mini") */
+  /** Provider-qualified model name (e.g., "openai/gpt-4o-mini") */
   modelName?: string;
   /** LLM temperature (0.0 to 1.0) */
   temperature?: number;
