@@ -166,6 +166,14 @@ export class EventEmitter {
   }
 
   /**
+   * Drop any progress report still waiting and take no more: for a run that
+   * already has its terminal elsewhere (the gateway wrote run.cancelled).
+   */
+  discardProgress(): void {
+    this.progressReporter?.close();
+  }
+
+  /**
    * `ctx.progress` for this run. Reports are coalesced to at most one a
    * second, the latest, and each is appended to the journal at once (see
    * {@link appendNow}); the last one is appended before the run finishes.
@@ -206,7 +214,17 @@ export class EventEmitter {
     const { eventData, metadata, timestampNs } = this.prepare(event);
     metadata['cid'] = event.correlationId;
     metadata['pcid'] = event.parentCorrelationId || '';
-    await this.flushPendingCheckpoints();
+    // Lifecycle records emitted before this one go first. If that batch
+    // fails, put it back: whoever flushes next (at the latest, the end of the
+    // run) retries it and sees the failure. A progress record's own failure
+    // is best effort; a lifecycle record's isn't.
+    const batch = this.pendingCheckpoints;
+    try {
+      await this.flushPendingCheckpoints();
+    } catch (error) {
+      this.pendingCheckpoints = [...batch, ...this.pendingCheckpoints];
+      throw error;
+    }
     await this.nativeWorker.emitCheckpoint(
       this.runId,
       event.eventType,

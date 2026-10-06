@@ -35,9 +35,13 @@ export const PROGRESS_INTERVAL_MS = 1000;
 /** The longest message a report keeps. */
 export const MAX_PROGRESS_MESSAGE_CHARS = 1000;
 
+function describe(value: unknown): string {
+  return value === null ? 'null' : typeof value;
+}
+
 function finiteNumber(name: string, value: unknown): number {
   if (typeof value !== 'number') {
-    throw new TypeError(`ctx.progress: ${name} must be a number, got ${typeof value}`);
+    throw new TypeError(`ctx.progress: ${name} must be a number, got ${describe(value)}`);
   }
   if (!Number.isFinite(value)) {
     throw new RangeError(`ctx.progress: ${name} must be finite, got ${value}`);
@@ -52,16 +56,17 @@ function finiteNumber(name: string, value: unknown): number {
  */
 export function progressReport(progress: number, options: ProgressOptions = {}): ProgressReport {
   const report: ProgressReport = { progress: finiteNumber('progress', progress) };
-  if (options.total !== undefined && options.total !== null) {
+  // Only `undefined` leaves an option out; `null` is a value, and not a valid one.
+  if (options.total !== undefined) {
     const total = finiteNumber('total', options.total);
     if (total <= 0) {
       throw new RangeError(`ctx.progress: total must be positive, got ${total}`);
     }
     report.total = total;
   }
-  if (options.message !== undefined && options.message !== null) {
+  if (options.message !== undefined) {
     if (typeof options.message !== 'string') {
-      throw new TypeError(`ctx.progress: message must be a string, got ${typeof options.message}`);
+      throw new TypeError(`ctx.progress: message must be a string, got ${describe(options.message)}`);
     }
     if (options.message) {
       report.message = options.message.slice(0, MAX_PROGRESS_MESSAGE_CHARS);

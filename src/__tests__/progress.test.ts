@@ -56,6 +56,9 @@ describe('progressReport', () => {
     [[undefined], TypeError],
     [[1, { total: '10' }], TypeError],
     [[1, { message: 42 }], TypeError],
+    // Only undefined leaves an option out.
+    [[1, { total: null }], TypeError],
+    [[1, { message: null }], TypeError],
     [[Number.NaN], RangeError],
     [[Number.POSITIVE_INFINITY], RangeError],
     [[1, { total: 0 }], RangeError],
@@ -226,6 +229,61 @@ describe('EventEmitter.reportProgress', () => {
     expect(cids).toEqual(['fn-cid', 'step-cid']);
   });
 
+  it('keeps a failed lifecycle batch for the end of the run to retry', async () => {
+    const native = nativeWorker();
+    native.emitCheckpointBatch.mockRejectedValueOnce(new Error('append failed'));
+    const emitter = new EventEmitter('run-1');
+    emitter.setWorker(native);
+    const started = (eventType: string) =>
+      ({
+        eventType,
+        eventId: eventType,
+        name: 'run',
+        correlationId: 'run-cid',
+        parentCorrelationId: null,
+        timestampNs: 1n,
+        metadata: {},
+      }) as any;
+    // Coalesced lifecycle checkpoints, waiting for a barrier.
+    await emitter.emit(started('run.started'));
+    await emitter.emit(started('function.started'));
+    // The progress append is that barrier; the batch fails under it.
+    emitter.reportProgress({ progress: 1 }, SOURCE);
+    await settle();
+    expect(figures(native)).toEqual([], 'nothing written ahead of the lifecycle records');
+    // The end of the run retries the same batch, so the failure isn't lost.
+    await emitter.flush();
+    const batches = native.emitCheckpointBatch.mock.calls.map(args =>
+      (args[0] as Array<{ eventType: string }>).map(e => e.eventType),
+    );
+    expect(batches).toEqual([
+      ['run.started', 'function.started'],
+      ['run.started', 'function.started'],
+    ]);
+
+    // And a batch that keeps failing fails the run's flush.
+    const failing = nativeWorker();
+    failing.emitCheckpointBatch.mockRejectedValue(new Error('append failed'));
+    const doomed = new EventEmitter('run-2');
+    doomed.setWorker(failing);
+    await doomed.emit(started('run.started'));
+    doomed.reportProgress({ progress: 1 }, SOURCE);
+    await settle();
+    await expect(doomed.flush()).rejects.toThrow('append failed');
+  });
+
+  it('drops the waiting report of a run cancelled elsewhere', async () => {
+    const native = nativeWorker();
+    const emitter = new EventEmitter('run-1');
+    emitter.setWorker(native);
+    emitter.reportProgress({ progress: 1 }, SOURCE);
+    emitter.reportProgress({ progress: 2 }, SOURCE); // waiting out the interval
+    emitter.discardProgress();
+    await emitter.flush();
+    await settle(2000);
+    expect(figures(native)).toEqual([[1, undefined, undefined]]);
+  });
+
   it('is a no-op without a worker', () => {
     expect(new EventEmitter('run-1').reportProgress({ progress: 1 }, SOURCE)).toBe(false);
   });
@@ -245,6 +303,30 @@ describe('ctx.progress', () => {
     beforeEach(() => {
       FunctionRegistry.clear();
       WorkflowRegistry.clear();
+    });
+
+    it('a cancelled function writes nothing after the gateway cancelled it', async () => {
+      const native = nativeWorker();
+      const worker = new Worker('progress-test', { serviceVersion: '0.1.0' });
+      (worker as any).nativeWorker = native;
+      fn('embed_docs').run(async ctx => {
+        ctx.progress(1, { total: 3 });
+        ctx.progress(2, { total: 3 }); // waiting out the interval
+        // CancelExecution arrives: the gateway has written run.cancelled.
+        (worker as any).inflight.get('run-progress').abort();
+        throw new Error('aborted');
+      });
+      const result = await (worker as any)
+        .processMessage({
+          invocationId: 'run-progress',
+          componentName: 'embed_docs',
+          componentType: 'function',
+          inputJson: '{}',
+          metadata: { run_id: 'run-progress', component_name: 'embed_docs' },
+        })
+        .then(JSON.parse);
+      expect(result.eventType).toBe('run.cancelled');
+      expect(figures(native)).toEqual([[1, 3, undefined]]);
     });
 
     function dispatch(native: Native, componentName: string, componentType: string) {

@@ -1688,6 +1688,9 @@ export class Worker {
           // Flush any trailing component/session lifecycle batch first.
           try {
             try {
+              // A cancelled run already has its terminal (the gateway wrote
+              // run.cancelled): progress still waiting would land after it.
+              if (abortController.signal.aborted) emitter.discardProgress();
               await emitter.flush();
             } catch (flushError) {
               // A run whose events could not be delivered did not succeed,
