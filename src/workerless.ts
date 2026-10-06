@@ -68,6 +68,8 @@ export interface WorkerlessServeOptions<Env = unknown, RuntimeContext = unknown>
   agents?: Agent[];
   enabled?: WorkerlessEnabledResolver<Env, RuntimeContext>;
   signingSecret?: WorkerlessSigningSecretResolver<Env, RuntimeContext>;
+  /** Permit unsigned invokes when no secret resolves. Local development only; defaults to false. */
+  allowUnsigned?: boolean;
 }
 
 export interface WorkerlessManifestComponent {
@@ -187,6 +189,25 @@ type ComponentEntry = {
 export function serve<Env = unknown, RuntimeContext = unknown>(
   options: WorkerlessServeOptions<Env, RuntimeContext> = {},
 ): WorkerlessHandler<Env, RuntimeContext> {
+  let missingSecretWarned = false;
+  const warnMissingSigningSecret = () => {
+    if (!missingSecretWarned) {
+      missingSecretWarned = true;
+      console.warn(
+        'AGNT5 serverless signing secret is missing; invokes are rejected. '
+        + 'Configure signingSecret or set allowUnsigned: true for local development.',
+      );
+    }
+  };
+  if (options.allowUnsigned === true) {
+    console.warn(
+      'AGNT5 serverless allowUnsigned: true permits unsigned invokes when no '
+      + 'signing secret is configured; use only for local development.',
+    );
+  } else if (options.signingSecret === undefined
+    || (typeof options.signingSecret === 'string' && !options.signingSecret.trim())) {
+    warnMissingSigningSecret();
+  }
   const components = collectWorkerlessComponents(options);
   const manifest = buildWorkerlessManifest(options, components);
 
@@ -201,7 +222,10 @@ export function serve<Env = unknown, RuntimeContext = unknown>(
       return jsonResponse(manifest, 200);
     }
     if (isInvokeRequest) {
-      return handleInvoke(request, components, options.signingSecret, env, ctx);
+      return handleInvoke(
+        request, components, options.signingSecret, env, ctx,
+        options.allowUnsigned === true, warnMissingSigningSecret,
+      );
     }
     return jsonResponse({ error: 'not_found', message: 'AGNT5 workerless route not found' }, 404);
   };
@@ -547,6 +571,8 @@ async function handleInvoke<Env, RuntimeContext>(
   signingSecret?: WorkerlessSigningSecretResolver<Env, RuntimeContext>,
   env?: Env,
   runtimeContext?: RuntimeContext,
+  allowUnsigned = false,
+  warnMissingSigningSecret?: () => void,
 ): Promise<Response> {
   let bodyText: string;
   try {
@@ -555,8 +581,11 @@ async function handleInvoke<Env, RuntimeContext>(
     return failedResponse('WORKERLESS_INVALID_REQUEST', errorMessage(err, 'request body could not be read'), 400);
   }
 
-  const signatureFailure = await verifyWorkerlessInvokeRequest(request, bodyText, signingSecret, env, runtimeContext);
+  const signatureFailure = await verifyWorkerlessInvokeRequest(request, bodyText, signingSecret, env, runtimeContext, allowUnsigned);
   if (signatureFailure) {
+    if (signatureFailure.status === 503) {
+      warnMissingSigningSecret?.();
+    }
     return signatureFailure;
   }
 
@@ -810,10 +839,18 @@ export async function verifyWorkerlessInvokeRequest<Env = unknown, RuntimeContex
   signingSecret?: WorkerlessSigningSecretResolver<Env, RuntimeContext>,
   env?: Env,
   ctx?: RuntimeContext,
+  allowUnsigned = false,
 ): Promise<Response | undefined> {
   const secret = await resolveWorkerlessSigningSecret(signingSecret, request, env, ctx);
   if (!secret) {
-    return undefined;
+    if (allowUnsigned === true) {
+      return undefined;
+    }
+    return failedResponse(
+      'WORKERLESS_SIGNING_SECRET_REQUIRED',
+      'serverless signing secret is required; configure signingSecret or set allowUnsigned: true for local development',
+      503,
+    );
   }
 
   const timestamp = request.headers.get(SIGNATURE_TIMESTAMP_HEADER)?.trim();

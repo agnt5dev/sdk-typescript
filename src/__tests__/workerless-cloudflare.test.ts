@@ -58,7 +58,7 @@ describe('serveCloudflare()', () => {
       };
     });
 
-    const handler = serveCloudflare({ serviceName: 'cloudflare-workerless' });
+    const handler = serveCloudflare({ allowUnsigned: true, serviceName: 'cloudflare-workerless' });
     const suspended = await invoke(handler, {
       attempt: 0,
       budget: {
