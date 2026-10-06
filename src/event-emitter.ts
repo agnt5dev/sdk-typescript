@@ -112,6 +112,8 @@ export class EventEmitter {
   private progressReporter?: ProgressReporter<ProgressSource>;
   /** The run ended (terminal, flush or cancel): no more progress. */
   private progressEnded = false;
+  /** The run was cancelled elsewhere: no progress record goes out, not even one in flight. */
+  private progressDiscarded = false;
 
   constructor(
     runId: string,
@@ -181,8 +183,12 @@ export class EventEmitter {
    */
   private endProgress(sendWaiting: boolean): void {
     this.progressEnded = true;
-    if (sendWaiting) this.progressReporter?.drain();
-    else this.progressReporter?.close();
+    if (sendWaiting) {
+      this.progressReporter?.drain();
+    } else {
+      this.progressDiscarded = true;
+      this.progressReporter?.close();
+    }
   }
 
   /**
@@ -237,6 +243,9 @@ export class EventEmitter {
       this.pendingCheckpoints = [...batch, ...this.pendingCheckpoints];
       throw error;
     }
+    // The run may have been cancelled while that flush was in flight: its
+    // terminal is already written, so this progress record would land after.
+    if (this.progressDiscarded) return;
     await this.nativeWorker.emitCheckpoint(
       this.runId,
       event.eventType,

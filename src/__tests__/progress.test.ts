@@ -272,11 +272,39 @@ describe('EventEmitter.reportProgress', () => {
     await expect(doomed.flush()).rejects.toThrow('append failed');
   });
 
+  it('drops a report whose lifecycle flush was still running when the cancel came', async () => {
+    const native = nativeWorker();
+    let finishBatch!: () => void;
+    native.emitCheckpointBatch.mockImplementationOnce(
+      () => new Promise<void>(resolve => { finishBatch = resolve; }),
+    );
+    const emitter = new EventEmitter('run-1');
+    emitter.setWorker(native);
+    await emitter.emit({
+      eventType: 'run.started',
+      eventId: 'start',
+      name: 'run',
+      correlationId: 'run-cid',
+      parentCorrelationId: null,
+      timestampNs: 1n,
+      metadata: {},
+    } as any);
+    emitter.reportProgress({ progress: 1 }, SOURCE); // waits on the batch flush
+    await settle();
+    emitter.discardProgress(); // CancelExecution arrives meanwhile
+    finishBatch();
+    await settle();
+    await emitter.flush();
+    expect(native.emitCheckpointBatch).toHaveBeenCalledTimes(1);
+    expect(figures(native)).toEqual([]);
+  });
+
   it('drops the waiting report of a run cancelled elsewhere', async () => {
     const native = nativeWorker();
     const emitter = new EventEmitter('run-1');
     emitter.setWorker(native);
     emitter.reportProgress({ progress: 1 }, SOURCE);
+    await settle(); // written
     emitter.reportProgress({ progress: 2 }, SOURCE); // waiting out the interval
     emitter.discardProgress();
     await emitter.flush();
@@ -337,6 +365,7 @@ describe('ctx.progress', () => {
       (worker as any).nativeWorker = native;
       fn('embed_docs').run(async ctx => {
         ctx.progress(1, { total: 3 });
+        await new Promise(resolve => setTimeout(resolve, 0)); // written
         ctx.progress(2, { total: 3 }); // waiting out the interval
         // CancelExecution arrives: the gateway has written run.cancelled.
         (worker as any).inflight.get('run-progress').abort();
@@ -361,6 +390,7 @@ describe('ctx.progress', () => {
       (worker as any).nativeWorker = native;
       workflow('triage', async ctx => {
         ctx.progress(1, { total: 3 });
+        await new Promise(resolve => setTimeout(resolve, 0)); // written
         ctx.progress(2, { total: 3 }); // waiting out the interval
         (worker as any).inflight.get('run-progress').abort();
         throw new Error('aborted');
