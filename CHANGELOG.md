@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.10.12] - 2026-10-07
+
+### Fixed
+
+- Use core 0.3.9 so escaped worker handler errors return fenced failure responses instead of waiting for lease expiry.
+- Reject unsupported trigger filters, input mappings, batching and delays during workflow registration instead of allowing the runtime to skip them.
+- Preserve durable step and child-workflow boundaries, including function retries and checkpointed output references.
+- Record worker failures with their exception details and keep detached handler errors associated with the run.
+- Propagate cancellation through client and model requests, bound agent iterations and handoff depth, and clean up completed timeout timers.
+- Surface classification judge failures instead of returning a zero score, and recover missing classification labels when the response contains a supported label.
+- Generate the exported SDK version from package metadata and verify NodeNext imports.
+
 ### Security
 
 - **Breaking:** serverless invokes now require a non-empty signing secret. A
