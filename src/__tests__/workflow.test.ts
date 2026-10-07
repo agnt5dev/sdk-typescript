@@ -33,6 +33,18 @@ describe('Workflow', () => {
     });
   });
 
+  it.each([
+    ['filterExpression', 'true'],
+    ['inputMapping', 'data'],
+    ['batchWindowMs', 1],
+    ['delayExpression', '1s'],
+  ])('rejects unsupported trigger option %s before registration', (field, value) => {
+    expect(() => workflow('unsupported', async () => undefined, {
+      triggers: [{ triggerType: 'event', eventName: 'created', [field]: value }],
+    })).toThrow(new RegExp(`${field}.*not supported`));
+    expect(WorkflowRegistry.get('unsupported')).toBeUndefined();
+  });
+
   it('should execute workflow with context', async () => {
     const processData = workflow('process_data', async (ctx, data: string) => {
       const step1 = await ctx.step('step1', async () => data.toUpperCase());

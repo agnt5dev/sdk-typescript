@@ -120,6 +120,17 @@ export class WorkflowRegistry {
   private static workflows = new Map<string, WorkflowConfig>();
 
   static register(config: WorkflowConfig): void {
+    for (const trigger of config.triggers ?? []) {
+      const unsupported = [
+        ['filterExpression', !!trigger.filterExpression?.trim()],
+        ['inputMapping', !!trigger.inputMapping?.trim()],
+        ['batchWindowMs', (trigger.batchWindowMs ?? 0) !== 0],
+        ['delayExpression', !!trigger.delayExpression?.trim()],
+      ] as const;
+      for (const [field, set] of unsupported) {
+        if (set) throw new Error(`trigger ${field} is not supported; leave it unset`);
+      }
+    }
     if (this.workflows.has(config.name)) {
       console.warn(`Overwriting existing workflow '${config.name}'`);
     }

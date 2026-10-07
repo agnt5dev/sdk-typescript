@@ -104,6 +104,14 @@ and a version check, matching Python's workflow state persistence. State
 writes are ordered within each workflow; independent workflows can proceed
 concurrently. Standalone in-process contexts retain their local state behavior.
 
+## Event triggers
+
+Use `event(...)` or `webhook(...)` in a workflow's `triggers` declarations.
+Filtering, input mapping, batching, and delays are not supported yet. Leave
+`filterExpression`, `inputMapping`, `batchWindowMs`, and `delayExpression`
+unset; workflow registration rejects nonempty expressions and nonzero batch
+windows with an error naming the option.
+
 ## Agent limits and cancellation
 
 An agent raises `MaxIterationsExceededError` when it exhausts `maxIterations`.
