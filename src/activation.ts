@@ -57,6 +57,9 @@ export class UInt64 {
       throw new RangeError('UInt64 must be between 0 and 2^64 - 1');
     }
     this.value = converted;
+    // Frozen, so a value shared with a step's input snapshot can't change
+    // after it was hashed.
+    Object.freeze(this);
   }
 }
 
@@ -68,6 +71,7 @@ export class Float64 {
       throw new RangeError('Float64 must be finite');
     }
     this.value = value;
+    Object.freeze(this);
   }
 }
 

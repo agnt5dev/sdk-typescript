@@ -555,6 +555,16 @@ describe('step input', () => {
     expect(copy.buffer.toString('hex')).toBe('0304');
   });
 
+  it('shares numeric wrappers with the snapshot because they cannot change', () => {
+    const u = new UInt64(42n);
+    const f = new Float64(1.5);
+    const copy = normalizeStepInput({ u, f }) as { u: UInt64; f: Float64 };
+    expect(() => { (u as { value: bigint }).value = 1n; }).toThrow(TypeError);
+    expect(() => { (f as { value: number }).value = 2; }).toThrow(TypeError);
+    expect(copy.u.value).toBe(42n);
+    expect(copy.f.value).toBe(1.5);
+  });
+
   // eslint-disable-next-line no-sparse-arrays
   it.each([new Date(0), [1, undefined], [1, , 3], new Map([['a', 1]]), new Set([1]), { run: () => 1 }, new (class Order {})()])(
     'rejects an input it cannot hash faithfully: %s',

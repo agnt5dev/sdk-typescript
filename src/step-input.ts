@@ -4,7 +4,8 @@
  * objects, arrays and bytes are copied, which makes the result a snapshot: the step
  * hashes it and its body receives it, so the body runs on exactly the value
  * that was checked. Values the canonical encoding already accepts keep their
- * digests. Anything else (a `Date`, a `Map`, a class instance, an `undefined`
+ * digests. `UInt64` and `Float64` are frozen, so they're shared rather than
+ * copied. Anything else (a `Date`, a `Map`, a class instance, an `undefined`
  * array item) is passed through for the encoding to reject by type.
  */
 export function normalizeStepInput(value: unknown): unknown {
