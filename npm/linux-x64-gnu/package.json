@@ -1,6 +1,6 @@
 {
   "name": "@agnt5/sdk-linux-x64-gnu",
-  "version": "0.10.12",
+  "version": "0.10.13",
   "cpu": [
     "x64"
   ],
