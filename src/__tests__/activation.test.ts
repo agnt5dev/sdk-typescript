@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   ActivationClient,
+  activationRequestFromContext,
   ActivationDecision,
   ActivationKind,
   ActivationRecoveryPolicy,
@@ -542,6 +543,16 @@ describe('step input', () => {
       expect(decoder.decode(canonicalActivationValue(normalizeStepInput(value))))
         .toBe(decoder.decode(canonicalActivationValue(value)));
     }
+  });
+
+  it('hashes a function or tool input with an undefined field as if the field were absent', async () => {
+    const context = { invocationId: 'inv-1', runId: 'run-1', serviceName: 'coding-agent', metadata };
+    const digestOf = async (input: unknown) => btoa(String.fromCharCode(...(await activationRequestFromContext(context, {
+      kind: ActivationKind.Function, stableKey: 'function:code_sync:0', input, recoveryPolicy: ActivationRecoveryPolicy.IdempotentRetry,
+    })).inputDigest));
+    expect(await digestOf([{ main_code: 'x', sandbox_id: undefined }])).toBe(await digestOf([{ main_code: 'x' }]));
+    // Inputs that already worked keep their digests (the Go SDK's frozen vector).
+    expect(await digestOf({ name: 'alpha', count: 2 })).toBe('+6akLLE8ses5QeK62PHHkobScg7gWMdae1Zh105nCzM=');
   });
 
   it('copies bytes into the snapshot and keeps a Buffer a Buffer', () => {

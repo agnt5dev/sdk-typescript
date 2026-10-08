@@ -225,6 +225,34 @@ describe('Tool', () => {
     expect(ctx.activation).toBeUndefined();
   });
 
+  it('runs a durable tool call whose arguments have an undefined field', async () => {
+    let received: unknown;
+    tool('lookup', { description: 'Look up', recoveryPolicy: 'idempotent_retry' },
+      async (_ctx, args: { id: string; region?: string }) => { received = args; return 'found'; });
+    const registered = ToolRegistry.get('lookup')!;
+    let capturedRequest: BeginActivationRequest | undefined;
+    const client = {
+      async run(request: BeginActivationRequest, execute: () => Promise<unknown>, options: any) {
+        capturedRequest = request;
+        await options.onAdmitted({ kind: 'EXECUTE', activationId: 'actv1_tool', attempt: 1, acceptedJournalOffset: 7n, fenceToken: new Uint8Array([1]) });
+        return { result: await execute(), receipt: {} };
+      },
+    };
+    const ctx = new ContextImpl('inv-1', 'run-1', 0, 'agent', {
+      metadata: {
+        durable_activation_v1: 'true', project_id: 'project-1', component_name: 'agent',
+        worker_session_id: 'worker-session-1', run_authority: 'run-authority-1', lease_authority: 'lease-authority-1',
+        activation_definition_version: 'v1', activation_artifact_sha256: '00'.repeat(32), activation_definition_config: '["object",[]]',
+      },
+    });
+    ctx.setActivationClient(client as unknown as ActivationClient);
+
+    await expect(registered.invoke(ctx, { id: 'a-1', region: undefined }, 'call-1')).resolves.toBe('found');
+    expect(received).toEqual({ id: 'a-1' });
+    expect(Object.keys(received as object)).toEqual(['id']);
+    expect(JSON.parse(new TextDecoder().decode(capturedRequest?.inputData)).arguments).toEqual({ id: 'a-1' });
+  });
+
   it('defaults effectful tools to unknown outcome and fails closed without a client', async () => {
     tool('ordinary', { description: 'Ordinary effect' }, async () => 'done');
     const registered = ToolRegistry.get('ordinary')!;

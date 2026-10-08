@@ -58,6 +58,28 @@ describe('workflow execution boundaries', () => {
     }
   });
 
+  // A retrying function's durable activation hashes its input. An optional
+  // field left undefined (the coding-agent template's sandbox_id on its first
+  // iteration) failed with INVALID_ARGUMENT before the body ran.
+  it.each(['in a step', 'directly'])('runs a retrying function whose input has an undefined field (%s)', async how => {
+    const received: unknown[] = [];
+    const sync = fn('code_sync').retry({ maxAttempts: 3, initialIntervalMs: 0 })
+      .run(async (_ctx, input: { main_code: string; sandbox_id?: string }) => { received.push(input); return 'synced'; });
+    workflow('parent-workflow', async ctx => {
+      const input = { main_code: 'x', sandbox_id: undefined as string | undefined };
+      return how === 'in a step' ? ctx.step('sync-step', () => sync(ctx, input)) : sync(ctx, input);
+    });
+    const native = nativeWorker();
+    const result = await dispatch(native, { durable_activation_v1: 'true' });
+    expect(result.eventType).toBe('run.completed');
+    expect(JSON.parse(result.outputJson)).toBe('synced');
+    // The body runs on the input the activation hashed: the undefined field dropped.
+    expect(received).toEqual([{ main_code: 'x' }]);
+    expect(Object.keys(received[0] as object)).toEqual(['main_code']);
+    const functionBegin = native.beginActivation.mock.calls.map(([request]) => request).find(request => request.kind === 2);
+    expect(JSON.parse(new TextDecoder().decode(functionBegin.inputData))).toEqual([{ main_code: 'x' }]);
+  });
+
   it.each([false, true])('replays direct streaming functions (activation=%s)', async activation => {
     let calls = 0;
     const direct = fn('streamed').run(async function* () { calls++; yield 'one'; yield 'two'; } as any);
