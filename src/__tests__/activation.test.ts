@@ -544,6 +544,17 @@ describe('step input', () => {
     }
   });
 
+  it('copies bytes into the snapshot and keeps a Buffer a Buffer', () => {
+    const bytes = new Uint8Array([1, 2]);
+    const buffer = Buffer.from([3, 4]);
+    const copy = normalizeStepInput({ bytes, buffer }) as { bytes: Uint8Array; buffer: Buffer };
+    bytes[0] = 9;
+    buffer[0] = 9;
+    expect([...copy.bytes]).toEqual([1, 2]);
+    expect(Buffer.isBuffer(copy.buffer)).toBe(true);
+    expect(copy.buffer.toString('hex')).toBe('0304');
+  });
+
   // eslint-disable-next-line no-sparse-arrays
   it.each([new Date(0), [1, undefined], [1, , 3], new Map([['a', 1]]), new Set([1]), { run: () => 1 }, new (class Order {})()])(
     'rejects an input it cannot hash faithfully: %s',

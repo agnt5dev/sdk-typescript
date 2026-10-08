@@ -9,11 +9,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
-- The step body receives its input: `ctx.step('charge', ({ orderId }) => charge(orderId), { input: { orderId } })`. `StepOptions.input`, available since 0.10.12, was only checked on replay. `input` is required when the body declares a parameter, and its type is inferred from it. Steps without an input are unchanged and still send the digest of `null`.
+- The step body receives its input: `ctx.step('charge', ({ orderId }) => charge(orderId), { input: { orderId } })`. `StepOptions.input`, available since 0.10.12, was only checked on replay. `input` is required when the body declares a parameter, and its type is inferred from it; it can't be `undefined` there (pass `value ?? null`), because `undefined` and `null` hash the same. Steps without an input are unchanged and still send the digest of `null`.
 
 ### Fixed
 
-- A step input with an `undefined` property (`{ note: undefined }`) no longer fails the step with `INVALID_ARGUMENT`. The step takes a copy of the input when it's called, with `undefined` properties dropped, then hashes that copy and runs the body on it, so changing the object afterwards affects neither. Inputs that worked before keep their digests. An array with a hole, which hashed a malformed value, is now rejected like any `undefined` array item. A `Date`, `Map`, `Set`, function or other class instance is still rejected; pass dates as strings.
+- A step input with an `undefined` property (`{ note: undefined }`) no longer fails the step with `INVALID_ARGUMENT`. The step takes a copy of the input when it's called, with `undefined` properties dropped, then hashes that copy and runs the body on it, so changing the object or its bytes afterwards affects neither. Inputs that worked before keep their digests. An array with a hole, which hashed a malformed value, is now rejected like any `undefined` array item. A `Date`, `Map`, `Set`, function or other class instance is still rejected; pass dates as strings.
 
 ## [0.10.12] - 2026-10-07
 

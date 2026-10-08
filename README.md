@@ -74,7 +74,8 @@ change and the recorded result still comes back. Derive an input from the
 workflow input or earlier step results, never from `Date.now()` or random IDs,
 or every replay fails. The step takes a copy of the input when it's called,
 with `undefined` properties dropped, and the body runs on that copy. Pass plain
-data: dates as strings (`toISOString()`). A `Date`, `Map`, `Set`, function,
+data: dates as strings (`toISOString()`), and `value ?? null` for a value that
+may be `undefined`, since `undefined` and `null` hash the same. A `Date`, `Map`, `Set`, function,
 other class instance or `undefined` array item is rejected. The input is also
 shown on the step's journal record, so pass a secret's name rather than its
 value.

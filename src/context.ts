@@ -270,7 +270,7 @@ export class ContextImpl implements Context {
     return await this.storage.delete(key);
   }
 
-  step<T, I>(
+  step<T, I extends {} | null>(
     stepName: string,
     fn: (input: I) => T | Promise<T>,
     options: StepOptions<I> & { input: I },

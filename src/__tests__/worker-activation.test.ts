@@ -389,13 +389,18 @@ describe('managed worker durable activations', () => {
   it('runs the body on the input snapshot the step hashed', async () => {
     let seen: unknown;
     workflow('durable-workflow', async ctx => {
-      const input: { amount: number; note?: string } = { amount: 5, note: undefined };
+      const input: { amount: number; note?: string; card: Uint8Array } = {
+        amount: 5,
+        note: undefined,
+        card: new Uint8Array([1, 2]),
+      };
       const pending = ctx.step('charge', value => {
-        seen = value;
+        seen = { amount: value.amount, card: [...value.card], keys: Object.keys(value) };
         return value.amount;
       }, { input });
       // Changed while the begin is in flight: neither the hash nor the body sees it.
       input.amount = 9;
+      input.card[0] = 9;
       return pending;
     });
     const native = activationNative();
@@ -405,10 +410,9 @@ describe('managed worker durable activations', () => {
     const response = await dispatch(worker);
 
     expect(JSON.parse(response.outputJson)).toBe(5);
-    expect(seen).toEqual({ amount: 5 });
-    expect(Object.keys(seen as object)).toEqual(['amount']);
+    expect(seen).toEqual({ amount: 5, card: [1, 2], keys: ['amount', 'card'] });
     const begin = native.beginActivation.mock.calls[0][0];
-    expect(JSON.parse(decoder.decode(begin.inputData)).input).toEqual({ amount: 5 });
+    expect(JSON.parse(decoder.decode(begin.inputData)).input).toEqual({ amount: 5, card: { 0: 1, 1: 2 } });
   });
 
   it('fails a replay whose step input changed instead of returning the old output', async () => {

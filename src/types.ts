@@ -83,7 +83,8 @@ export interface StepOptions<I = unknown> {
    *
    * The step takes a copy when it's called, with `undefined` properties
    * dropped, and both hashes it and passes it to the body. Pass plain data:
-   * dates as strings (`toISOString()`), no `undefined` array items. A `Date`,
+   * dates as strings (`toISOString()`), `null` rather than `undefined`, no
+   * `undefined` array items. A `Date`,
    * `Map`, `Set`, function or other class instance is rejected. The input is
    * also shown on the step's journal record, so keep secrets out of it.
    */
@@ -149,9 +150,11 @@ export interface Context {
    * Execute and checkpoint a step that takes an input. `fn` receives
    * `options.input`, which is required when `fn` declares it:
    * `ctx.step('charge', ({ orderId }) => charge(orderId), { input: { orderId } })`.
+   * The input can't be `undefined`: it would hash the same as `null` while
+   * the body saw a different value, so pass `value ?? null`.
    */
   // Listed first: a step body's parameter types come from the first overload.
-  step<T, I>(
+  step<T, I extends {} | null>(
     stepName: string,
     fn: (input: I) => T | Promise<T>,
     options: StepOptions<I> & { input: I },
