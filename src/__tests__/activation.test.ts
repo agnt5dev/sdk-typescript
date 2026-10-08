@@ -15,6 +15,7 @@ import {
   boundedInputData,
   canonicalActivationValue,
   childActivationRequestFromContext,
+  normalizeStepInput,
   sha256,
   stableStepKey,
   stepActivationRequest,
@@ -480,4 +481,68 @@ describe('durable activation V1 contract', () => {
     }
     expect(execute).not.toHaveBeenCalled();
   });
+});
+
+describe('step input', () => {
+  const metadata = {
+    project_id: 'project-1',
+    worker_session_id: 'worker-1',
+    run_authority: 'run-authority',
+    lease_authority: 'lease-authority',
+    activation_definition_version: 'v1',
+    activation_artifact_sha256: '00'.repeat(32),
+    activation_definition_config: '["object",[]]',
+  };
+  const step = (input?: unknown) => stepActivationRequest({
+    metadata,
+    invocationId: 'inv-1',
+    runId: 'run-1',
+    componentName: 'workflow',
+    stepName: 'load',
+    ordinal: 0,
+    input,
+  });
+  const digest = async (input?: unknown) => btoa(String.fromCharCode(...(await step(input)).inputDigest));
+
+  it('digests no input as null and a given input like Go does', async () => {
+    // Existing steps without an input keep sending the digest of null.
+    expect(await digest()).toBe(btoa(String.fromCharCode(...await sha256(encoder.encode('["null"]')))));
+    // The Go SDK's frozen vector for the same value.
+    expect(await digest({ name: 'alpha', count: 2 })).toBe('+6akLLE8ses5QeK62PHHkobScg7gWMdae1Zh105nCzM=');
+  });
+
+  it('hashes an input as JSON would carry it', async () => {
+    const at = '2026-10-08T00:00:00.000Z';
+    expect(await digest({ name: 'alpha', count: 2, note: undefined }))
+      .toBe(await digest({ name: 'alpha', count: 2 }));
+    expect(await digest({ at: new Date(at) })).toBe(await digest({ at }));
+    expect(await digest([1, undefined])).toBe(await digest([1, null]));
+    // eslint-disable-next-line no-sparse-arrays
+    expect(await digest([1, , 3])).toBe(await digest([1, null, 3]));
+    expect(decodeInput((await step({ at: new Date(at), skip: undefined })).inputData)).toEqual({
+      step_name: 'load',
+      step_key: 'step:load:0',
+      input: { at },
+    });
+  });
+
+  it('leaves inputs the canonical encoding accepts as they are', () => {
+    const accepted: unknown[] = [
+      { name: 'alpha', count: 2, nested: [true, 'x', null] },
+      { bytes: new Uint8Array([0, 255]), big: 2n, u: new UInt64(42n), f: new Float64(1) },
+      JSON.parse('{"__proto__": {"a": 1}, "b": 2}'),
+      Object.assign(Object.create(null), { a: 1 }),
+    ];
+    for (const value of accepted) {
+      expect(decoder.decode(canonicalActivationValue(normalizeStepInput(value))))
+        .toBe(decoder.decode(canonicalActivationValue(value)));
+    }
+  });
+
+  it.each([new Map([['a', 1]]), new Set([1]), { run: () => 1 }, new (class Order {})()])(
+    'rejects an input it cannot hash faithfully: %s',
+    async value => {
+      await expect(step(value)).rejects.toBeInstanceOf(ActivationError);
+    },
+  );
 });

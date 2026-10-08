@@ -368,6 +368,74 @@ describe('managed worker durable activations', () => {
     expect(stepCheckpoints(native)).toHaveLength(0);
   });
 
+  it('passes the step input to the body and records it', async () => {
+    workflow('durable-workflow', async ctx => ctx.step(
+      'charge',
+      ({ orderId, amount }) => `${orderId}:${amount}`,
+      { input: { orderId: 'o-1', amount: 5 } },
+    ));
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    const response = await dispatch(worker);
+
+    expect(response.eventType).toBe('run.completed');
+    expect(JSON.parse(response.outputJson)).toBe('o-1:5');
+    const begin = native.beginActivation.mock.calls[0][0];
+    expect(JSON.parse(decoder.decode(begin.inputData)).input).toEqual({ orderId: 'o-1', amount: 5 });
+  });
+
+  it('fails a replay whose step input changed instead of returning the old output', async () => {
+    // Like the runtime: keep each step's first input digest, replay a begin
+    // with the same one, and answer a different one with CONFLICT.
+    const recorded = new Map<string, { digest: string; output?: Uint8Array }>();
+    const native = activationNative({
+      beginActivation: vi.fn(async (request: any) => {
+        const id = await activationId(
+          request.projectId,
+          request.runId,
+          request.parentActivationId,
+          request.kind,
+          request.stableKey,
+        );
+        const digest = btoa(String.fromCharCode(...request.inputDigest));
+        const seen = recorded.get(id);
+        if (!seen) {
+          recorded.set(id, { digest });
+          return { kind: 'EXECUTE', activationId: id, attempt: 1, acceptedJournalOffset: 11n, fenceToken: encoder.encode('fence-1') };
+        }
+        if (seen.digest !== digest) {
+          return { kind: 'CONFLICT', activationId: id, attempt: 0, acceptedJournalOffset: 0n };
+        }
+        return { kind: 'REPLAY', activationId: id, attempt: 1, acceptedJournalOffset: 12n, replayOutput: seen.output };
+      }),
+      completeActivation: vi.fn(async (request: any) => {
+        recorded.get(request.activationId)!.output = request.output;
+        return { activationId: request.activationId, attempt: request.attempt, acceptedJournalOffset: 12n, replayed: false };
+      }),
+    });
+    let amount = 5;
+    let executions = 0;
+    workflow('durable-workflow', async ctx => ctx.step('charge', input => {
+      executions += 1;
+      return input.amount;
+    }, { input: { orderId: 'o-1', amount } }));
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    expect(JSON.parse((await dispatch(worker)).outputJson)).toBe(5);
+    // The same input replays the recorded output without running the body.
+    expect(JSON.parse((await dispatch(worker)).outputJson)).toBe(5);
+    expect(executions).toBe(1);
+
+    amount = 7;
+    const changed = await dispatch(worker);
+    expect(changed.eventType).toBe('run.failed');
+    expect(changed.error).toContain('stable step key was reused with different input');
+    expect(executions).toBe(1);
+  });
+
   it('does not complete the run when completion acknowledgement is lost', async () => {
     let executions = 0;
     workflow('durable-workflow', async ctx => ctx.step('charge', async () => {

@@ -269,8 +269,13 @@ export class ContextImpl implements Context {
     return await this.storage.delete(key);
   }
 
-  async step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T> {
+  async step<T, I = undefined>(
+    stepName: string,
+    fn: (input: I) => T | Promise<T>,
+    options?: StepOptions<I>,
+  ): Promise<T> {
     const ordinal = nextActivationOrdinal('step') ?? this._activationStepCounter++;
+    const body = () => fn(options?.input as I);
     if (this._activationClient) {
       const request = await stepActivationRequest({
         metadata: this.metadata || {},
@@ -291,7 +296,7 @@ export class ContextImpl implements Context {
             'step activation executed without admitted authority',
           );
         }
-        return runWithActivation(decision, () => runInWorkflowStep(fn));
+        return runWithActivation(decision, () => runInWorkflowStep(body));
       }, {
         encodeOutput: encodeJson,
         decodeOutput: value => decodeJson<T>(value),
@@ -311,7 +316,7 @@ export class ContextImpl implements Context {
     }
 
     // Execute step
-    const result = await runInWorkflowStep(fn);
+    const result = await runInWorkflowStep(body);
 
     // Checkpoint result
     await this.storage.setCheckpoint(checkpointKey, result);

@@ -95,7 +95,11 @@ export class WorkerlessContext implements Context {
     return this.state.delete(key);
   }
 
-  async step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T> {
+  async step<T, I = undefined>(
+    stepName: string,
+    fn: (input: I) => T | Promise<T>,
+    options?: StepOptions<I>,
+  ): Promise<T> {
     const checkpointKey = options?.key ? `step:${stepName}:${options.key}` : `step:${stepName}`;
     this.visitedStepCheckpointKeys.add(checkpointKey);
     const existingCheckpoint = this.checkpoints.get(checkpointKey);
@@ -104,7 +108,7 @@ export class WorkerlessContext implements Context {
     }
     this.warnIfPotentialUnsafeStepChange(stepName, checkpointKey);
 
-    const result = await runInWorkflowStep(fn);
+    const result = await runInWorkflowStep(() => fn(options?.input as I));
     this.checkpoints.set(checkpointKey, result);
     return result;
   }

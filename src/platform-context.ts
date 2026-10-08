@@ -112,7 +112,11 @@ export class PlatformContext implements Context {
   /**
    * Execute a step with checkpointing
    */
-  async step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T> {
+  async step<T, I = undefined>(
+    stepName: string,
+    fn: (input: I) => T | Promise<T>,
+    options?: StepOptions<I>,
+  ): Promise<T> {
     const checkpointKey = options?.key
       ? `checkpoint:${stepName}:${options.key}`
       : `checkpoint:${stepName}`;
@@ -130,7 +134,7 @@ export class PlatformContext implements Context {
       this.span.addEvent('step.started', { step: stepName });
 
       // Execute step
-      const result = await fn();
+      const result = await fn(options?.input as I);
 
       // Checkpoint result
       const json = JSON.stringify(result);

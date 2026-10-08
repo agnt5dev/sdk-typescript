@@ -347,13 +347,14 @@ export async function stepActivationRequest(
     metadata.activation_definition_config || '["object",[]]',
   );
   const stableKey = stableStepKey(options.stepName, options.ordinal, options.explicitKey);
+  const input = normalizeStepInput(options.input) ?? null;
   return {
     projectId,
     runId: options.runId,
     parentActivationId: currentActivation()?.activationId || metadata.parent_activation_id || '',
     kind: ActivationKind.Step,
     stableKey,
-    inputDigest: await sha256(canonicalActivationValue(options.input ?? null)),
+    inputDigest: await sha256(canonicalActivationValue(input)),
     definitionDigest: await activationDefinitionDigest(
       decodeSha256(metadata.activation_artifact_sha256 || ''),
       options.componentName,
@@ -368,9 +369,37 @@ export async function stepActivationRequest(
     inputData: boundedInputData({
       step_name: options.stepName,
       step_key: stableKey,
-      input: options.input ?? null,
+      input,
     }),
   };
+}
+
+/**
+ * A step input as JSON would carry it, so ordinary TypeScript objects hash:
+ * `undefined` properties are dropped, `undefined` and missing array items
+ * become `null`, and objects with `toJSON` (a `Date`) become its result.
+ * Everything the canonical encoding already accepts is left as it is, so
+ * those inputs keep their digests. Anything else (a `Map`, a class instance,
+ * a function) is passed through for the encoding to reject by type.
+ */
+export function normalizeStepInput(value: unknown, inArray = false): unknown {
+  if (value === undefined) return inArray ? null : undefined;
+  if (value === null || typeof value !== 'object') return value;
+  if (value instanceof Uint8Array || value instanceof UInt64 || value instanceof Float64) {
+    return value;
+  }
+  if (Array.isArray(value)) return Array.from(value, item => normalizeStepInput(item, true));
+  const toJSON = (value as { toJSON?: unknown }).toJSON;
+  if (typeof toJSON === 'function') return normalizeStepInput(toJSON.call(value), inArray);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  // No prototype, so a parsed `__proto__` key stays an ordinary key.
+  const normalized: Record<string, unknown> = Object.create(null);
+  for (const [key, item] of Object.entries(value)) {
+    const next = normalizeStepInput(item);
+    if (next !== undefined) normalized[key] = next;
+  }
+  return normalized;
 }
 
 export async function timerActivationRequest(

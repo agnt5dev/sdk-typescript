@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- The step body receives its input: `ctx.step('charge', ({ orderId }) => charge(orderId), { input: { orderId } })`. `StepOptions.input`, available since 0.10.12, was only checked on replay. `input` is required when the body declares a parameter, and its type is inferred from it. Steps without an input are unchanged and still send the digest of `null`.
+
+### Fixed
+
+- A step input is hashed as JSON would carry it, so ordinary objects work as inputs. Before, an `undefined` property (`{ note: undefined }`) or a `Date` failed the step with `INVALID_ARGUMENT`, and an array with a hole hashed a malformed value. Now `undefined` properties are dropped, `undefined` and missing array items become `null`, and a `Date` becomes its ISO string. Inputs that worked before keep their digests. `Map`, `Set`, functions and other class instances are still rejected.
+
 ## [0.10.12] - 2026-10-07
 
 ### Fixed

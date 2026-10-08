@@ -73,9 +73,20 @@ export type FunctionHandler<TInput = any, TOutput = any> = (
   ...args: TInput[]
 ) => Promise<TOutput> | TOutput;
 
-export interface StepOptions {
-  /** Input included in durable replay validation. */
-  input?: unknown;
+export interface StepOptions<I = unknown> {
+  /**
+   * The step's input, passed to the step body. On the durable runtime it is
+   * hashed into the step's identity check: a replay whose input differs from
+   * the recorded one fails with `NON_DETERMINISTIC_REPLAY` instead of
+   * returning the recorded output. Derive it from the workflow input or
+   * earlier step outputs, never from `Date.now()` or random values.
+   *
+   * It is hashed as JSON would carry it: `undefined` properties are dropped,
+   * `undefined` array items become `null`, and a `Date` becomes its ISO
+   * string. `Map`, `Set`, functions and other class instances are rejected.
+   * It is also shown on the step's journal record, so keep secrets out of it.
+   */
+  input?: I;
   /** Stable identity required for reordered, repeated, or concurrent work. */
   key?: string;
 }
@@ -133,6 +144,17 @@ export interface Context {
   delete(key: string): Promise<boolean>;
 
   // Checkpointing
+  /**
+   * Execute and checkpoint a step that takes an input. `fn` receives
+   * `options.input`, which is required when `fn` declares it:
+   * `ctx.step('charge', ({ orderId }) => charge(orderId), { input: { orderId } })`.
+   */
+  // Listed first: a step body's parameter types come from the first overload.
+  step<T, I>(
+    stepName: string,
+    fn: (input: I) => T | Promise<T>,
+    options: StepOptions<I> & { input: I },
+  ): Promise<T>;
   /** Execute and checkpoint a step */
   step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T>;
   /** Suspend when the runtime budget is close to expiring. */

@@ -395,7 +395,11 @@ class EntityContext implements Context {
     return await this.storage.delete(this.entityKey, key);
   }
 
-  async step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T> {
+  async step<T, I = undefined>(
+    stepName: string,
+    fn: (input: I) => T | Promise<T>,
+    options?: StepOptions<I>,
+  ): Promise<T> {
     const cacheKey = options?.key ? `${stepName}:${options.key}` : stepName;
     const checkpointKey = options?.key
       ? `checkpoint:${stepName}:${options.key}`
@@ -414,7 +418,7 @@ class EntityContext implements Context {
     }
 
     // Execute step
-    const result = await fn();
+    const result = await fn(options?.input as I);
 
     // Save checkpoint
     await this.storage.set(this.entityKey, checkpointKey, result);

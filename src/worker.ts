@@ -897,13 +897,14 @@ class SimpleContext implements Context {
    * On the legacy path: runs fn(), caches result, emits checkpoints.
    * On replay: returns cached result without re-executing.
    */
-  async step<T>(
+  async step<T, I = undefined>(
     stepName: string,
-    fn: () => T | Promise<T>,
-    options?: StepOptions,
+    fn: (input: I) => T | Promise<T>,
+    options?: StepOptions<I>,
   ): Promise<T> {
     const ordinal = nextActivationOrdinal('step') ?? this._stepCounter++;
     const stepKey = stableStepKey(stepName, ordinal, options?.key);
+    const body = () => fn(options?.input as I);
 
     if (this._activationClient) {
       const request = await stepActivationRequest({
@@ -927,7 +928,7 @@ class SimpleContext implements Context {
         }
         const admitted = decision;
         return runWithActivation(admitted, () =>
-          this.runWithCorrelation(admitted.activationId, () => this.runStepSpan(stepName, fn)));
+          this.runWithCorrelation(admitted.activationId, () => this.runStepSpan(stepName, body)));
       }, {
         encodeOutput: encodeActivationJson,
         decodeOutput: value => decodeActivationJson<T>(value),
@@ -982,7 +983,7 @@ class SimpleContext implements Context {
 
     // Execute the step
     const startMs = Date.now();
-    const result = await this.runStepSpan(stepName, fn);
+    const result = await this.runStepSpan(stepName, body);
     const durationMs = Date.now() - startMs;
 
     // Cache locally
