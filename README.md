@@ -55,6 +55,31 @@ export const prepareReport = workflow(
 );
 ```
 
+Give a step its input with `input` and the body receives it. On a managed
+worker, replay compares it with the input the step first ran with. If it
+changed, the step raises `NON_DETERMINISTIC_REPLAY` instead of returning the
+old result. Serverless and local runs pass the input to the body without
+checking it:
+
+```typescript
+const receipt = await ctx.step(
+  'charge',
+  ({ orderId, amount }) => charge(orderId, amount),
+  { input: { orderId, amount } },
+);
+```
+
+A step without `input` isn't checked this way: values its closure captures can
+change and the recorded result still comes back. Derive an input from the
+workflow input or earlier step results, never from `Date.now()` or random IDs,
+or every replay fails. The step takes a copy of the input when it's called,
+with `undefined` properties dropped, and the body runs on that copy. Pass plain
+data: dates as strings (`toISOString()`), and `value ?? null` for a value that
+may be `undefined`, since `undefined` and `null` hash the same. A `Date`, `Map`, `Set`, function,
+other class instance or `undefined` array item is rejected. The input is also
+shown on the step's journal record, so pass a secret's name rather than its
+value.
+
 Keep step names and ordering stable across retries so completed work can be
 reused. Direct calls to functions created with `fn(...).run(...)` also create a
 checkpoint when called from a managed workflow. An explicit `ctx.step` keeps

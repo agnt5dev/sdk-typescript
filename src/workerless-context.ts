@@ -4,6 +4,7 @@ import type { HITLInputType, HITLOption } from './errors.js';
 import { emptyRuntimeContext } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
 import type { Context, Logger, StepOptions } from './types.js';
+import { normalizeStepInput } from './step-input.js';
 import { callerFromMetadata } from './caller.js';
 import type { Caller } from './caller.js';
 import { progressReport } from './progress.js';
@@ -95,7 +96,19 @@ export class WorkerlessContext implements Context {
     return this.state.delete(key);
   }
 
-  async step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T> {
+  step<T, I extends {} | null>(
+    stepName: string,
+    fn: (input: I) => T | Promise<T>,
+    options: StepOptions<I> & { input: I },
+  ): Promise<T>;
+  step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T>;
+  async step<T, I = undefined>(
+    stepName: string,
+    fn: (input: I) => T | Promise<T>,
+    options?: StepOptions<I>,
+  ): Promise<T> {
+    // The value the step hashes and its body receives, taken once, now.
+    const input = normalizeStepInput(options?.input) as I;
     const checkpointKey = options?.key ? `step:${stepName}:${options.key}` : `step:${stepName}`;
     this.visitedStepCheckpointKeys.add(checkpointKey);
     const existingCheckpoint = this.checkpoints.get(checkpointKey);
@@ -104,7 +117,7 @@ export class WorkerlessContext implements Context {
     }
     this.warnIfPotentialUnsafeStepChange(stepName, checkpointKey);
 
-    const result = await runInWorkflowStep(fn);
+    const result = await runInWorkflowStep(() => fn(input));
     this.checkpoints.set(checkpointKey, result);
     return result;
   }

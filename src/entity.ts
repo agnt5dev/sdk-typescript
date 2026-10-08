@@ -5,6 +5,7 @@
  */
 
 import type { Context, EntityMethod, Logger, StepOptions } from './types.js';
+import { normalizeStepInput } from './step-input.js';
 import { ConfigurationError } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import Database from 'better-sqlite3';
@@ -395,7 +396,13 @@ class EntityContext implements Context {
     return await this.storage.delete(this.entityKey, key);
   }
 
-  async step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T> {
+  async step<T, I = undefined>(
+    stepName: string,
+    fn: (input: I) => T | Promise<T>,
+    options?: StepOptions<I>,
+  ): Promise<T> {
+    // The value the step hashes and its body receives, taken once, now.
+    const input = normalizeStepInput(options?.input) as I;
     const cacheKey = options?.key ? `${stepName}:${options.key}` : stepName;
     const checkpointKey = options?.key
       ? `checkpoint:${stepName}:${options.key}`
@@ -414,7 +421,7 @@ class EntityContext implements Context {
     }
 
     // Execute step
-    const result = await fn();
+    const result = await fn(input);
 
     // Save checkpoint
     await this.storage.set(this.entityKey, checkpointKey, result);

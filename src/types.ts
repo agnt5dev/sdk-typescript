@@ -73,9 +73,22 @@ export type FunctionHandler<TInput = any, TOutput = any> = (
   ...args: TInput[]
 ) => Promise<TOutput> | TOutput;
 
-export interface StepOptions {
-  /** Input included in durable replay validation. */
-  input?: unknown;
+export interface StepOptions<I = unknown> {
+  /**
+   * The step's input, passed to the step body. On the durable runtime it is
+   * hashed into the step's identity check: a replay whose input differs from
+   * the recorded one fails with `NON_DETERMINISTIC_REPLAY` instead of
+   * returning the recorded output. Derive it from the workflow input or
+   * earlier step outputs, never from `Date.now()` or random values.
+   *
+   * The step takes a copy when it's called, with `undefined` properties
+   * dropped, and both hashes it and passes it to the body. Pass plain data:
+   * dates as strings (`toISOString()`), `null` rather than `undefined`, no
+   * `undefined` array items. A `Date`,
+   * `Map`, `Set`, function or other class instance is rejected. The input is
+   * also shown on the step's journal record, so keep secrets out of it.
+   */
+  input?: I;
   /** Stable identity required for reordered, repeated, or concurrent work. */
   key?: string;
 }
@@ -133,6 +146,19 @@ export interface Context {
   delete(key: string): Promise<boolean>;
 
   // Checkpointing
+  /**
+   * Execute and checkpoint a step that takes an input. `fn` receives
+   * `options.input`, which is required when `fn` declares it:
+   * `ctx.step('charge', ({ orderId }) => charge(orderId), { input: { orderId } })`.
+   * The input can't be `undefined`: it would hash the same as `null` while
+   * the body saw a different value, so pass `value ?? null`.
+   */
+  // Listed first: a step body's parameter types come from the first overload.
+  step<T, I extends {} | null>(
+    stepName: string,
+    fn: (input: I) => T | Promise<T>,
+    options: StepOptions<I> & { input: I },
+  ): Promise<T>;
   /** Execute and checkpoint a step */
   step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T>;
   /** Suspend when the runtime budget is close to expiring. */

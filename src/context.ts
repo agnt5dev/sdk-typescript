@@ -24,6 +24,7 @@ import {
   runWithActivation,
   stepActivationRequest,
 } from './activation.js';
+import { normalizeStepInput } from './step-input.js';
 import type { ActivationDecision, ActivationExecution } from './activation.js';
 import { callerFromMetadata } from './caller.js';
 import type { Caller } from './caller.js';
@@ -269,8 +270,21 @@ export class ContextImpl implements Context {
     return await this.storage.delete(key);
   }
 
-  async step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T> {
+  step<T, I extends {} | null>(
+    stepName: string,
+    fn: (input: I) => T | Promise<T>,
+    options: StepOptions<I> & { input: I },
+  ): Promise<T>;
+  step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T>;
+  async step<T, I = undefined>(
+    stepName: string,
+    fn: (input: I) => T | Promise<T>,
+    options?: StepOptions<I>,
+  ): Promise<T> {
     const ordinal = nextActivationOrdinal('step') ?? this._activationStepCounter++;
+    // The value the step hashes and its body receives, taken once, now.
+    const input = normalizeStepInput(options?.input) as I;
+    const body = () => fn(input);
     if (this._activationClient) {
       const request = await stepActivationRequest({
         metadata: this.metadata || {},
@@ -280,7 +294,7 @@ export class ContextImpl implements Context {
         stepName,
         ordinal,
         explicitKey: options?.key,
-        input: options?.input,
+        input,
       });
       const startMs = Date.now();
       let decision: ActivationDecision | undefined;
@@ -291,7 +305,7 @@ export class ContextImpl implements Context {
             'step activation executed without admitted authority',
           );
         }
-        return runWithActivation(decision, () => runInWorkflowStep(fn));
+        return runWithActivation(decision, () => runInWorkflowStep(body));
       }, {
         encodeOutput: encodeJson,
         decodeOutput: value => decodeJson<T>(value),
@@ -311,7 +325,7 @@ export class ContextImpl implements Context {
     }
 
     // Execute step
-    const result = await runInWorkflowStep(fn);
+    const result = await runInWorkflowStep(body);
 
     // Checkpoint result
     await this.storage.setCheckpoint(checkpointKey, result);

@@ -22,6 +22,7 @@ import {
   timerActivationRequest,
 } from '../activation.js';
 import { ContextImpl } from '../context.js';
+import { normalizeStepInput } from '../step-input.js';
 import { ActivationError, ActivationErrorCode } from '../errors.js';
 
 const encoder = new TextEncoder();
@@ -480,4 +481,95 @@ describe('durable activation V1 contract', () => {
     }
     expect(execute).not.toHaveBeenCalled();
   });
+});
+
+describe('step input', () => {
+  const metadata = {
+    project_id: 'project-1',
+    worker_session_id: 'worker-1',
+    run_authority: 'run-authority',
+    lease_authority: 'lease-authority',
+    activation_definition_version: 'v1',
+    activation_artifact_sha256: '00'.repeat(32),
+    activation_definition_config: '["object",[]]',
+  };
+  const step = (input?: unknown) => stepActivationRequest({
+    metadata,
+    invocationId: 'inv-1',
+    runId: 'run-1',
+    componentName: 'workflow',
+    stepName: 'load',
+    ordinal: 0,
+    input,
+  });
+  const digest = async (input?: unknown) => btoa(String.fromCharCode(...(await step(input)).inputDigest));
+
+  it('digests no input as null and a given input like Go does', async () => {
+    // Existing steps without an input keep sending the digest of null.
+    expect(await digest()).toBe(btoa(String.fromCharCode(...await sha256(encoder.encode('["null"]')))));
+    // The Go SDK's frozen vector for the same value.
+    expect(await digest({ name: 'alpha', count: 2 })).toBe('+6akLLE8ses5QeK62PHHkobScg7gWMdae1Zh105nCzM=');
+  });
+
+  it('drops undefined properties from the hashed input', async () => {
+    expect(await digest({ name: 'alpha', count: 2, note: undefined }))
+      .toBe(await digest({ name: 'alpha', count: 2 }));
+    expect(await digest({ order: { id: 'o-1', coupon: undefined }, items: [{ sku: 'a', gift: undefined }] }))
+      .toBe(await digest({ order: { id: 'o-1' }, items: [{ sku: 'a' }] }));
+    expect(decodeInput((await step({ at: '2026-10-08', skip: undefined })).inputData)).toEqual({
+      step_name: 'load',
+      step_key: 'step:load:0',
+      input: { at: '2026-10-08' },
+    });
+  });
+
+  it('gives a local step body the input with undefined properties dropped', async () => {
+    const ctx = new ContextImpl('inv', 'run', 0, 'local', { storage: 'memory' });
+    const input: { amount: number; note?: string } = { amount: 2, note: undefined };
+    const pending = ctx.step('double', value => ({ doubled: value.amount * 2, keys: Object.keys(value) }), { input });
+    input.amount = 9;
+    await expect(pending).resolves.toEqual({ doubled: 4, keys: ['amount'] });
+  });
+
+  it('leaves inputs the canonical encoding accepts as they are', () => {
+    const accepted: unknown[] = [
+      { name: 'alpha', count: 2, nested: [true, 'x', null] },
+      { bytes: new Uint8Array([0, 255]), big: 2n, u: new UInt64(42n), f: new Float64(1) },
+      JSON.parse('{"__proto__": {"a": 1}, "b": 2}'),
+      Object.assign(Object.create(null), { a: 1 }),
+    ];
+    for (const value of accepted) {
+      expect(decoder.decode(canonicalActivationValue(normalizeStepInput(value))))
+        .toBe(decoder.decode(canonicalActivationValue(value)));
+    }
+  });
+
+  it('copies bytes into the snapshot and keeps a Buffer a Buffer', () => {
+    const bytes = new Uint8Array([1, 2]);
+    const buffer = Buffer.from([3, 4]);
+    const copy = normalizeStepInput({ bytes, buffer }) as { bytes: Uint8Array; buffer: Buffer };
+    bytes[0] = 9;
+    buffer[0] = 9;
+    expect([...copy.bytes]).toEqual([1, 2]);
+    expect(Buffer.isBuffer(copy.buffer)).toBe(true);
+    expect(copy.buffer.toString('hex')).toBe('0304');
+  });
+
+  it('shares numeric wrappers with the snapshot because they cannot change', () => {
+    const u = new UInt64(42n);
+    const f = new Float64(1.5);
+    const copy = normalizeStepInput({ u, f }) as { u: UInt64; f: Float64 };
+    expect(() => { (u as { value: bigint }).value = 1n; }).toThrow(TypeError);
+    expect(() => { (f as { value: number }).value = 2; }).toThrow(TypeError);
+    expect(copy.u.value).toBe(42n);
+    expect(copy.f.value).toBe(1.5);
+  });
+
+  // eslint-disable-next-line no-sparse-arrays
+  it.each([new Date(0), [1, undefined], [1, , 3], new Map([['a', 1]]), new Set([1]), { run: () => 1 }, new (class Order {})()])(
+    'rejects an input it cannot hash faithfully: %s',
+    async value => {
+      await expect(step(value)).rejects.toBeInstanceOf(ActivationError);
+    },
+  );
 });

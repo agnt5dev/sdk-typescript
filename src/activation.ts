@@ -4,6 +4,7 @@ import { ActivationError, ActivationErrorCode } from './errors.js';
 import { measureBusiness } from './core-metrics.js';
 import { isControlFlow } from './control-flow.js';
 import { currentDisplayParentCorrelationId, runWithDisplayParent } from './display-parent-context.js';
+import { normalizeStepInput } from './step-input.js';
 
 export const DURABLE_ACTIVATION_V1 = 'durable_activation_v1';
 const IDENTITY_DOMAIN = utf8('agnt5.activation.identity.v1\0');
@@ -56,6 +57,9 @@ export class UInt64 {
       throw new RangeError('UInt64 must be between 0 and 2^64 - 1');
     }
     this.value = converted;
+    // Frozen, so a value shared with a step's input snapshot can't change
+    // after it was hashed.
+    Object.freeze(this);
   }
 }
 
@@ -67,6 +71,7 @@ export class Float64 {
       throw new RangeError('Float64 must be finite');
     }
     this.value = value;
+    Object.freeze(this);
   }
 }
 
@@ -347,13 +352,14 @@ export async function stepActivationRequest(
     metadata.activation_definition_config || '["object",[]]',
   );
   const stableKey = stableStepKey(options.stepName, options.ordinal, options.explicitKey);
+  const input = normalizeStepInput(options.input) ?? null;
   return {
     projectId,
     runId: options.runId,
     parentActivationId: currentActivation()?.activationId || metadata.parent_activation_id || '',
     kind: ActivationKind.Step,
     stableKey,
-    inputDigest: await sha256(canonicalActivationValue(options.input ?? null)),
+    inputDigest: await sha256(canonicalActivationValue(input)),
     definitionDigest: await activationDefinitionDigest(
       decodeSha256(metadata.activation_artifact_sha256 || ''),
       options.componentName,
@@ -368,7 +374,7 @@ export async function stepActivationRequest(
     inputData: boundedInputData({
       step_name: options.stepName,
       step_key: stableKey,
-      input: options.input ?? null,
+      input,
     }),
   };
 }
