@@ -15,7 +15,6 @@ import {
   boundedInputData,
   canonicalActivationValue,
   childActivationRequestFromContext,
-  normalizeStepInput,
   sha256,
   stableStepKey,
   stepActivationRequest,
@@ -23,6 +22,7 @@ import {
   timerActivationRequest,
 } from '../activation.js';
 import { ContextImpl } from '../context.js';
+import { normalizeStepInput } from '../step-input.js';
 import { ActivationError, ActivationErrorCode } from '../errors.js';
 
 const encoder = new TextEncoder();
@@ -511,19 +511,24 @@ describe('step input', () => {
     expect(await digest({ name: 'alpha', count: 2 })).toBe('+6akLLE8ses5QeK62PHHkobScg7gWMdae1Zh105nCzM=');
   });
 
-  it('hashes an input as JSON would carry it', async () => {
-    const at = '2026-10-08T00:00:00.000Z';
+  it('drops undefined properties from the hashed input', async () => {
     expect(await digest({ name: 'alpha', count: 2, note: undefined }))
       .toBe(await digest({ name: 'alpha', count: 2 }));
-    expect(await digest({ at: new Date(at) })).toBe(await digest({ at }));
-    expect(await digest([1, undefined])).toBe(await digest([1, null]));
-    // eslint-disable-next-line no-sparse-arrays
-    expect(await digest([1, , 3])).toBe(await digest([1, null, 3]));
-    expect(decodeInput((await step({ at: new Date(at), skip: undefined })).inputData)).toEqual({
+    expect(await digest({ order: { id: 'o-1', coupon: undefined }, items: [{ sku: 'a', gift: undefined }] }))
+      .toBe(await digest({ order: { id: 'o-1' }, items: [{ sku: 'a' }] }));
+    expect(decodeInput((await step({ at: '2026-10-08', skip: undefined })).inputData)).toEqual({
       step_name: 'load',
       step_key: 'step:load:0',
-      input: { at },
+      input: { at: '2026-10-08' },
     });
+  });
+
+  it('gives a local step body the input with undefined properties dropped', async () => {
+    const ctx = new ContextImpl('inv', 'run', 0, 'local', { storage: 'memory' });
+    const input: { amount: number; note?: string } = { amount: 2, note: undefined };
+    const pending = ctx.step('double', value => ({ doubled: value.amount * 2, keys: Object.keys(value) }), { input });
+    input.amount = 9;
+    await expect(pending).resolves.toEqual({ doubled: 4, keys: ['amount'] });
   });
 
   it('leaves inputs the canonical encoding accepts as they are', () => {
@@ -539,7 +544,8 @@ describe('step input', () => {
     }
   });
 
-  it.each([new Map([['a', 1]]), new Set([1]), { run: () => 1 }, new (class Order {})()])(
+  // eslint-disable-next-line no-sparse-arrays
+  it.each([new Date(0), [1, undefined], [1, , 3], new Map([['a', 1]]), new Set([1]), { run: () => 1 }, new (class Order {})()])(
     'rejects an input it cannot hash faithfully: %s',
     async value => {
       await expect(step(value)).rejects.toBeInstanceOf(ActivationError);

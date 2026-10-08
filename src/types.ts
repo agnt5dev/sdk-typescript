@@ -81,10 +81,11 @@ export interface StepOptions<I = unknown> {
    * returning the recorded output. Derive it from the workflow input or
    * earlier step outputs, never from `Date.now()` or random values.
    *
-   * It is hashed as JSON would carry it: `undefined` properties are dropped,
-   * `undefined` array items become `null`, and a `Date` becomes its ISO
-   * string. `Map`, `Set`, functions and other class instances are rejected.
-   * It is also shown on the step's journal record, so keep secrets out of it.
+   * The step takes a copy when it's called, with `undefined` properties
+   * dropped, and both hashes it and passes it to the body. Pass plain data:
+   * dates as strings (`toISOString()`), no `undefined` array items. A `Date`,
+   * `Map`, `Set`, function or other class instance is rejected. The input is
+   * also shown on the step's journal record, so keep secrets out of it.
    */
   input?: I;
   /** Stable identity required for reordered, repeated, or concurrent work. */

@@ -13,7 +13,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
-- A step input is hashed as JSON would carry it, so ordinary objects work as inputs. Before, an `undefined` property (`{ note: undefined }`) or a `Date` failed the step with `INVALID_ARGUMENT`, and an array with a hole hashed a malformed value. Now `undefined` properties are dropped, `undefined` and missing array items become `null`, and a `Date` becomes its ISO string. Inputs that worked before keep their digests. `Map`, `Set`, functions and other class instances are still rejected.
+- A step input with an `undefined` property (`{ note: undefined }`) no longer fails the step with `INVALID_ARGUMENT`. The step takes a copy of the input when it's called, with `undefined` properties dropped, then hashes that copy and runs the body on it, so changing the object afterwards affects neither. Inputs that worked before keep their digests. An array with a hole, which hashed a malformed value, is now rejected like any `undefined` array item. A `Date`, `Map`, `Set`, function or other class instance is still rejected; pass dates as strings.
 
 ## [0.10.12] - 2026-10-07
 

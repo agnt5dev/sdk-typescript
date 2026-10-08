@@ -3,6 +3,7 @@
  */
 
 import type { Context, Logger, StepOptions } from './types.js';
+import { normalizeStepInput } from './step-input.js';
 import { StateError, CheckpointError, ConfigurationError } from './errors.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import { loadNativeBindings, tryLoadNativeBindings } from '#native-loader';
@@ -112,11 +113,19 @@ export class PlatformContext implements Context {
   /**
    * Execute a step with checkpointing
    */
+  step<T, I>(
+    stepName: string,
+    fn: (input: I) => T | Promise<T>,
+    options: StepOptions<I> & { input: I },
+  ): Promise<T>;
+  step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T>;
   async step<T, I = undefined>(
     stepName: string,
     fn: (input: I) => T | Promise<T>,
     options?: StepOptions<I>,
   ): Promise<T> {
+    // The value the step hashes and its body receives, taken once, now.
+    const input = normalizeStepInput(options?.input) as I;
     const checkpointKey = options?.key
       ? `checkpoint:${stepName}:${options.key}`
       : `checkpoint:${stepName}`;
@@ -134,7 +143,7 @@ export class PlatformContext implements Context {
       this.span.addEvent('step.started', { step: stepName });
 
       // Execute step
-      const result = await fn(options?.input as I);
+      const result = await fn(input);
 
       // Checkpoint result
       const json = JSON.stringify(result);

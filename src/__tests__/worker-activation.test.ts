@@ -386,6 +386,31 @@ describe('managed worker durable activations', () => {
     expect(JSON.parse(decoder.decode(begin.inputData)).input).toEqual({ orderId: 'o-1', amount: 5 });
   });
 
+  it('runs the body on the input snapshot the step hashed', async () => {
+    let seen: unknown;
+    workflow('durable-workflow', async ctx => {
+      const input: { amount: number; note?: string } = { amount: 5, note: undefined };
+      const pending = ctx.step('charge', value => {
+        seen = value;
+        return value.amount;
+      }, { input });
+      // Changed while the begin is in flight: neither the hash nor the body sees it.
+      input.amount = 9;
+      return pending;
+    });
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    const response = await dispatch(worker);
+
+    expect(JSON.parse(response.outputJson)).toBe(5);
+    expect(seen).toEqual({ amount: 5 });
+    expect(Object.keys(seen as object)).toEqual(['amount']);
+    const begin = native.beginActivation.mock.calls[0][0];
+    expect(JSON.parse(decoder.decode(begin.inputData)).input).toEqual({ amount: 5 });
+  });
+
   it('fails a replay whose step input changed instead of returning the old output', async () => {
     // Like the runtime: keep each step's first input digest, replay a begin
     // with the same one, and answer a different one with CONFLICT.

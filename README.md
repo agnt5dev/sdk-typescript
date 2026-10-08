@@ -72,10 +72,12 @@ const receipt = await ctx.step(
 A step without `input` isn't checked this way: values its closure captures can
 change and the recorded result still comes back. Derive an input from the
 workflow input or earlier step results, never from `Date.now()` or random IDs,
-or every replay fails. It is compared as JSON would carry it (`undefined`
-properties are dropped and a `Date` becomes its ISO string), and `Map`, `Set`,
-functions and other class instances are rejected. The input is also shown on
-the step's journal record, so pass a secret's name rather than its value.
+or every replay fails. The step takes a copy of the input when it's called,
+with `undefined` properties dropped, and the body runs on that copy. Pass plain
+data: dates as strings (`toISOString()`). A `Date`, `Map`, `Set`, function,
+other class instance or `undefined` array item is rejected. The input is also
+shown on the step's journal record, so pass a secret's name rather than its
+value.
 
 Keep step names and ordering stable across retries so completed work can be
 reused. Direct calls to functions created with `fn(...).run(...)` also create a

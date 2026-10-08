@@ -4,6 +4,7 @@ import { ActivationError, ActivationErrorCode } from './errors.js';
 import { measureBusiness } from './core-metrics.js';
 import { isControlFlow } from './control-flow.js';
 import { currentDisplayParentCorrelationId, runWithDisplayParent } from './display-parent-context.js';
+import { normalizeStepInput } from './step-input.js';
 
 export const DURABLE_ACTIVATION_V1 = 'durable_activation_v1';
 const IDENTITY_DOMAIN = utf8('agnt5.activation.identity.v1\0');
@@ -372,34 +373,6 @@ export async function stepActivationRequest(
       input,
     }),
   };
-}
-
-/**
- * A step input as JSON would carry it, so ordinary TypeScript objects hash:
- * `undefined` properties are dropped, `undefined` and missing array items
- * become `null`, and objects with `toJSON` (a `Date`) become its result.
- * Everything the canonical encoding already accepts is left as it is, so
- * those inputs keep their digests. Anything else (a `Map`, a class instance,
- * a function) is passed through for the encoding to reject by type.
- */
-export function normalizeStepInput(value: unknown, inArray = false): unknown {
-  if (value === undefined) return inArray ? null : undefined;
-  if (value === null || typeof value !== 'object') return value;
-  if (value instanceof Uint8Array || value instanceof UInt64 || value instanceof Float64) {
-    return value;
-  }
-  if (Array.isArray(value)) return Array.from(value, item => normalizeStepInput(item, true));
-  const toJSON = (value as { toJSON?: unknown }).toJSON;
-  if (typeof toJSON === 'function') return normalizeStepInput(toJSON.call(value), inArray);
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) return value;
-  // No prototype, so a parsed `__proto__` key stays an ordinary key.
-  const normalized: Record<string, unknown> = Object.create(null);
-  for (const [key, item] of Object.entries(value)) {
-    const next = normalizeStepInput(item);
-    if (next !== undefined) normalized[key] = next;
-  }
-  return normalized;
 }
 
 export async function timerActivationRequest(

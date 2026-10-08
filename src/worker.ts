@@ -75,6 +75,7 @@ import {
   stepActivationRequest,
   timerActivationRequest,
 } from './activation.js';
+import { normalizeStepInput } from './step-input.js';
 import type { ActivationExecution } from './activation.js';
 import { installProcessErrorGuards } from './process-errors.js';
 import { runInWorkflowStep, assertWorkflowWaitBoundary, assertWorkflowStreamsClosed } from './step-scope.js';
@@ -904,7 +905,9 @@ class SimpleContext implements Context {
   ): Promise<T> {
     const ordinal = nextActivationOrdinal('step') ?? this._stepCounter++;
     const stepKey = stableStepKey(stepName, ordinal, options?.key);
-    const body = () => fn(options?.input as I);
+    // The value the step hashes and its body receives, taken once, now.
+    const input = normalizeStepInput(options?.input) as I;
+    const body = () => fn(input);
 
     if (this._activationClient) {
       const request = await stepActivationRequest({
@@ -915,7 +918,7 @@ class SimpleContext implements Context {
         stepName,
         ordinal,
         explicitKey: options?.key,
-        input: options?.input,
+        input,
       });
       const startMs = Date.now();
       let decision: ActivationDecision | undefined;
