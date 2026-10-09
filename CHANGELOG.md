@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.10.14] - 2026-10-09
+
 ### Fixed
 
 - A workflow no longer fails with `durable activation INVALID_ARGUMENT: unsupported canonical activation value type undefined` when it calls a function that has `.retry()`, or a durable tool, with an input field that is `undefined` (an optional field not set yet). Function, tool, model-call and child activations now drop `undefined` properties before hashing, as steps have since 0.10.13, and a retrying function or durable tool runs on that same normalized input. Inputs that worked before keep their digests.
