@@ -51,4 +51,11 @@ describe('agent dispatch input', () => {
     expect(result.eventType).not.toBe('run.failed');
     expect(received).toEqual(['hello']);
   });
+
+  it('passes an empty `input` through rather than its JSON', async () => {
+    const { result, received } = await dispatch({ input: '' });
+
+    expect(result.eventType).not.toBe('run.failed');
+    expect(received).toEqual(['']);
+  });
 });
