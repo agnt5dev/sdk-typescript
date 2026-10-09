@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- An agent published as an MCP tool now receives the caller's message. A hosted MCP server forwards the tool's `{ input, session_id }` arguments unchanged, and the worker only read `prompt` or `message`, so the agent got the whole arguments object as a JSON string. It now uses a string `input` when neither is set.
+
 ## [0.10.14] - 2026-10-09
 
 ### Fixed

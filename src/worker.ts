@@ -1541,7 +1541,13 @@ export class Worker {
 
               // Consume the agent stream so internal events (agent.started,
               // iteration.started, tool_call.started, etc.) are forwarded to the platform.
-              const userMessage = inputData.prompt || inputData.message || JSON.stringify(inputData);
+              // Agents published as MCP tools take `{ input, session_id? }`
+              // (AGENT_INPUT_SCHEMA), which the hosted MCP server forwards
+              // unchanged, so a string `input` is the message too.
+              const userMessage = inputData.prompt
+                || inputData.message
+                || (typeof inputData.input === 'string' && inputData.input)
+                || JSON.stringify(inputData);
               let agentResult: AgentResult | undefined;
 
               const iterator = agent.stream(userMessage, ctx, history, { managedSpan: true })[Symbol.asyncIterator]();
