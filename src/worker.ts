@@ -1543,11 +1543,11 @@ export class Worker {
               // iteration.started, tool_call.started, etc.) are forwarded to the platform.
               // Agents published as MCP tools take `{ input, session_id? }`
               // (AGENT_INPUT_SCHEMA), which the hosted MCP server forwards
-              // unchanged, so a string `input` is the message too.
+              // unchanged, so a string `input` is the message too, even an
+              // empty one (the schema allows it).
               const userMessage = inputData.prompt
                 || inputData.message
-                || (typeof inputData.input === 'string' && inputData.input)
-                || JSON.stringify(inputData);
+                || (typeof inputData.input === 'string' ? inputData.input : JSON.stringify(inputData));
               let agentResult: AgentResult | undefined;
 
               const iterator = agent.stream(userMessage, ctx, history, { managedSpan: true })[Symbol.asyncIterator]();
