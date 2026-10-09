@@ -5,6 +5,7 @@ import { ActivationError, ActivationErrorCode } from './errors.js';
 import type { Context, FunctionOptions } from './types.js';
 import { isControlFlow } from './control-flow.js';
 import { encodeActivationOutput, decodeActivationOutput } from './activation-output.js';
+import { normalizeStepInput } from './step-input.js';
 export { isControlFlow } from './control-flow.js';
 
 function attempts(options: FunctionOptions): number {
@@ -26,23 +27,29 @@ export async function retrySleep(ms: number, signal?: AbortSignal): Promise<void
   finally { if (timer !== undefined) clearTimeout(timer); }
 }
 
-/** Nested function retries share one durable identity and runtime-owned attempts. */
-export async function executeFunction<T>(ctx: Context, name: string, input: unknown, options: FunctionOptions, execute: (context: Context) => Promise<T>, canRetry: () => boolean = () => true): Promise<T> {
+/**
+ * Nested function retries share one durable identity and runtime-owned attempts.
+ * `execute` receives the input to run on: under durable retries that's the
+ * snapshot the activation hashed (undefined properties dropped), otherwise the
+ * input as given.
+ */
+export async function executeFunction<T>(ctx: Context, name: string, input: unknown, options: FunctionOptions, execute: (context: Context, input: unknown) => Promise<T>, canRetry: () => boolean = () => true): Promise<T> {
   const maxAttempts = attempts(options);
   const anyCtx = ctx as Context & { getActivationClient?(): ActivationClient; allocateActivationKey?(kind: string, name: string): string };
   if (maxAttempts > 1 && ctx.metadata?.durable_activation_v1 === 'true') {
     const client = anyCtx.getActivationClient?.();
     const key = anyCtx.allocateActivationKey?.('function', name);
     if (!client || !key) throw new ActivationError(ActivationErrorCode.DurabilityUnavailable, 'nested retries require activation authority');
+    const snapshot = normalizeStepInput(input);
     const request = await activationRequestFromContext(ctx, {
-      kind: ActivationKind.Function, stableKey: key, input,
+      kind: ActivationKind.Function, stableKey: key, input: snapshot,
       recoveryPolicy: ActivationRecoveryPolicy.IdempotentRetry, displayName: name,
     });
     let decision: ActivationDecision | undefined;
     const start = Date.now();
     const { result } = await client.run(request, () => {
       throwIfAborted(ctx.signal);
-      return runWithActivation(decision!, () => execute(attemptContext(ctx, decision!.attempt - 1)));
+      return runWithActivation(decision!, () => execute(attemptContext(ctx, decision!.attempt - 1), snapshot));
     }, {
       encodeOutput: encodeActivationOutput,
       decodeOutput: decodeActivationOutput<T>,
@@ -58,7 +65,7 @@ export async function executeFunction<T>(ctx: Context, name: string, input: unkn
   }
   for (let attempt = 1; ; attempt++) {
     throwIfAborted(ctx.signal);
-    try { return await execute(attemptContext(ctx, attempt - 1)); }
+    try { return await execute(attemptContext(ctx, attempt - 1), input); }
     catch (error) {
       if (attempt >= maxAttempts || !canRetry() || ctx.signal?.aborted || isControlFlow(error)) throw error;
       await retrySleep(retryDelay(options, attempt), ctx.signal);

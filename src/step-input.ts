@@ -1,9 +1,10 @@
 /**
- * A step input with `undefined` object properties dropped, as JSON would
- * carry it, so an optional field left unset doesn't fail the step. Plain
- * objects, arrays and bytes are copied, which makes the result a snapshot: the step
- * hashes it and its body receives it, so the body runs on exactly the value
- * that was checked. Values the canonical encoding already accepts keep their
+ * A step's or other activation's input (a retrying function's arguments, a
+ * tool call's arguments) with `undefined` object properties dropped, as JSON
+ * would carry it, so an optional field left unset doesn't fail the canonical
+ * encoding. Plain objects, arrays and bytes are copied, which makes the result
+ * a snapshot: the activation hashes it and its body receives it, so the body
+ * runs on exactly the value that was checked. Values the canonical encoding already accepts keep their
  * digests. `UInt64` and `Float64` are frozen, so they're shared rather than
  * copied. Anything else (a `Date`, a `Map`, a class instance, an `undefined`
  * array item) is passed through for the encoding to reject by type.

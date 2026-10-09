@@ -22,6 +22,7 @@ import {
   runWithActivation,
 } from './activation.js';
 import type { ActivationDecision } from './activation.js';
+import { normalizeStepInput } from './step-input.js';
 
 type EvalToolFaultSpec = {
   tool?: string;
@@ -145,15 +146,17 @@ export class Tool<TInput = any, TOutput = any> {
           'runtime negotiated durable_activation_v1 but no activation client is available',
         );
       }
+      // The arguments the activation hashes, and the ones the handler runs on.
+      const toolArgs = normalizeStepInput(args) as Record<string, any>;
       const request = await activationRequestFromContext(ctx, {
         kind: ActivationKind.Tool,
         stableKey: stableKey ? `tool:${this.name}:${stableKey}` : sequentialToolKey(ctx, this.name),
-        input: { name: this.name, arguments: args },
+        input: { name: this.name, arguments: toolArgs },
         recoveryPolicy: this.recoveryPolicy,
         displayName: this.name,
         inputData: {
           name: this.name,
-          arguments: args,
+          arguments: toolArgs,
           tool_call_id: options?.toolCallId ?? stableKey ?? null,
           iteration: options?.iteration ?? null,
         },
@@ -169,7 +172,7 @@ export class Tool<TInput = any, TOutput = any> {
             'tool activation executed without admitted authority',
           );
         }
-        return runWithActivation(decision, () => this.invokeHandler(ctx, args, options?.span));
+        return runWithActivation(decision, () => this.invokeHandler(ctx, toolArgs, options?.span));
       }, {
         encodeOutput: value => {
           const encoded = JSON.stringify(value);

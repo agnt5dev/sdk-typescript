@@ -644,6 +644,9 @@ export async function activationRequestFromContext(
   },
 ): Promise<BeginActivationRequest> {
   const metadata = context.metadata || {};
+  // As steps do: an undefined property (an optional field not set yet) is
+  // dropped, as JSON would drop it, instead of failing the canonical encoding.
+  const input = normalizeStepInput(options.input);
   const projectId = metadata.project_id || metadata.tenant_id || '';
   const workerSessionId = metadata.worker_session_id || metadata.worker_id || '';
   const runAuthority = metadata.run_authority || context.invocationId;
@@ -663,7 +666,7 @@ export async function activationRequestFromContext(
     parentActivationId: currentActivation()?.activationId || metadata.parent_activation_id || '',
     kind: options.kind,
     stableKey: options.stableKey,
-    inputDigest: await sha256(canonicalActivationValue(options.input)),
+    inputDigest: await sha256(canonicalActivationValue(input)),
     definitionDigest: options.definitionDigest ?? await activationDefinitionDigest(
       decodeSha256(metadata.activation_artifact_sha256 || ''),
       componentName,
@@ -678,7 +681,7 @@ export async function activationRequestFromContext(
     displayName: options.displayName ?? options.stableKey,
     displayParentCorrelationId: currentDisplayParentCorrelationId(),
     inputData: boundedInputData(
-      options.inputData !== undefined ? options.inputData : options.input,
+      options.inputData !== undefined ? options.inputData : input,
     ),
   };
 }
