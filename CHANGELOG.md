@@ -5,11 +5,11 @@ All notable changes to the AGNT5 TypeScript SDK are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.15] - 2026-10-09
 
 ### Fixed
 
-- An agent published as an MCP tool now receives the caller's message. A hosted MCP server forwards the tool's `{ input, session_id }` arguments unchanged, and the worker only read `prompt` or `message`, so the agent got the whole arguments object as a JSON string. It now uses a string `input` when neither is set.
+- An agent published as an MCP tool now receives the caller's message. A hosted MCP server forwards the tool's `{ input, session_id }` arguments unchanged, and the worker only read `prompt` or `message`, so the agent got the whole arguments object as a JSON string. It now uses a string `input` when neither is set, an empty one included.
 
 ## [0.10.14] - 2026-10-09
 
