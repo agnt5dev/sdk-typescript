@@ -182,7 +182,9 @@ jobs:
     needs: build-native-linux
     runs-on: ${{ matrix.runner }}
     container:
-      image: node:20-bullseye-slim
+      # Docker's official image through ECR Public: Docker Hub's anonymous
+      # pull limit failed this job and blocked the npm publish.
+      image: public.ecr.aws/docker/library/node:20-bullseye-slim
     strategy:
       fail-fast: false
       matrix:
