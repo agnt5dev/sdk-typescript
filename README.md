@@ -1,11 +1,19 @@
+<p align="center">
+  <a href="https://agnt5.com"><img src="https://agnt5.com/images/github/github-repo-sdk-banner.png" alt="AGNT5: the reliable platform for AI agents and workflows" width="100%"></a>
+</p>
+
 # AGNT5 TypeScript SDK
 
-[![CI](https://github.com/agnt5dev/agnt5/actions/workflows/runtime-ci.yml/badge.svg)](https://github.com/agnt5dev/agnt5/actions/workflows/runtime-ci.yml)
+[![npm](https://img.shields.io/npm/v/@agnt5/sdk)](https://www.npmjs.com/package/@agnt5/sdk)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Build reliable AI agents and durable workflows with TypeScript. The SDK
-provides typed components, workflow checkpoints, retries, streaming, tools,
-human-in-the-loop coordination, evaluation, and runtime observability.
+Build reliable AI agents and durable workflows with TypeScript. AGNT5
+checkpoints each workflow step, so a run that fails partway resumes from its
+last completed step instead of starting over. The SDK provides typed functions
+and workflows, retries, streaming, tool calling, multi-agent handoffs,
+human-in-the-loop (HITL) approvals, MCP, evals, and runtime observability.
+
+[Documentation](https://agnt5.com/docs) · [Starter templates](https://github.com/agnt5dev/templates) · [Website](https://agnt5.com)
 
 ## Requirements
 
@@ -229,26 +237,6 @@ The shared Rust foundation lives in
 adapters live in
 [`agnt5dev/sdk-integrations`](https://github.com/agnt5dev/sdk-integrations).
 
-## Development
-
-```bash
-npm ci
-npm run build:ts
-npm test
-```
-
-Native binding development also requires a stable Rust toolchain and a sibling
-checkout of `sdk-core`.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues according to
-[SECURITY.md](SECURITY.md).
-
-## License
-
-Licensed under the [Apache License 2.0](LICENSE).
-
 ## Managed evaluation
 
 Use `client.eval()` to run a registered component and score its output through
@@ -270,21 +258,6 @@ For multiple inputs, use `client.batchEval(component, items, { maxConcurrency: 5
 Each item is evaluated through the managed endpoint. `maxConcurrency` must be a
 positive integer. Local custom scorer calls remain available through `runScorer`;
 they do not create a managed experiment run or provide an offline dataset runner.
-
-## Release verification
-
-A successful npm upload does not guarantee immediate package availability. npm
-scans new versions and may hold them for review. The release workflow waits up
-to 20 minutes (plus request time) for public native-package metadata and tarballs
-before publishing the main SDK, then verifies the main package too.
-
-If a version remains unavailable, inspect its scan/staged status in npm using a
-maintainer account. Complete any required review or appeal through npm. Do not
-keep retrying an immutable version that returns "previously staged version";
-a new version alone does not resolve a scan or approval hold.
-
-See [npm publish-time scanning](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/)
-and [staged publishing](https://docs.npmjs.com/staged-publishing/).
 
 ## Response wait
 
@@ -348,3 +321,38 @@ invokes when no secret resolves and logs a warning at startup. It still verifies
 requests when a secret is configured. Missing static secrets warn at startup;
 an empty request-time resolver warns on its first failed invoke. AGNT5 activation
 and dispatch still require a signing secret, regardless of this SDK option.
+
+## Development
+
+```bash
+npm ci
+npm run build:ts
+npm test
+```
+
+Native binding development also requires a stable Rust toolchain and a sibling
+checkout of `sdk-core`.
+
+## Release verification
+
+A successful npm upload does not guarantee immediate package availability. npm
+scans new versions and may hold them for review. The release workflow waits up
+to 20 minutes (plus request time) for public native-package metadata and tarballs
+before publishing the main SDK, then verifies the main package too.
+
+If a version remains unavailable, inspect its scan/staged status in npm using a
+maintainer account. Complete any required review or appeal through npm. Do not
+keep retrying an immutable version that returns "previously staged version";
+a new version alone does not resolve a scan or approval hold.
+
+See [npm publish-time scanning](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/)
+and [staged publishing](https://docs.npmjs.com/staged-publishing/).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues according to
+[SECURITY.md](SECURITY.md).
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
