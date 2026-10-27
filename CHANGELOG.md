@@ -5,6 +5,12 @@ All notable changes to the AGNT5 TypeScript SDK are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.16] - 2026-10-27
+
+### Fixed
+
+- Client requests and worker session-history reads and writes now default to `https://gw.agnt5.com` when `AGNT5_GATEWAY_URL` is unset or empty. They previously fell back to `http://localhost:34181`, which could send a separately started app to localhost even when its worker used the managed gateway. Explicit `gatewayUrl` options and environment overrides keep their precedence. For a local runtime, set its gateway URL explicitly.
+
 ## [0.10.15] - 2026-10-09
 
 ### Fixed

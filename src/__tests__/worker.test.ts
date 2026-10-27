@@ -60,6 +60,7 @@ vi.mock('#native-loader', () => {
 
 let originalDashboardURL: string | undefined;
 const workerEnvKeys = [
+  'AGNT5_GATEWAY_URL',
   'AGNT5_PROJECT_ID',
   'AGNT5_DEPLOYMENT_ID',
   'AGNT5_WORKER_MODE',
@@ -120,6 +121,29 @@ it('uses the canonical agent session entity key', async () => {
   expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
     '/v1/entity/AgentSession/agent:helper:session-1/get',
   );
+});
+
+it.each([
+  { name: 'unset gateway', gateway: undefined, expected: 'https://gw.agnt5.com' },
+  { name: 'empty gateway', gateway: '', expected: 'https://gw.agnt5.com' },
+  { name: 'explicit local gateway', gateway: 'http://localhost:34183/', expected: 'http://localhost:34183' },
+])('reads and writes session history with $name', async ({ gateway, expected }) => {
+  if (gateway === undefined) delete process.env.AGNT5_GATEWAY_URL;
+  else process.env.AGNT5_GATEWAY_URL = gateway;
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(
+    JSON.stringify({ state: { messages: [] } }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  ));
+  vi.stubGlobal('fetch', fetchMock);
+  const worker = new Worker('test-service');
+
+  await (worker as any)._loadSessionHistory('session-1', 'helper');
+  await (worker as any)._saveSessionHistory('session-1', 'helper', []);
+
+  expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+    `${expected}/v1/entity/AgentSession/agent:helper:session-1/get`,
+    `${expected}/v1/entity/AgentSession/agent:helper:session-1/set`,
+  ]);
 });
 
 describe('Worker', () => {

@@ -26,6 +26,18 @@ human-in-the-loop (HITL) approvals, MCP, evals, and runtime observability.
 npm install @agnt5/sdk
 ```
 
+## Gateway configuration
+
+`Client` uses `https://gw.agnt5.com` when no gateway URL is supplied or
+`AGNT5_GATEWAY_URL` is empty. Set `AGNT5_API_KEY` for authentication. An
+explicit `gatewayUrl` option takes precedence over `AGNT5_GATEWAY_URL`.
+Worker session-history requests use the same environment setting and default.
+
+For a local runtime, set its endpoint explicitly, for example
+`AGNT5_GATEWAY_URL=http://localhost:34183`. A separately started app needs
+its own environment settings: values set by `agnt5 dev` reach its worker
+process, not sibling app processes.
+
 ## Quick start
 
 Define a typed function and start a worker:

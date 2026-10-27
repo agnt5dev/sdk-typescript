@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Client, RunResponse } from '../client';
 
 // ---------------------------------------------------------------------------
@@ -182,6 +182,35 @@ describe('RunResponse', () => {
 // ---------------------------------------------------------------------------
 
 describe('Client', () => {
+  describe('gateway URL resolution', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+    });
+
+    it.each([
+      { name: 'unset environment', env: undefined, option: undefined, expected: 'https://gw.agnt5.com' },
+      { name: 'empty environment', env: '', option: undefined, expected: 'https://gw.agnt5.com' },
+      { name: 'explicit local environment', env: 'http://localhost:34183/', option: undefined, expected: 'http://localhost:34183' },
+      { name: 'explicit local option', env: undefined, option: 'http://localhost:34183/', expected: 'http://localhost:34183' },
+      { name: 'option takes precedence', env: 'https://env.example.com', option: 'https://option.example.com/', expected: 'https://option.example.com' },
+      { name: 'empty option uses environment', env: 'https://env.example.com/', option: '', expected: 'https://env.example.com' },
+    ])('submits through $name', async ({ env, option, expected }) => {
+      vi.stubEnv('AGNT5_GATEWAY_URL', env ?? '');
+      if (env === undefined) delete process.env.AGNT5_GATEWAY_URL;
+      const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(
+        JSON.stringify({ run_id: 'run-1', status: 'queued' }),
+        { status: 202, headers: { 'Content-Type': 'application/json' } },
+      ));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await new Client({ gatewayUrl: option, apiKey: 'test-key' }).submit('scan', {});
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(fetchMock.mock.calls[0][0]).toBe(`${expected}/v1/functions/scan/submit`);
+    });
+  });
+
   it('should create with defaults', () => {
     const client = new Client();
     expect(client).toBeDefined();
