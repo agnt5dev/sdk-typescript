@@ -14,13 +14,14 @@ import type { BatchConfig, BatchItemInput, CancelBatchResult } from './batch.js'
 import { EvalResponse, BatchEvalResult, BatchEvalItemResult, LLMJudge, EvaluatorPreset, normalizeBatchEvalItems, normalizeScorerSpecs } from './eval.js';
 import type { BatchEvalItem } from './eval.js';
 import { abortable, combineSignals, throwIfAborted } from './cancellation.js';
+import { resolveGatewayUrl } from './gateway-url.js';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface ClientOptions {
-  /** Gateway URL (default: http://localhost:34181) */
+  /** Gateway URL (falls back to AGNT5_GATEWAY_URL, then https://gw.agnt5.com) */
   gatewayUrl?: string;
   /** API key for authentication (falls back to AGNT5_API_KEY env var) */
   apiKey?: string;
@@ -374,7 +375,7 @@ export class EntityProxy {
  *
  * // Production with API key
  * const client = new Client({
- *   gatewayUrl: 'https://api.agnt5.com',
+ *   gatewayUrl: 'https://gw.agnt5.com',
  *   apiKey: 'agnt5_sk_...',
  * });
  *
@@ -406,7 +407,7 @@ export class Client {
 
   constructor(options: ClientOptions = {}) {
     const env = typeof process !== 'undefined' ? process.env : undefined;
-    this.gatewayUrl = (options.gatewayUrl || env?.AGNT5_GATEWAY_URL || 'http://localhost:34181').replace(/\/$/, '');
+    this.gatewayUrl = resolveGatewayUrl(options.gatewayUrl);
     this.apiKey = options.apiKey || env?.AGNT5_API_KEY;
     this.tenantId = options.tenantId || env?.AGNT5_TENANT_ID;
     this.deploymentId = options.deploymentId || env?.AGNT5_DEPLOYMENT_ID;

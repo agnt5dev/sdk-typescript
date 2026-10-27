@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { throwIfAborted } from './cancellation.js';
+import { resolveGatewayUrl } from './gateway-url.js';
 import type { WorkerOptions, Context, Logger, StepOptions } from './types.js';
 import { callerFromMetadata } from './caller.js';
 import type { Caller } from './caller.js';
@@ -1865,7 +1866,7 @@ export class Worker {
     agentName: string,
     metadata?: Record<string, string>,
   ): Promise<Message[]> {
-    const gatewayUrl = process.env.AGNT5_GATEWAY_URL || 'http://localhost:34181';
+    const gatewayUrl = resolveGatewayUrl();
     const entityKey = `agent:${agentName}:${sessionId}`;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (metadata?.tenant_id) headers['X-Tenant-ID'] = metadata.tenant_id;
@@ -1896,7 +1897,7 @@ export class Worker {
     messages: Message[],
     metadata?: Record<string, string>,
   ): Promise<void> {
-    const gatewayUrl = process.env.AGNT5_GATEWAY_URL || 'http://localhost:34181';
+    const gatewayUrl = resolveGatewayUrl();
     const entityKey = `agent:${agentName}:${sessionId}`;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (metadata?.tenant_id) headers['X-Tenant-ID'] = metadata.tenant_id;

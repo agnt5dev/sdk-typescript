@@ -4,6 +4,9 @@ const print = console.log;
 console.log = () => {};
 const worker = new Worker('containment');
 const second = new Worker('containment-two');
+// Process error handling must not depend on a gateway request's timing.
+worker._loadSessionHistory = async () => [];
+worker._saveSessionHistory = async () => {};
 const terminals = [];
 worker.nativeWorker = {
   queueEvent() {},
