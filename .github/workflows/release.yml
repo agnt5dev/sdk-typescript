@@ -2,7 +2,7 @@ name: SDK TypeScript Release
 
 # Runs only when a GitHub release is published. There is intentionally no
 # manual trigger: cut a release (or prerelease) from the GitHub UI or `gh
-# release create` and this workflow builds and publishes the matching version.
+# release create` and this workflow builds and stages the matching version for maintainer approval.
 # Pull request validation lives in ci.yml.
 on:
   release:
@@ -269,10 +269,13 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  publish:
-    name: Publish to npm
+  stage:
+    name: Stage npm packages with OIDC
     needs: [validate-release, verify-publish-manifest, build-native-linux, verify-native-linux, build-native-macos]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -281,8 +284,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: '24'
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install stage-capable npm
+        run: npm install --global npm@11.21.0 --ignore-scripts --no-audit --no-fund
 
       - name: Install dependencies
         working-directory: .
@@ -320,6 +327,11 @@ jobs:
             echo "$dir:"
             ls -lh "$dir"
           done
+
+      - name: Prepare versioned publish manifest
+        run: |
+          npx napi prepublish -t npm --no-gh-release --skip-optional-publish
+          npm run verify:publish-manifest
 
       - name: Build TypeScript
         working-directory: .
@@ -370,13 +382,13 @@ jobs:
             echo "dist_tag=latest" >> $GITHUB_OUTPUT
           fi
 
-      - name: Publish platform packages
+      - name: Stage platform packages
         working-directory: .
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_DIST_TAG: ${{ steps.version.outputs.dist_tag }}
           NPM_VERSION: ${{ steps.version.outputs.version }}
         run: |
+          mkdir -p release-stages
           for manifest in npm/*/package.json; do
             dir=${manifest%/package.json}
             pkg_name=$(node -p "require('./${manifest}').name")
@@ -384,17 +396,15 @@ jobs:
               echo "Skipping ${pkg_name}@${NPM_VERSION}; it is already published."
               continue
             fi
-            echo "Publishing ${pkg_name}@${NPM_VERSION} with dist-tag ${NPM_DIST_TAG}..."
-            (cd "$dir" && npm publish --access public --tag "$NPM_DIST_TAG")
+            echo "Staging ${pkg_name}@${NPM_VERSION} with dist-tag ${NPM_DIST_TAG}..."
+            receipt="release-stages/${dir##*/}.txt"
+            (cd "$dir" && npm stage publish --access public --tag "$NPM_DIST_TAG" --provenance) > "$receipt"
+            cat "$receipt"
           done
 
-      - name: Verify native packages are publicly available
-        run: node scripts/verify-registry-release.mjs
-
-      - name: Publish main package
+      - name: Stage main package
         working-directory: .
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_DIST_TAG: ${{ steps.version.outputs.dist_tag }}
           NPM_VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -403,21 +413,30 @@ jobs:
             echo "Skipping ${pkg_name}@${NPM_VERSION}; it is already published."
             exit 0
           fi
-          npm publish --access public --tag "$NPM_DIST_TAG"
+          npm stage publish --access public --tag "$NPM_DIST_TAG" --provenance > release-stages/sdk.txt
+          cat release-stages/sdk.txt
 
-      - name: Verify main package is publicly available
-        run: node scripts/verify-registry-release.mjs --main
+      - name: Upload staging receipts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-staging-receipts-${{ steps.version.outputs.version }}
+          path: release-stages/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Output release summary
         working-directory: .
         run: |
-          echo "## Release Complete" >> $GITHUB_STEP_SUMMARY
+          echo "## Packages staged: maintainer approval required" >> $GITHUB_STEP_SUMMARY
           echo "**Package:** \`@agnt5/sdk\`" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**npm dist-tag:** \`${{ steps.version.outputs.dist_tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Release:** ${{ github.event.release.html_url }}" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Approve the native packages first, verify their public tarballs with \`node scripts/verify-registry-release.mjs\`, then approve the SDK. See RELEASING.md." >> $GITHUB_STEP_SUMMARY
+          echo "Staging receipts are attached as a workflow artifact." >> $GITHUB_STEP_SUMMARY
           echo "### Platform packages" >> $GITHUB_STEP_SUMMARY
           for manifest in npm/*/package.json; do
             pkg_name=$(node -p "require('./${manifest}').name")
@@ -432,6 +451,6 @@ jobs:
           token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
             channel: ${{ secrets.SLACK_CHANNEL_ID }}
-            text: "${{ job.status == 'success' && '✓' || '✗' }} @agnt5/sdk:${{ steps.version.outputs.version }}${{ job.status != 'success' && format(' - {0}', job.status) || '' }}"
+            text: "${{ job.status == 'success' && '✓' || '✗' }} staged @agnt5/sdk:${{ steps.version.outputs.version }} — maintainer approval required${{ job.status != 'success' && format(' - {0}', job.status) || '' }}"
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

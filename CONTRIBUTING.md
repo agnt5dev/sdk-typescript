@@ -16,3 +16,6 @@ npm ci
 npm run build:ts
 npm test -- --run
 ```
+
+Maintainers: follow [RELEASING.md](RELEASING.md) to configure trusted publishing
+and approve staged releases.
