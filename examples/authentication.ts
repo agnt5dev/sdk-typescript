@@ -9,7 +9,7 @@ import { Client } from '../src/index.js';
 // ─── 1. API Key via constructor ─────────────────────────────────────
 
 const client = new Client({
-  gatewayUrl: 'https://api.agnt5.com',
+  gatewayUrl: 'https://gw.agnt5.com',
   apiKey: 'agnt5_sk_your_api_key_here',
 });
 
@@ -17,14 +17,14 @@ const client = new Client({
 
 // Set AGNT5_API_KEY in your environment, then:
 const clientFromEnv = new Client({
-  gatewayUrl: 'https://api.agnt5.com',
+  gatewayUrl: 'https://gw.agnt5.com',
   // API key read automatically from process.env.AGNT5_API_KEY
 });
 
-// ─── 3. Local development (no auth needed) ──────────────────────────
+// ─── 3. Local runtime with an explicit endpoint ─────────────────────
 
-const localClient = new Client();
-// Defaults to http://localhost:34181, no API key required
+const localClient = new Client({ gatewayUrl: 'http://localhost:34183' });
+// Set AGNT5_API_KEY if your local runtime requires authentication.
 
 // ─── 4. Custom subdomain URL ────────────────────────────────────────
 

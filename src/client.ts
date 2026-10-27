@@ -375,7 +375,7 @@ export class EntityProxy {
  *
  * // Production with API key
  * const client = new Client({
- *   gatewayUrl: 'https://api.agnt5.com',
+ *   gatewayUrl: 'https://gw.agnt5.com',
  *   apiKey: 'agnt5_sk_...',
  * });
  *
