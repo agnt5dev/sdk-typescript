@@ -2,8 +2,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
-// A successful npm publish can leave a version staged but unreadable. Gate
-// consumers on public metadata AND the tarball, without registry credentials.
+// Staging does not make a version installable. Verify public metadata and
+// tarballs before a maintainer approves the SDK that depends on them.
 export async function waitForPackage(name, version, {
   fetcher = fetch, pause = delay, attempts = 120, interval = 10000,
 } = {}) {

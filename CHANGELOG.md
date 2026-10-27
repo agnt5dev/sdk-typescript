@@ -5,7 +5,19 @@ All notable changes to the AGNT5 TypeScript SDK are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.17] - 2026-10-27
+
+### Changed
+
+- Releases now stage the SDK and native packages through GitHub OIDC. A maintainer reviews and approves them with 2FA before they become publicly installable. Stored npm publishing tokens are no longer used by the workflow. See `RELEASING.md` for the one-time npm setup and native-first approval order.
+
+### Fixed
+
+- Includes the secure gateway default from 0.10.16, which was tagged but never published to npm.
+
 ## [0.10.16] - 2026-10-27
+
+This version was tagged but not published to npm. Its changes are included in 0.10.17.
 
 ### Fixed
 

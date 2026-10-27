@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { verifyTrustedStaging } from './trusted-publishing-contract.mjs';
 
 const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
 const releaseWorkflow = readFileSync(
@@ -7,6 +8,7 @@ const releaseWorkflow = readFileSync(
 );
 const packageUrl = new URL('../package.json', import.meta.url);
 const packageManifest = JSON.parse(readFileSync(packageUrl, 'utf8'));
+verifyTrustedStaging(releaseWorkflow);
 
 function requirePattern(source, pattern, message) {
   if (!pattern.test(source)) {
@@ -64,7 +66,7 @@ forbidPattern(
 forbidPattern(
   releaseWorkflow,
   /skip-publish|--dry-run/,
-  'Release workflow must always publish; dry runs belong in ci.yml',
+  'Release workflow must always stage; dry runs belong in ci.yml',
 );
 
 // --- shared: persistent compiler caching -----------------------------------
@@ -100,8 +102,8 @@ for (const [label, workflow] of [
 const prepublishOnly = packageManifest.scripts?.prepublishOnly ?? '';
 requirePattern(
   releaseWorkflow,
-  /name: Publish platform packages/,
-  'Release workflow must publish native platform packages explicitly',
+  /name: Stage platform packages/,
+  'Release workflow must stage native platform packages explicitly',
 );
 if (!/\bnapi prepublish\b/.test(prepublishOnly)) {
   throw new Error('prepublishOnly must prepare the NAPI publish manifest');
@@ -118,9 +120,9 @@ console.log(
   'CI workflow covers pull requests; release workflow runs only on published GitHub releases.',
 );
 
-const platformGate = releaseWorkflow.indexOf('run: node scripts/verify-registry-release.mjs\n');
-const publishMain = releaseWorkflow.indexOf('name: Publish main package');
-const mainGate = releaseWorkflow.indexOf('run: node scripts/verify-registry-release.mjs --main');
-if (platformGate < 0 || publishMain < platformGate || mainGate < publishMain) {
-  throw new Error('Public native availability must gate main publication, followed by main availability verification');
+const stageNative = releaseWorkflow.indexOf('name: Stage platform packages');
+const stageMain = releaseWorkflow.indexOf('name: Stage main package');
+const receipts = releaseWorkflow.indexOf('name: Upload staging receipts');
+if (stageNative < 0 || stageMain < stageNative || receipts < stageMain) {
+  throw new Error('Release workflow must stage native packages before the SDK and retain the review receipts');
 }
