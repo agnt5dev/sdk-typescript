@@ -132,6 +132,21 @@ expiration fails the run with `WAIT_TIMEOUT`. This needs a runtime version
 that supports wait deadlines. It differs from the client's response wait
 setting described below.
 
+From your application, resume a run waiting in `ctx.waitForSignal` with
+`client.signal(runId, name, payload)`. The receipt's `resumed` says whether the
+run was waiting for that signal. To show a run's progress, follow its events
+with `client.followEvents(runId)`, including what it sent with `ctx.emit`. It
+yields the history, then new events as they're written, and ends after the
+run's final event. If the connection drops, it resumes from the last offset it
+yielded:
+
+```typescript
+await client.signal(runId, 'page_read', { url });
+for await (const event of client.followEvents(runId)) {
+  if (event.eventType === 'crm.progress') render(event.data);
+}
+```
+
 `saga(ctx, steps, { name: 'order' })` checkpoints forward actions and reverse
 compensations. Keep the name stable across dispatches. A pause unwinds without
 starting compensation. Failed compensations do not stop the remaining rollback;

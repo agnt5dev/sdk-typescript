@@ -555,6 +555,22 @@ describe('workerless serve()', () => {
     }
   });
 
+  it('returns the question as approval.requested with a user-input suspension', async () => {
+    workflow('ask', async (ctx) => ctx.waitForUser('Ship it?', { inputType: 'approval', skippable: true }));
+    const handler = serve({ allowUnsigned: true });
+
+    const suspended = await (await invoke(handler, 'workflow', 'ask', {})).json() as any;
+
+    expect(suspended.status).toBe('suspended');
+    const requested = suspended.events.find((event: any) => event.event_type === 'approval.requested');
+    expect(requested.data).toMatchObject({
+      question: 'Ship it?',
+      input_type: 'approval',
+      step_key: 'wait_for_user_0',
+      skippable: true,
+    });
+  });
+
   it('returns user-input suspension and resumes from metadata response', async () => {
     let fetchCount = 0;
     workflow('review', async (ctx) => {
