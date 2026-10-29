@@ -62,7 +62,10 @@ export async function enableVercelAICapture(): Promise<boolean> {
       ai.registerTelemetry(journalTelemetry);
       registered = true;
     }
-    await attachOpenTelemetryProcessor();
+    // The OpenTelemetry processor is the fallback for releases without the
+    // registry. Once the registry path attached, trying it anyway only logged
+    // a missing-package error on a healthy run.
+    if (!registered) await attachOpenTelemetryProcessor();
     return registered || otelAttached;
   } catch (error) {
     enabled = false;

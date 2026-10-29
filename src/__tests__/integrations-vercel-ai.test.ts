@@ -131,6 +131,19 @@ describe('Vercel AI SDK capture', () => {
     expect(capturedEvents(ctx).map((event) => event.eventType)).toEqual(['lm.started', 'lm.completed']);
   });
 
+  it('does not try the OpenTelemetry fallback once the telemetry registry attached', async () => {
+    process.env.AGNT5_DEBUG = '1';
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    try {
+      expect(await enableVercelAICapture()).toBe(true);
+      const lines = debug.mock.calls.map((call) => String(call[0]));
+      expect(lines.some((line) => line.includes('OpenTelemetry provider unavailable'))).toBe(false);
+    } finally {
+      debug.mockRestore();
+      delete process.env.AGNT5_DEBUG;
+    }
+  });
+
   it('is a pure no-op without ambient context', async () => {
     wrapAISDK({ generateText: vi.fn() });
     await journalTelemetry.onLanguageModelCallStart({
