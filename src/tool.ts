@@ -19,6 +19,7 @@ import {
   ActivationKind,
   ActivationRecoveryPolicy,
   activationRequestFromContext,
+  currentActivation,
   runWithActivation,
 } from './activation.js';
 import type { ActivationDecision } from './activation.js';
@@ -208,6 +209,16 @@ export class Tool<TInput = any, TOutput = any> {
       throw new ConfigurationError(
         `Tool '${this.name}' requires confirmation, which pauses the run for a ` +
         'person\'s approval. Call it from a workflow, or remove confirmation: true.'
+      );
+    }
+    // Inside a durable activation, such as a delegated agent or a step, a pause
+    // would leave that activation open and the resumed run would wait on it
+    // forever. Refuse instead of running the tool without approval.
+    if (currentActivation()) {
+      throw new ConfigurationError(
+        `Tool '${this.name}' requires confirmation, but it was called inside a ` +
+        'delegated agent or a step, which cannot pause for approval yet. Give the ' +
+        'tool to the top-level agent, or call it between workflow steps.'
       );
     }
     let question = `Allow \`${this.name}\` to run?`;

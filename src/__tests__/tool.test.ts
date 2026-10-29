@@ -5,6 +5,7 @@ import {
   ActivationKind,
   ActivationRecoveryPolicy,
   activationId,
+  runWithActivation,
 } from '../activation.js';
 import type {
   ActivationClient,
@@ -317,5 +318,26 @@ describe('Tool confirmation', () => {
 
     expect(calls).toEqual([]);
     expect(result).toContain('rejected');
+  });
+
+  it('refuses to run inside a delegated agent or step, which cannot pause', async () => {
+    const { deleteRecord, calls } = probe();
+    const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await ctx.setUserResponse(0, 'approve');
+    const childActivation = {
+      kind: 'EXECUTE',
+      activationId: 'actv1_child',
+      attempt: 1,
+      acceptedJournalOffset: 1n,
+      fenceToken: new Uint8Array([1]),
+    } as ActivationDecision;
+
+    await expect(
+      runWithActivation(childActivation, () => deleteRecord.invoke(ctx, { recordId: 'r1' })),
+    ).rejects.toMatchObject({
+      name: 'ConfigurationError',
+      message: expect.stringContaining('cannot pause for approval'),
+    });
+    expect(calls).toEqual([]);
   });
 });

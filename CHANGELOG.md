@@ -9,7 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
-- Ask before running a tool marked `confirmation: true`. The flag was sent to the platform but ignored at run time, so the tool ran without approval. The run now pauses with an approval question before the tool runs, and a rejected call returns a message to the agent instead of running. A context that can't pause raises `ConfigurationError`.
+- Ask before running a tool marked `confirmation: true`. The flag was sent to the platform but ignored at run time, so the tool ran without approval. The run now pauses with an approval question before the tool runs, and a rejected call returns a message to the agent instead of running. A context that can't pause raises `ConfigurationError`, as does a call inside a delegated agent or a step under durable activation, which can't pause for approval yet.
 
 ## [0.10.17] - 2026-10-27
 
