@@ -320,6 +320,42 @@ describe('Tool confirmation', () => {
     expect(result).toContain('rejected');
   });
 
+  it('does not run when the arguments changed after approval', async () => {
+    const { deleteRecord, calls } = probe();
+    const first = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await expect(deleteRecord.invoke(first, { recordId: 'r1' })).rejects.toMatchObject({
+      name: 'WaitingForUserInputError',
+    });
+
+    // The run resumes with the approval, and the model, asked again, proposes another record.
+    const resumed = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: first.checkpointSnapshot(),
+    });
+    await resumed.setUserResponse(0, 'approve');
+    const result = await deleteRecord.invoke(resumed, { recordId: 'r2' });
+
+    expect(calls).toEqual([]);
+    expect(result).toContain('changed after the user approved');
+  });
+
+  it('runs on resume when the approved arguments come back in another order', async () => {
+    const { deleteRecord, calls } = probe();
+    const first = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await expect(deleteRecord.invoke(first, { recordId: 'r1', reason: 'dup' } as any)).rejects.toMatchObject({
+      name: 'WaitingForUserInputError',
+    });
+
+    const resumed = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: first.checkpointSnapshot(),
+    });
+    await resumed.setUserResponse(0, 'approve');
+
+    await expect(deleteRecord.invoke(resumed, { reason: 'dup', recordId: 'r1' } as any)).resolves.toBe('deleted r1');
+    expect(calls).toEqual(['r1']);
+  });
+
   it('refuses to run inside a delegated agent or step, which cannot pause', async () => {
     const { deleteRecord, calls } = probe();
     const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
