@@ -239,6 +239,33 @@ export interface ActivationTransport {
   }): Promise<ActivationFailureReceipt>;
 }
 
+/**
+ * A transport that runs `beforeWrite` ahead of every activation write. The
+ * worker uses it to write the emitter's batched lifecycle events first, so
+ * they keep their order with the steps the runtime journals from these calls.
+ */
+export class OrderedActivationTransport implements ActivationTransport {
+  constructor(
+    private readonly inner: ActivationTransport,
+    private readonly beforeWrite: () => Promise<void>,
+  ) {}
+
+  async begin(request: BeginActivationRequest): Promise<ActivationDecision> {
+    await this.beforeWrite();
+    return this.inner.begin(request);
+  }
+
+  async complete(request: Parameters<ActivationTransport['complete']>[0]): Promise<ActivationCompletionReceipt> {
+    await this.beforeWrite();
+    return this.inner.complete(request);
+  }
+
+  async fail(request: Parameters<ActivationTransport['fail']>[0]): Promise<ActivationFailureReceipt> {
+    await this.beforeWrite();
+    return this.inner.fail(request);
+  }
+}
+
 export class NativeActivationTransport implements ActivationTransport {
   constructor(private readonly nativeWorker: any) {
     for (const method of ['beginActivation', 'completeActivation', 'failActivation']) {

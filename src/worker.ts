@@ -71,6 +71,7 @@ import {
   currentActivation,
   nextActivationOrdinal,
   NativeActivationTransport,
+  OrderedActivationTransport,
   runWithActivation,
   stableStepKey,
   stepActivationRequest,
@@ -1339,7 +1340,10 @@ export class Worker {
           }
           if (contextMetadata.durable_activation_v1 === 'true') {
             ctx.setActivationClient(
-              new ActivationClient(new NativeActivationTransport(this.nativeWorker)),
+              new ActivationClient(new OrderedActivationTransport(
+                new NativeActivationTransport(this.nativeWorker),
+                () => emitter.flushLifecycle(),
+              )),
             );
           }
 

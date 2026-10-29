@@ -45,10 +45,25 @@ const IMMEDIATE_ACK_PREFIXES = [
   'approval.',
 ];
 
+// Namespaces of the events the SDK itself writes. Anything else came from the
+// application through ctx.emit, usually to report progress to someone
+// following the run, so it is written when emitted rather than batched until
+// the next lifecycle boundary.
+const SDK_EVENT_NAMESPACES = new Set([
+  'agent', 'approval', 'checkpoint', 'function', 'lm', 'log', 'mcp', 'output',
+  'progress', 'run', 'session', 'skill', 'state', 'step', 'stream', 'tool',
+  'tool_call', 'workflow',
+]);
+
+function isApplicationEvent(eventType: string): boolean {
+  return !SDK_EVENT_NAMESPACES.has(eventType.split('.', 1)[0]);
+}
+
 function requiresImmediateAcknowledgement(eventType: string): boolean {
   return (
     TERMINAL_EVENT_TYPES.has(eventType) ||
-    IMMEDIATE_ACK_PREFIXES.some(prefix => eventType.startsWith(prefix))
+    IMMEDIATE_ACK_PREFIXES.some(prefix => eventType.startsWith(prefix)) ||
+    isApplicationEvent(eventType)
   );
 }
 
@@ -163,6 +178,18 @@ export class EventEmitter {
     return operation;
   }
 
+  /**
+   * Write the lifecycle events batched so far, in order, without ending the
+   * run. Called before each durable activation write: the runtime journals
+   * steps from those calls, so anything batched here would otherwise land
+   * after the steps that followed it.
+   */
+  flushLifecycle(): Promise<void> {
+    const operation = this.emissionChain.then(() => this.flushPendingCheckpoints());
+    this.emissionChain = operation.catch(() => undefined);
+    return operation;
+  }
+
   /** Persist any trailing lifecycle batch before the worker returns a result. */
   flush(): Promise<void> {
     // flush() ends the run: the waiting progress report goes ahead of it,
@@ -267,6 +294,11 @@ export class EventEmitter {
     metadata: Record<string, string>;
     timestampNs: number;
   } {
+    // An event built by hand for ctx.emit may carry no timestamp; without
+    // one the runtime stamps its arrival, which can be long after the call.
+    if (typeof event.timestampNs !== 'bigint') {
+      event.timestampNs = BigInt(Date.now()) * 1_000_000n;
+    }
     if (event.timestampNs <= this.lastTimestampNs) {
       // Native transport accepts a JavaScript Number, whose precision at
       // epoch-nanosecond scale is coarser than 1ns. Advance by 1µs so
