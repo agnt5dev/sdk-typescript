@@ -144,8 +144,18 @@ export class Tool<TInput = any, TOutput = any> {
     stableKey?: string,
     options?: ToolInvokeOptions,
   ): Promise<TOutput> {
-    const refusal = this.confirmation ? await this.confirm(ctx, args) : undefined;
-    if (refusal !== undefined) return refusal as TOutput;
+    if (this.confirmation) {
+      return this.runConfirmed(ctx, args, () => this.invokeApproved(ctx, args, stableKey, options)) as Promise<TOutput>;
+    }
+    return this.invokeApproved(ctx, args, stableKey, options);
+  }
+
+  private async invokeApproved(
+    ctx: Context,
+    args: Record<string, any>,
+    stableKey?: string,
+    options?: ToolInvokeOptions,
+  ): Promise<TOutput> {
     if (this.usesDurableActivation(ctx)) {
       const client = (ctx as ContextImpl).getActivationClient?.();
       if (!client) {
@@ -202,15 +212,20 @@ export class Tool<TInput = any, TOutput = any> {
   }
 
   /**
-   * Ask a person to approve this call before it runs. The question is asked
-   * before any durable result is used, so on replay it reads its recorded
-   * answer and the workflow's later pauses keep their own answers.
+   * Ask a person to approve this call, and run `execute` only once approved.
+   * The question is asked before any durable result is used, so on replay it
+   * reads its recorded answer and the workflow's later pauses keep their own
+   * answers.
    *
-   * Returns what the caller, usually an agent, gets instead of the result when
-   * the call must not run, or undefined when it was approved.
+   * Returns `execute`'s result, or what the caller, usually an agent, gets
+   * instead when the call must not run.
    */
   /** @internal */
-  async confirm(ctx: Context, args: Record<string, any>): Promise<string | undefined> {
+  async runConfirmed<T>(
+    ctx: Context,
+    args: Record<string, any>,
+    execute: () => Promise<T>,
+  ): Promise<T | string> {
     const waitForUser = (ctx as any)?.waitForUser;
     const step = (ctx as any)?.step;
     if (typeof waitForUser !== 'function' || typeof step !== 'function') {
@@ -237,16 +252,17 @@ export class Tool<TInput = any, TOutput = any> {
     }
     // Answers are matched to pauses by position only. Without durable model
     // replay, an agent resumed after the pause asks the model again and may
-    // get different arguments, so record what the person is asked to approve.
-    // On resume the step returns the recorded proposal, not the new one.
+    // propose another tool or other arguments, so record what the person is
+    // asked to approve. The step is keyed by the confirmation's position, not
+    // the tool, so on resume it returns the recorded proposal whichever tool
+    // the model picks now.
     const proposal = new TextDecoder().decode(
       canonicalActivationValue({ tool: this.name, arguments: normalizeStepInput(args) }),
     );
     const ordinal = confirmationCounts.get(ctx) ?? 0;
     confirmationCounts.set(ctx, ordinal + 1);
-    const approvedProposal = await step.call(ctx, `confirm:${this.name}`, () => proposal, {
-      key: String(ordinal),
-    });
+    const key = String(ordinal);
+    const approvedProposal = await step.call(ctx, 'confirm', () => proposal, { key });
     const decision = await waitForUser.call(ctx, question, {
       inputType: 'approval',
       options: [
@@ -259,9 +275,13 @@ export class Tool<TInput = any, TOutput = any> {
       return `The user rejected the call to '${this.name}', so it did not run.`;
     }
     if (approvedProposal !== proposal) {
-      return `The arguments for '${this.name}' changed after the user approved the call, so it did not run.`;
+      return `The call to '${this.name}' differs from the one the user approved, so it did not run.`;
     }
-    return undefined;
+    // A durable activation records the result itself. Otherwise checkpoint
+    // it, so a replay for a later pause returns it instead of running the
+    // approved effect again.
+    if (this.usesDurableActivation(ctx)) return execute();
+    return step.call(ctx, 'confirmed', execute, { key });
   }
 
   private invokeHandler(
@@ -467,11 +487,11 @@ export function tool<TInput = any, TOutput = any>(
 
     // Otherwise, direct call (positional or no arguments), traced like invoke().
     // It still asks first when the tool needs confirmation.
-    const refusal = toolInstance.confirmation
-      ? await toolInstance.confirm(ctx, args.length > 0 ? { args } : {})
-      : undefined;
-    if (refusal !== undefined) return refusal as TOutput;
-    return traceTool(name, ctx, () => (toolInstance.handler as any)(ctx, ...args));
+    const run = () => traceTool(name, ctx, () => (toolInstance.handler as any)(ctx, ...args));
+    if (toolInstance.confirmation) {
+      return toolInstance.runConfirmed(ctx, args.length > 0 ? { args } : {}, run) as Promise<TOutput>;
+    }
+    return run();
   };
 
   // Attach tool instance for inspection

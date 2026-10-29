@@ -336,7 +336,62 @@ describe('Tool confirmation', () => {
     const result = await deleteRecord.invoke(resumed, { recordId: 'r2' });
 
     expect(calls).toEqual([]);
-    expect(result).toContain('changed after the user approved');
+    expect(result).toContain('differs from the one the user approved');
+  });
+
+  it('does not run another tool the model picks after the approval', async () => {
+    const { deleteRecord, calls } = probe();
+    tool('archive_record', { description: 'Archive a record', confirmation: true },
+      async (_ctx, args: { recordId: string }) => `archived ${args.recordId}`);
+    const archiveRecord = ToolRegistry.get('archive_record')!;
+    const first = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await expect(archiveRecord.invoke(first, { recordId: 'r1' })).rejects.toMatchObject({
+      name: 'WaitingForUserInputError',
+    });
+
+    const resumed = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: first.checkpointSnapshot(),
+    });
+    await resumed.setUserResponse(0, 'approve');
+    const result = await deleteRecord.invoke(resumed, { recordId: 'r1' });
+
+    expect(calls).toEqual([]);
+    expect(result).toContain('differs from the one the user approved');
+  });
+
+  it('does not run an approved tool again when a later approval resumes', async () => {
+    const { deleteRecord, calls } = probe();
+    const charges: string[] = [];
+    tool('charge', { description: 'Charge a card', confirmation: true },
+      async (_ctx, args: { amount: string }) => { charges.push(args.amount); return `charged ${args.amount}`; });
+    const charge = ToolRegistry.get('charge')!;
+    const workflow = async (ctx: ContextImpl) => {
+      await charge.invoke(ctx, { amount: '10' });
+      return deleteRecord.invoke(ctx, { recordId: 'r1' });
+    };
+
+    const first = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await expect(workflow(first)).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+
+    const second = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: first.checkpointSnapshot(),
+    });
+    await second.setUserResponse(0, 'approve');
+    await expect(workflow(second)).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+    expect(charges).toEqual(['10']);
+
+    const third = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: second.checkpointSnapshot(),
+    });
+    await third.setUserResponse(0, 'approve');
+    await third.setUserResponse(1, 'approve');
+    await expect(workflow(third)).resolves.toBe('deleted r1');
+
+    expect(charges).toEqual(['10']);
+    expect(calls).toEqual(['r1']);
   });
 
   it('runs on resume when the approved arguments come back in another order', async () => {
