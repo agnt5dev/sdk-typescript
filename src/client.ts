@@ -5,6 +5,7 @@
 import {
   RunError,
   ConnectionError,
+  RetryError,
   TimeoutError,
   ValidationError,
   createErrorFromResponse,
@@ -275,6 +276,45 @@ export interface SubmitResponse {
 // ---------------------------------------------------------------------------
 // SSE event types (A4)
 // ---------------------------------------------------------------------------
+
+/** What the gateway reports for a signal delivered with {@link Client.signal}. */
+export interface SignalReceipt {
+  runId: string;
+  signalId: string;
+  signalName: string;
+  /** The signal record's journal offset. */
+  offset: number;
+  /** True when the run was waiting for this signal and was resumed by it. */
+  resumed: boolean;
+  resumeOffset?: number;
+}
+
+/** One record of a run's journal, as {@link Client.followEvents} yields it. */
+export interface RunEvent {
+  eventType: string;
+  runId: string;
+  /** The record's payload. For a `ctx.emit` event, what was emitted. */
+  data: any;
+  /** Journal offset. Pass the last one seen as `afterOffset` to resume. Absent on stream-only records. */
+  offset?: number;
+  timestampNs?: number;
+  metadata: Record<string, string>;
+  stepKey?: string;
+  correlationId?: string;
+  parentCorrelationId?: string;
+}
+
+export interface FollowEventsOptions {
+  /** Start after this journal offset, for example the last one a previous follow saw. */
+  afterOffset?: number;
+  /** Sub-tenant of the run, sent as `X-TENANT-ID`, like `submit`'s option. */
+  tenant?: string;
+  deploymentId?: string;
+  /** Stops following when aborted. */
+  signal?: AbortSignal;
+  /** Reconnects tried after the connection drops before the run ends. Default 3. */
+  maxReconnects?: number;
+}
 
 /** Event received from SSE stream */
 export interface ReceivedEvent {
@@ -861,6 +901,114 @@ export class Client {
   }
 
   /**
+   * Deliver a signal to a run, for example one waiting in
+   * `ctx.waitForSignal(name)`. The run must belong to the caller's sub-tenant.
+   *
+   * @example
+   * ```typescript
+   * const receipt = await client.signal(runId, 'page_read', { url });
+   * if (!receipt.resumed) console.log('the run was not waiting for page_read yet');
+   * ```
+   */
+  async signal(
+    runId: string,
+    name: string,
+    payload: unknown = null,
+    options: Pick<FollowEventsOptions, 'tenant' | 'deploymentId' | 'signal'> = {},
+  ): Promise<SignalReceipt> {
+    const url = `${this.gatewayUrl}/v1/runs/${encodeURIComponent(runId)}/signals/${encodeURIComponent(name)}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.buildHeaders(undefined, options.tenant, { deploymentId: options.deploymentId }),
+      body: JSON.stringify({ payload }),
+      signal: options.signal,
+    });
+    if (!response.ok) {
+      throw createErrorFromResponse(response.status, await response.text(), runId, url);
+    }
+    const data = await response.json() as Record<string, any>;
+    return {
+      runId: data.run_id ?? runId,
+      signalId: data.signal_id ?? '',
+      signalName: data.signal_name ?? name,
+      offset: Number(data.offset ?? 0),
+      resumed: data.resumed === true,
+      ...(data.resume_offset != null ? { resumeOffset: Number(data.resume_offset) } : {}),
+    };
+  }
+
+  /**
+   * Follow an existing run's journal: its history first, then new records as
+   * they're written. Ends after the run's final event. A failed attempt that
+   * will be retried doesn't end it. If the connection drops first, it
+   * reconnects from the last offset it yielded (`Last-Event-ID`).
+   *
+   * @example
+   * ```typescript
+   * for await (const event of client.followEvents(runId)) {
+   *   if (event.eventType === 'crm.progress') render(event.data);
+   * }
+   * ```
+   */
+  async *followEvents(runId: string, options: FollowEventsOptions = {}): AsyncGenerator<RunEvent, void, unknown> {
+    const url = `${this.gatewayUrl}/v1/runs/${encodeURIComponent(runId)}/events`;
+    const maxReconnects = options.maxReconnects ?? 3;
+    let lastOffset = options.afterOffset;
+    let reconnects = 0;
+
+    while (true) {
+      throwIfAborted(options.signal);
+      const headers: Record<string, string> = {
+        ...this.buildHeaders(undefined, options.tenant, { deploymentId: options.deploymentId }),
+        Accept: 'text/event-stream',
+      };
+      if (lastOffset !== undefined) headers['Last-Event-ID'] = String(lastOffset);
+
+      let progressed = false;
+      let final: unknown;
+      try {
+        const response = await fetch(url, { method: 'GET', headers, signal: options.signal });
+        if (!response.ok) {
+          const error = createErrorFromResponse(response.status, await response.text(), runId, url);
+          if (!isTransientHttpError(error)) final = error;
+          throw error;
+        }
+        if (!response.body) throw new RunError('No response body for the run event stream');
+        for await (const block of sseBlocks(response.body)) {
+          if (block.event === 'error') {
+            final = new RunError(block.data || 'run event stream error', runId);
+            throw final;
+          }
+          if (!block.data) continue;
+          let record: Record<string, any>;
+          try {
+            record = JSON.parse(block.data);
+          } catch {
+            continue;
+          }
+          const event = runEventFromRecord(record, block.event, runId);
+          if (block.id !== undefined && /^\d+$/.test(block.id)) lastOffset = Number(block.id);
+          progressed = true;
+          yield event;
+          // The gateway marks the run's final event `id: done`.
+          if (block.id === 'done') return;
+        }
+      } catch (error) {
+        // A dropped connection or a busy gateway is retried; an answer such
+        // as not found or not authorized is not.
+        if (final !== undefined || options.signal?.aborted) throw error;
+      }
+
+      // The stream ended, or dropped, before the run's final event.
+      reconnects = progressed ? 1 : reconnects + 1;
+      if (reconnects > maxReconnects) {
+        throw new RunError(`the event stream for run ${runId} ended before the run finished`, runId);
+      }
+      await abortable(() => new Promise<void>(resolve => setTimeout(resolve, 250 * reconnects)), options.signal);
+    }
+  }
+
+  /**
    * Get a proxy for calling methods on a durable entity
    */
   entity(entityType: string, key: string): EntityProxy {
@@ -1235,6 +1383,65 @@ export interface EventRecord {
   timestamp?: string;
   sequence: number;
   correlationId?: string;
+}
+
+/** One server-sent event: its `event:`, `id:` and joined `data:` lines. */
+interface SseBlock {
+  event: string;
+  id?: string;
+  data: string;
+}
+
+async function* sseBlocks(body: ReadableStream<Uint8Array>): AsyncGenerator<SseBlock, void, unknown> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let block: SseBlock = { event: 'message', data: '' };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const raw of lines) {
+        const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+        if (line === '') {
+          if (block.data || block.id !== undefined) yield block;
+          block = { event: 'message', data: '' };
+          continue;
+        }
+        if (line.startsWith(':')) continue;
+        const colon = line.indexOf(':');
+        const field = colon === -1 ? line : line.slice(0, colon);
+        const value = colon === -1 ? '' : line.slice(colon + 1).replace(/^ /, '');
+        if (field === 'event') block.event = value;
+        else if (field === 'id') block.id = value;
+        else if (field === 'data') block.data = block.data ? `${block.data}\n${value}` : value;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function runEventFromRecord(record: Record<string, any>, sseEvent: string, runId: string): RunEvent {
+  return {
+    eventType: record.event_type ?? sseEvent,
+    runId: record.run_id ?? runId,
+    data: record.data ?? {},
+    ...(typeof record.offset === 'number' ? { offset: record.offset } : {}),
+    ...(typeof record.timestamp_ns === 'number' ? { timestampNs: record.timestamp_ns } : {}),
+    metadata: record.metadata ?? {},
+    ...(record.step_key ? { stepKey: record.step_key } : {}),
+    ...(record.correlation_id ? { correlationId: record.correlation_id } : {}),
+    ...(record.parent_correlation_id ? { parentCorrelationId: record.parent_correlation_id } : {}),
+  };
+}
+
+/** An HTTP answer that means try again later: 5xx, a timeout, or a rate limit. */
+function isTransientHttpError(error: unknown): boolean {
+  return error instanceof ConnectionError || error instanceof TimeoutError || error instanceof RetryError;
 }
 
 export interface EventsResponse {
