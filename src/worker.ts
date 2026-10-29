@@ -735,6 +735,11 @@ class SimpleContext implements Context {
     this._stateDirty = false;
   }
 
+  /** @internal The position the next waitForUser call pauses at. */
+  nextPauseIndex(): number {
+    return this._pauseIndex;
+  }
+
   /**
    * Pause the workflow and request user input (HITL).
    *

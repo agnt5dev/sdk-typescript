@@ -5,6 +5,12 @@ All notable changes to the AGNT5 TypeScript SDK are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Ask before running a tool marked `confirmation: true`. The flag was sent to the platform but ignored at run time, so the tool ran without approval. The run now pauses with an approval question before the tool runs, and a rejected call returns a message to the agent instead of running. A context that can't pause raises `ConfigurationError`, as does a call inside a delegated agent under durable activation, or inside any `ctx.step`, which can't pause for approval yet. The tool and arguments the person is asked to approve are recorded with the pause, and if the model proposes a different call after resuming, nothing runs. An approved call's result is checkpointed, so resuming a later pause doesn't run it again.
+
 ## [0.10.17] - 2026-10-27
 
 ### Changed

@@ -164,6 +164,11 @@ export class WorkerlessContext implements Context {
     });
   }
 
+  /** @internal The position the next waitForUser call pauses at. */
+  nextPauseIndex(): number {
+    return this.pauseIndex;
+  }
+
   async waitForUser(
     question: string,
     options?: {

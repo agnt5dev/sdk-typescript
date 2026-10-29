@@ -5,6 +5,7 @@ import {
   ActivationKind,
   ActivationRecoveryPolicy,
   activationId,
+  runWithActivation,
 } from '../activation.js';
 import type {
   ActivationClient,
@@ -264,5 +265,286 @@ describe('Tool', () => {
     await expect(registered.invoke(ctx, {})).rejects.toMatchObject({
       code: 'DURABILITY_UNAVAILABLE',
     });
+  });
+});
+
+describe('Tool confirmation', () => {
+  beforeEach(() => {
+    ToolRegistry.clear();
+  });
+
+  function probe() {
+    const calls: string[] = [];
+    tool(
+      'delete_record',
+      { description: 'Delete a record', confirmation: true },
+      async (_ctx, args: { recordId: string }) => {
+        calls.push(args.recordId);
+        return `deleted ${args.recordId}`;
+      },
+    );
+    const deleteRecord = ToolRegistry.get('delete_record')!;
+    return { deleteRecord, calls };
+  }
+
+  it('pauses for approval before the tool runs', async () => {
+    const { deleteRecord, calls } = probe();
+    const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+
+    await expect(deleteRecord.invoke(ctx, { recordId: 'r1' })).rejects.toMatchObject({
+      name: 'WaitingForUserInputError',
+      inputType: 'approval',
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it.each(['approve', 'approved'])('runs once answered %s, and leaves later pauses their own answers', async (answer) => {
+    const { deleteRecord, calls } = probe();
+    const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await ctx.setUserResponse(0, answer);
+    await ctx.setUserResponse(1, 'next answer');
+
+    await expect(deleteRecord.invoke(ctx, { recordId: 'r1' })).resolves.toBe('deleted r1');
+    expect(calls).toEqual(['r1']);
+    await expect(ctx.waitForUser('Next?')).resolves.toBe('next answer');
+  });
+
+  it('does not run when rejected', async () => {
+    const { deleteRecord, calls } = probe();
+    const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await ctx.setUserResponse(0, 'reject');
+
+    const result = await deleteRecord.invoke(ctx, { recordId: 'r1' });
+
+    expect(calls).toEqual([]);
+    expect(result).toContain('rejected');
+  });
+
+  it('does not run when the arguments changed after approval', async () => {
+    const { deleteRecord, calls } = probe();
+    const first = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await expect(deleteRecord.invoke(first, { recordId: 'r1' })).rejects.toMatchObject({
+      name: 'WaitingForUserInputError',
+    });
+
+    // The run resumes with the approval, and the model, asked again, proposes another record.
+    const resumed = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: first.checkpointSnapshot(),
+    });
+    await resumed.setUserResponse(0, 'approve');
+    const result = await deleteRecord.invoke(resumed, { recordId: 'r2' });
+
+    expect(calls).toEqual([]);
+    expect(result).toContain('differs from the one the user approved');
+  });
+
+  it('does not run another tool the model picks after the approval', async () => {
+    const { deleteRecord, calls } = probe();
+    tool('archive_record', { description: 'Archive a record', confirmation: true },
+      async (_ctx, args: { recordId: string }) => `archived ${args.recordId}`);
+    const archiveRecord = ToolRegistry.get('archive_record')!;
+    const first = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await expect(archiveRecord.invoke(first, { recordId: 'r1' })).rejects.toMatchObject({
+      name: 'WaitingForUserInputError',
+    });
+
+    const resumed = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: first.checkpointSnapshot(),
+    });
+    await resumed.setUserResponse(0, 'approve');
+    const result = await deleteRecord.invoke(resumed, { recordId: 'r1' });
+
+    expect(calls).toEqual([]);
+    expect(result).toContain('differs from the one the user approved');
+  });
+
+  it('does not run an approved tool again when a later approval resumes', async () => {
+    const { deleteRecord, calls } = probe();
+    const charges: string[] = [];
+    tool('charge', { description: 'Charge a card', confirmation: true },
+      async (_ctx, args: { amount: string }) => { charges.push(args.amount); return `charged ${args.amount}`; });
+    const charge = ToolRegistry.get('charge')!;
+    const workflow = async (ctx: ContextImpl) => {
+      await charge.invoke(ctx, { amount: '10' });
+      return deleteRecord.invoke(ctx, { recordId: 'r1' });
+    };
+
+    const first = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await expect(workflow(first)).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+
+    const second = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: first.checkpointSnapshot(),
+    });
+    await second.setUserResponse(0, 'approve');
+    await expect(workflow(second)).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+    expect(charges).toEqual(['10']);
+
+    const third = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: second.checkpointSnapshot(),
+    });
+    await third.setUserResponse(0, 'approve');
+    await third.setUserResponse(1, 'approve');
+    await expect(workflow(third)).resolves.toBe('deleted r1');
+
+    expect(charges).toEqual(['10']);
+    expect(calls).toEqual(['r1']);
+  });
+
+  it('runs on resume when the approved arguments come back in another order', async () => {
+    const { deleteRecord, calls } = probe();
+    const first = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await expect(deleteRecord.invoke(first, { recordId: 'r1', reason: 'dup' } as any)).rejects.toMatchObject({
+      name: 'WaitingForUserInputError',
+    });
+
+    const resumed = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: first.checkpointSnapshot(),
+    });
+    await resumed.setUserResponse(0, 'approve');
+
+    await expect(deleteRecord.invoke(resumed, { reason: 'dup', recordId: 'r1' } as any)).resolves.toBe('deleted r1');
+    expect(calls).toEqual(['r1']);
+  });
+
+  it('does not run an approved positional call again under durable activation', async () => {
+    const { deleteRecord, calls } = probe();
+    const charges: string[] = [];
+    const chargeCard = tool('charge_card', { description: 'Charge a card', confirmation: true },
+      async (_ctx: any, amount: string) => { charges.push(amount); return `charged ${amount}`; });
+    // Replays what an activation recorded, the way the runtime does on resume.
+    const recorded = new Map<string, unknown>();
+    const client = {
+      async run(request: BeginActivationRequest, execute: () => Promise<unknown>, options: any) {
+        if (recorded.has(request.stableKey)) return { result: recorded.get(request.stableKey), receipt: {} };
+        await options.onAdmitted({
+          kind: 'EXECUTE', activationId: `actv1_${request.stableKey}`, attempt: 1,
+          acceptedJournalOffset: 1n, fenceToken: new Uint8Array([1]),
+        });
+        const result = await execute();
+        recorded.set(request.stableKey, result);
+        return { result, receipt: {} };
+      },
+    };
+    const durableRun = async (answers: string[]) => {
+      const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'agent', {
+        storage: 'memory',
+        metadata: {
+          durable_activation_v1: 'true', project_id: 'project-1', component_name: 'agent',
+          worker_session_id: 'worker-session-1', run_authority: 'run-authority-1', lease_authority: 'lease-authority-1',
+          activation_definition_version: 'v1', activation_artifact_sha256: '00'.repeat(32), activation_definition_config: '["object",[]]',
+        },
+      });
+      ctx.setActivationClient(client as unknown as ActivationClient);
+      for (const [index, answer] of answers.entries()) await ctx.setUserResponse(index, answer);
+      await chargeCard(ctx, '10');
+      return deleteRecord.invoke(ctx, { recordId: 'r1' });
+    };
+
+    await expect(durableRun([])).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+    await expect(durableRun(['approve'])).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+    expect(charges).toEqual(['10']);
+    await expect(durableRun(['approve', 'approve'])).resolves.toBe('deleted r1');
+
+    expect(charges).toEqual(['10']);
+    expect(calls).toEqual(['r1']);
+  });
+
+  it('does not carry an approval to another pause position', async () => {
+    const { deleteRecord, calls } = probe();
+    const first = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await expect(first.waitForUser('Start the cleanup?')).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+
+    const second = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: first.checkpointSnapshot(),
+    });
+    await second.setUserResponse(0, 'approve');
+    await second.waitForUser('Start the cleanup?');
+    await expect(deleteRecord.invoke(second, { recordId: 'r1' })).rejects.toMatchObject({
+      name: 'WaitingForUserInputError',
+    });
+
+    // The deletion was rejected at pause 1, but the resumed model skips the
+    // first question, so the deletion now reaches pause 0 and its approval.
+    const third = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: second.checkpointSnapshot(),
+    });
+    await third.setUserResponse(0, 'approve');
+    await third.setUserResponse(1, 'reject');
+    const result = await deleteRecord.invoke(third, { recordId: 'r1' });
+
+    expect(calls).toEqual([]);
+    expect(result).toContain('differs from the one the user approved');
+  });
+
+  it('does not run an approved tool that returned nothing again', async () => {
+    const { deleteRecord } = probe();
+    const sent: string[] = [];
+    tool('send_email', { description: 'Send an email', confirmation: true },
+      async (_ctx, args: { to: string }) => { sent.push(args.to); });
+    const sendEmail = ToolRegistry.get('send_email')!;
+    const workflow = async (ctx: ContextImpl) => {
+      await sendEmail.invoke(ctx, { to: 'a@example.com' });
+      return deleteRecord.invoke(ctx, { recordId: 'r1' });
+    };
+
+    const first = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await expect(workflow(first)).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+    const second = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: first.checkpointSnapshot(),
+    });
+    await second.setUserResponse(0, 'approve');
+    await expect(workflow(second)).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+    const third = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: second.checkpointSnapshot(),
+    });
+    await third.setUserResponse(0, 'approve');
+    await third.setUserResponse(1, 'approve');
+    await expect(workflow(third)).resolves.toBe('deleted r1');
+
+    expect(sent).toEqual(['a@example.com']);
+  });
+
+  it('refuses to run inside a step, whose replay would skip the pause', async () => {
+    const { deleteRecord, calls } = probe();
+    const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await ctx.setUserResponse(0, 'approve');
+
+    await expect(
+      ctx.step('cleanup', () => deleteRecord.invoke(ctx, { recordId: 'r1' })),
+    ).rejects.toMatchObject({
+      name: 'ConfigurationError',
+      message: expect.stringContaining('cannot pause for approval'),
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it('refuses to run inside a delegated agent or step, which cannot pause', async () => {
+    const { deleteRecord, calls } = probe();
+    const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await ctx.setUserResponse(0, 'approve');
+    const childActivation = {
+      kind: 'EXECUTE',
+      activationId: 'actv1_child',
+      attempt: 1,
+      acceptedJournalOffset: 1n,
+      fenceToken: new Uint8Array([1]),
+    } as ActivationDecision;
+
+    await expect(
+      runWithActivation(childActivation, () => deleteRecord.invoke(ctx, { recordId: 'r1' })),
+    ).rejects.toMatchObject({
+      name: 'ConfigurationError',
+      message: expect.stringContaining('cannot pause for approval'),
+    });
+    expect(calls).toEqual([]);
   });
 });

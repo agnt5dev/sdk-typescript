@@ -19,10 +19,13 @@ import {
   ActivationKind,
   ActivationRecoveryPolicy,
   activationRequestFromContext,
+  canonicalActivationValue,
+  currentActivation,
   runWithActivation,
 } from './activation.js';
 import type { ActivationDecision } from './activation.js';
 import { normalizeStepInput } from './step-input.js';
+import { inWorkflowStep } from './step-scope.js';
 
 type EvalToolFaultSpec = {
   tool?: string;
@@ -86,6 +89,9 @@ function sequentialToolKey(ctx: Context, toolName: string): string {
   return `tool:${toolName}:${ordinal}`;
 }
 
+/** How many confirmations each context has asked, to key each one's recorded proposal. */
+const confirmationCounts = new WeakMap<object, number>();
+
 /**
  * Tool class representing a callable tool for agents
  */
@@ -133,6 +139,23 @@ export class Tool<TInput = any, TOutput = any> {
    * Invoke the tool with given arguments
    */
   async invoke(
+    ctx: Context,
+    args: Record<string, any>,
+    stableKey?: string,
+    options?: ToolInvokeOptions,
+  ): Promise<TOutput> {
+    if (this.confirmation) {
+      return this.runConfirmed(
+        ctx,
+        args,
+        () => this.invokeApproved(ctx, args, stableKey, options),
+        this.usesDurableActivation(ctx),
+      ) as Promise<TOutput>;
+    }
+    return this.invokeApproved(ctx, args, stableKey, options);
+  }
+
+  private async invokeApproved(
     ctx: Context,
     args: Record<string, any>,
     stableKey?: string,
@@ -193,6 +216,88 @@ export class Tool<TInput = any, TOutput = any> {
     return this.invokeHandler(ctx, args, options?.span);
   }
 
+  /**
+   * Ask a person to approve this call, and run `execute` only once approved.
+   * The question is asked before any durable result is used, so on replay it
+   * reads its recorded answer and the workflow's later pauses keep their own
+   * answers.
+   *
+   * Returns `execute`'s result, or what the caller, usually an agent, gets
+   * instead when the call must not run. `recordsResult` says whether
+   * `execute` runs through a tool activation, which records the result itself.
+   */
+  /** @internal */
+  async runConfirmed<T>(
+    ctx: Context,
+    args: Record<string, any>,
+    execute: () => Promise<T>,
+    recordsResult: boolean,
+  ): Promise<T | string> {
+    const waitForUser = (ctx as any)?.waitForUser;
+    const step = (ctx as any)?.step;
+    if (typeof waitForUser !== 'function' || typeof step !== 'function') {
+      throw new ConfigurationError(
+        `Tool '${this.name}' requires confirmation, which pauses the run for a ` +
+        'person\'s approval. Call it from a workflow, or remove confirmation: true.'
+      );
+    }
+    // Inside a durable activation, such as a delegated agent, a pause would
+    // leave that activation open and the resumed run would wait on it forever.
+    // Inside a step, a later replay returns the step's cached result without
+    // asking again, so the pause count falls behind and later pauses read
+    // earlier answers. Refuse instead of running the tool without approval.
+    if (currentActivation() || inWorkflowStep()) {
+      throw new ConfigurationError(
+        `Tool '${this.name}' requires confirmation, but it was called inside a ` +
+        'delegated agent or a step, which cannot pause for approval yet. Give the ' +
+        'tool to the top-level agent, or call it between workflow steps.'
+      );
+    }
+    let question = `Allow \`${this.name}\` to run?`;
+    if (args && Object.keys(args).length > 0) {
+      question += `\n\nArguments:\n${JSON.stringify(args, null, 2)}`;
+    }
+    // Answers are matched to pauses by position only. Without durable model
+    // replay, an agent resumed after the pause asks the model again and may
+    // propose another tool or other arguments, so record what the person is
+    // asked to approve. The step is keyed by the confirmation's position, not
+    // the tool, so on resume it returns the recorded proposal whichever tool
+    // the model picks now.
+    // The pause position is part of the proposal too, so if the resumed run
+    // reaches this approval at another position, for example because the
+    // model skipped an earlier question, the approval doesn't carry over.
+    const pauseIndex = (ctx as any).nextPauseIndex?.() ?? null;
+    const proposal = new TextDecoder().decode(
+      canonicalActivationValue({ tool: this.name, arguments: normalizeStepInput(args), pause: pauseIndex }),
+    );
+    const ordinal = confirmationCounts.get(ctx) ?? 0;
+    confirmationCounts.set(ctx, ordinal + 1);
+    const key = String(ordinal);
+    const approvedProposal = await step.call(ctx, 'confirm', () => proposal, { key });
+    const decision = await waitForUser.call(ctx, question, {
+      inputType: 'approval',
+      options: [
+        { id: 'approve', label: 'Approve' },
+        { id: 'reject', label: 'Reject' },
+      ],
+    });
+    // Older Studio versions answer approval pauses with "approved".
+    if (typeof decision !== 'string' || !['approve', 'approved'].includes(decision.trim().toLowerCase())) {
+      return `The user rejected the call to '${this.name}', so it did not run.`;
+    }
+    if (approvedProposal !== proposal) {
+      return `The call to '${this.name}' differs from the one the user approved, so it did not run.`;
+    }
+    // A tool activation records the result itself. Otherwise checkpoint it,
+    // so a replay for a later pause returns it instead of running the
+    // approved effect again.
+    // The result is wrapped so a tool that returns nothing still leaves a
+    // checkpoint; an undefined one reads as never run.
+    if (recordsResult) return execute();
+    const done = await step.call(ctx, 'confirmed', async () => ({ result: await execute() }), { key });
+    return done.result;
+  }
+
   private invokeHandler(
     ctx: Context,
     args: Record<string, any>,
@@ -203,12 +308,6 @@ export class Tool<TInput = any, TOutput = any> {
   }
 
   private async runHandler(ctx: Context, args: Record<string, any>): Promise<TOutput> {
-    if (this.confirmation) {
-      ctx.logger.warn(
-        `Tool '${this.name}' requires confirmation; no approval handler is configured`
-      );
-    }
-
     ctx.logger.debug(`Invoking tool '${this.name}' with args: ${Object.keys(args).join(', ')}`);
 
     const injectedFault = consumeEvalToolFault(ctx, this.name);
@@ -401,7 +500,14 @@ export function tool<TInput = any, TOutput = any>(
     }
 
     // Otherwise, direct call (positional or no arguments), traced like invoke().
-    return traceTool(name, ctx, () => (toolInstance.handler as any)(ctx, ...args));
+    // It still asks first when the tool needs confirmation.
+    const run = () => traceTool(name, ctx, () => (toolInstance.handler as any)(ctx, ...args));
+    if (toolInstance.confirmation) {
+      // A positional call runs the handler directly, never through a tool
+      // activation, so its result is always checkpointed.
+      return toolInstance.runConfirmed(ctx, args.length > 0 ? { args } : {}, run, false) as Promise<TOutput>;
+    }
+    return run();
   };
 
   // Attach tool instance for inspection
