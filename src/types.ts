@@ -177,7 +177,10 @@ export interface Context {
       timeoutMs?: number;
     },
   ): Promise<string | null>;
-  /** Pause workflow execution until an external signal is supplied. */
+  /**
+   * Pause workflow execution until an external signal is supplied. Deliver it
+   * from an application with `client.signal(runId, signalName, payload)`.
+   */
   waitForSignal<T = unknown>(signalName: string, name?: string, options?: { timeoutMs?: number }): Promise<T>;
 
   // Logging
