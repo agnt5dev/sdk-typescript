@@ -297,6 +297,61 @@ describe('managed worker durable activations', () => {
     expect(native.beginActivation).not.toHaveBeenCalled();
   });
 
+  it('keeps answers given before a durable sleep when the timer resumes', async () => {
+    workflow('durable-workflow', async ctx => {
+      const plan = await ctx.waitForUser('Approve the plan?');
+      const budget = await ctx.waitForUser('Approve the budget?');
+      await ctx.sleep(2_500, 'payout');
+      return { plan, budget };
+    });
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    // The budget answer arrives with this resume; the plan answer with an earlier one.
+    const beforeSleep = await dispatch(worker, {
+      ...activationMetadata(),
+      durable_suspension_v1: 'true',
+      step_events: JSON.stringify({ 0: 'approve' }),
+      user_response: 'approve',
+      pause_index: '1',
+    });
+    expect(beforeSleep.workerSuspension.timerKey).toBe('sleep:payout');
+    const continuation = Buffer.from(beforeSleep.workerSuspension.continuation).toString('base64url');
+
+    // The timer resume carries only the continuation, not the earlier answers.
+    const afterSleep = await dispatch(worker, {
+      ...activationMetadata(),
+      durable_suspension_v1: 'true',
+      timer_key: 'sleep:payout',
+      activation_id: await activationId('project-1', 'run-1', '', ActivationKind.Timer, 'sleep:payout'),
+      continuation_b64: continuation,
+    });
+
+    expect(afterSleep.eventType).toBe('run.completed');
+    expect(JSON.parse(afterSleep.outputJson)).toEqual({ plan: 'approve', budget: 'approve' });
+  });
+
+  it('keeps answers given before a signal wait when the signal arrives', async () => {
+    workflow('durable-workflow', async ctx => {
+      const plan = await ctx.waitForUser('Approve the plan?');
+      const shipped = await ctx.waitForSignal<string>('shipped');
+      return { plan, shipped };
+    });
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    const waiting = await dispatch(worker, {
+      ...activationMetadata(),
+      dispatch_mode: 'pull',
+      user_response: 'approve',
+      pause_index: '0',
+    });
+    expect(waiting.metadata.pause_reason).toBe('signal');
+    expect(JSON.parse(waiting.metadata.step_events)).toEqual({ 0: 'approve' });
+  });
+
   it('propagates execution authority to lifecycle records without leaking secrets', async () => {
     workflow('durable-workflow', async ctx => ctx.step('authority', async () => 'done'));
     const native = activationNative();

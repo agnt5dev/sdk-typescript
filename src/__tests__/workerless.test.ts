@@ -525,6 +525,36 @@ describe('workerless serve()', () => {
     }
   });
 
+  it('keeps an answer given before a sleep when the timer resumes', async () => {
+    const originalNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+    try {
+      workflow('approve-then-wait', async (ctx) => {
+        const plan = await ctx.waitForUser('Approve the plan?');
+        await sleep(ctx, 1_500, 'payout');
+        return { plan };
+      });
+      const handler = serve({ allowUnsigned: true });
+
+      const sleeping = await (await invoke(handler, 'workflow', 'approve-then-wait', {}, undefined, undefined, {
+        pause_index: '0',
+        user_response: 'approve',
+      })).json() as any;
+      expect(sleeping).toMatchObject({ status: 'suspended', reason: 'timer', step_events: { 0: 'approve' } });
+
+      // The runtime hands step_events back on the timer resume, as a JSON string.
+      now = 2_500;
+      const resumed = await (await invoke(handler, 'workflow', 'approve-then-wait', {}, sleeping.checkpoint, undefined, {
+        step_events: JSON.stringify(sleeping.step_events),
+      })).json() as any;
+
+      expect(resumed).toMatchObject({ status: 'completed', output: { plan: 'approve' } });
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
   it('returns user-input suspension and resumes from metadata response', async () => {
     let fetchCount = 0;
     workflow('review', async (ctx) => {

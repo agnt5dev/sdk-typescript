@@ -135,6 +135,7 @@ export class WorkerlessContext implements Context {
       reason,
       checkpointState: this.checkpointSnapshot(),
       deadlineMs: this.workerlessDeadlineMs,
+      stepEvents: this.stepEventsSnapshot(),
     });
   }
 
@@ -161,6 +162,7 @@ export class WorkerlessContext implements Context {
       checkpointState: this.checkpointSnapshot(),
       readyAtMs,
       timerKey,
+      stepEvents: this.stepEventsSnapshot(),
     });
   }
 
@@ -221,6 +223,7 @@ export class WorkerlessContext implements Context {
       signalName,
       waitingStep,
       timeoutMs: options?.timeoutMs,
+      stepEvents: this.stepEventsSnapshot(),
     });
   }
 
