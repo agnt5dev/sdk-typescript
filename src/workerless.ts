@@ -677,6 +677,11 @@ async function handleInvoke<Env, RuntimeContext>(
           deadline_ms: err.deadlineMs,
         };
       }
+      // The runtime hands these back on resume, so answers to earlier pauses
+      // survive a timer, signal or budget suspension.
+      if (err.stepEvents && Object.keys(err.stepEvents).length > 0) {
+        suspended.step_events = err.stepEvents;
+      }
       return jsonResponse(withWorkerlessEvents(suspended, events), 200);
     }
     if (isWaitingForUserInput(err)) {

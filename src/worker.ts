@@ -417,10 +417,13 @@ class SimpleContext implements Context {
 
       const completedSteps = Object.fromEntries(this._stepCache);
       const workflowState = Object.fromEntries(this.state);
+      // The timer resume carries only this continuation, so it must hold the
+      // answers to earlier pauses too, or the run asks them again after the sleep.
       const continuation = new TextEncoder().encode(JSON.stringify({
         completed_steps: completedSteps,
         workflow_state: workflowState,
         workflow_correlation_id: this._workflowCid,
+        ...(this._userResponses.size > 0 ? { step_events: this.answeredStepEvents() } : {}),
       }));
       throw new DurableSleepSuspensionError(
         decision.activationId,
@@ -434,6 +437,14 @@ class SimpleContext implements Context {
       );
     }
     await new Promise<void>(resolve => setTimeout(resolve, durationMs));
+  }
+
+  /** Answers given to earlier pauses, keyed by pause index, or undefined if none. */
+  private answeredStepEvents(): Record<string, string | null> | undefined {
+    if (this._userResponses.size === 0) return undefined;
+    return Object.fromEntries(
+      [...this._userResponses.entries()].map(([index, response]) => [String(index), response]),
+    );
   }
 
   /**
@@ -796,14 +807,8 @@ class SimpleContext implements Context {
     // Persist history of completed pauses so subsequent resumes can replay
     // the full chain. CompleteJob carries this metadata onto workflow.paused,
     // and the gateway copies it onto the next dispatch.
-    let stepEvents: Record<string, string | null> | undefined;
-    if (this._userResponses.size > 0) {
-      stepEvents = {};
-      for (const [idx, response] of this._userResponses.entries()) {
-        stepEvents[String(idx)] = response;
-      }
-      metadata.step_events = JSON.stringify(stepEvents);
-    }
+    const stepEvents = this.answeredStepEvents();
+    if (stepEvents) metadata.step_events = JSON.stringify(stepEvents);
 
     // Persist ctx.step() results across the pause boundary.
     const checkpointState: Record<string, any> = {};
@@ -867,10 +872,13 @@ class SimpleContext implements Context {
     const key = `signal:${signalName}:${waitingStep}`;
     if (this._stepCache.has(key)) return this._stepCache.get(key) as T;
     const checkpointState = Object.fromEntries(this._stepCache);
+    // Earlier answers ride along so the signal's resume doesn't ask them again.
+    const stepEvents = this.answeredStepEvents();
     const metadata: Record<string, string> = {
       pause_reason: 'signal', signal_name: signalName, waiting_step: waitingStep,
       completed_steps: JSON.stringify(checkpointState),
       workflow_state: JSON.stringify(Object.fromEntries(this.state)),
+      ...(stepEvents ? { step_events: JSON.stringify(stepEvents) } : {}),
     };
     if (options?.timeoutMs !== undefined) {
       validateSleepDuration(options.timeoutMs);
@@ -880,7 +888,7 @@ class SimpleContext implements Context {
     if (this.metadata.dispatch_mode !== 'pull' && this._emitter) {
       await this._emitter.emit(workflowPaused(this._workflowCid, this._runCid!, { reason: 'signal', pauseData: {}, metadata }));
     }
-    throw new SuspensionRequestedError({ runId: this.runId, reason: 'signal', signalName, waitingStep, checkpointState, timeoutMs: options?.timeoutMs });
+    throw new SuspensionRequestedError({ runId: this.runId, reason: 'signal', signalName, waitingStep, checkpointState, timeoutMs: options?.timeoutMs, stepEvents });
   }
 
   /** Run a step body inside a `workflow.step.<name>` span. Replays don't get one. */
@@ -1756,6 +1764,7 @@ export class Worker {
               metadata: {
                 pause_reason: error.reason, signal_name: error.signalName, waiting_step: error.waitingStep,
                 completed_steps: JSON.stringify(error.checkpointState),
+                ...(error.stepEvents ? { step_events: JSON.stringify(error.stepEvents) } : {}),
                 ...(error.timeoutMs !== undefined ? { wait_timeout_ms: String(error.timeoutMs) } : {}),
               },
             });

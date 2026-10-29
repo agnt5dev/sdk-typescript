@@ -228,6 +228,8 @@ export class SuspensionRequestedError extends AGNT5Error {
   public readonly timerKey?: string;
   public readonly signalName?: string;
   public readonly waitingStep?: string;
+  /** Answers already given to earlier pauses, by pause index, so a resume keeps them. */
+  public readonly stepEvents?: Record<string, string | null>;
 
   constructor(opts: {
     runId: string;
@@ -239,6 +241,7 @@ export class SuspensionRequestedError extends AGNT5Error {
     timerKey?: string;
     signalName?: string;
     waitingStep?: string;
+    stepEvents?: Record<string, string | null>;
   }) {
     super(`Execution suspended: ${opts.reason}`);
     this.name = 'SuspensionRequestedError';
@@ -251,6 +254,7 @@ export class SuspensionRequestedError extends AGNT5Error {
     this.timerKey = opts.timerKey;
     this.signalName = opts.signalName;
     this.waitingStep = opts.waitingStep;
+    this.stepEvents = opts.stepEvents;
   }
 }
 
