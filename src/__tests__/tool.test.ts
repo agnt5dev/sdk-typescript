@@ -454,6 +454,65 @@ describe('Tool confirmation', () => {
     expect(calls).toEqual(['r1']);
   });
 
+  it('does not carry an approval to another pause position', async () => {
+    const { deleteRecord, calls } = probe();
+    const first = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await expect(first.waitForUser('Start the cleanup?')).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+
+    const second = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: first.checkpointSnapshot(),
+    });
+    await second.setUserResponse(0, 'approve');
+    await second.waitForUser('Start the cleanup?');
+    await expect(deleteRecord.invoke(second, { recordId: 'r1' })).rejects.toMatchObject({
+      name: 'WaitingForUserInputError',
+    });
+
+    // The deletion was rejected at pause 1, but the resumed model skips the
+    // first question, so the deletion now reaches pause 0 and its approval.
+    const third = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: second.checkpointSnapshot(),
+    });
+    await third.setUserResponse(0, 'approve');
+    await third.setUserResponse(1, 'reject');
+    const result = await deleteRecord.invoke(third, { recordId: 'r1' });
+
+    expect(calls).toEqual([]);
+    expect(result).toContain('differs from the one the user approved');
+  });
+
+  it('does not run an approved tool that returned nothing again', async () => {
+    const { deleteRecord } = probe();
+    const sent: string[] = [];
+    tool('send_email', { description: 'Send an email', confirmation: true },
+      async (_ctx, args: { to: string }) => { sent.push(args.to); });
+    const sendEmail = ToolRegistry.get('send_email')!;
+    const workflow = async (ctx: ContextImpl) => {
+      await sendEmail.invoke(ctx, { to: 'a@example.com' });
+      return deleteRecord.invoke(ctx, { recordId: 'r1' });
+    };
+
+    const first = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await expect(workflow(first)).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+    const second = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: first.checkpointSnapshot(),
+    });
+    await second.setUserResponse(0, 'approve');
+    await expect(workflow(second)).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+    const third = new ContextImpl('inv-1', 'run-confirm', 0, 'test', {
+      storage: 'memory',
+      checkpoints: second.checkpointSnapshot(),
+    });
+    await third.setUserResponse(0, 'approve');
+    await third.setUserResponse(1, 'approve');
+    await expect(workflow(third)).resolves.toBe('deleted r1');
+
+    expect(sent).toEqual(['a@example.com']);
+  });
+
   it('refuses to run inside a step, whose replay would skip the pause', async () => {
     const { deleteRecord, calls } = probe();
     const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });

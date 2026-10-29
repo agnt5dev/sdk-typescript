@@ -363,6 +363,11 @@ export class ContextImpl implements Context {
     } finally { clearTimeout(timer); }
   }
 
+  /** @internal The position the next waitForUser call pauses at. */
+  nextPauseIndex(): number {
+    return this._pauseIndex;
+  }
+
   checkpointSnapshot(): Record<string, any> {
     return Object.fromEntries(this._checkpointSnapshot.entries());
   }

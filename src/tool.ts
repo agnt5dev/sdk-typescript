@@ -263,8 +263,12 @@ export class Tool<TInput = any, TOutput = any> {
     // asked to approve. The step is keyed by the confirmation's position, not
     // the tool, so on resume it returns the recorded proposal whichever tool
     // the model picks now.
+    // The pause position is part of the proposal too, so if the resumed run
+    // reaches this approval at another position, for example because the
+    // model skipped an earlier question, the approval doesn't carry over.
+    const pauseIndex = (ctx as any).nextPauseIndex?.() ?? null;
     const proposal = new TextDecoder().decode(
-      canonicalActivationValue({ tool: this.name, arguments: normalizeStepInput(args) }),
+      canonicalActivationValue({ tool: this.name, arguments: normalizeStepInput(args), pause: pauseIndex }),
     );
     const ordinal = confirmationCounts.get(ctx) ?? 0;
     confirmationCounts.set(ctx, ordinal + 1);
@@ -287,8 +291,11 @@ export class Tool<TInput = any, TOutput = any> {
     // A tool activation records the result itself. Otherwise checkpoint it,
     // so a replay for a later pause returns it instead of running the
     // approved effect again.
+    // The result is wrapped so a tool that returns nothing still leaves a
+    // checkpoint; an undefined one reads as never run.
     if (recordsResult) return execute();
-    return step.call(ctx, 'confirmed', execute, { key });
+    const done = await step.call(ctx, 'confirmed', async () => ({ result: await execute() }), { key });
+    return done.result;
   }
 
   private invokeHandler(
