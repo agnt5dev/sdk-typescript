@@ -411,6 +411,49 @@ describe('Tool confirmation', () => {
     expect(calls).toEqual(['r1']);
   });
 
+  it('does not run an approved positional call again under durable activation', async () => {
+    const { deleteRecord, calls } = probe();
+    const charges: string[] = [];
+    const chargeCard = tool('charge_card', { description: 'Charge a card', confirmation: true },
+      async (_ctx: any, amount: string) => { charges.push(amount); return `charged ${amount}`; });
+    // Replays what an activation recorded, the way the runtime does on resume.
+    const recorded = new Map<string, unknown>();
+    const client = {
+      async run(request: BeginActivationRequest, execute: () => Promise<unknown>, options: any) {
+        if (recorded.has(request.stableKey)) return { result: recorded.get(request.stableKey), receipt: {} };
+        await options.onAdmitted({
+          kind: 'EXECUTE', activationId: `actv1_${request.stableKey}`, attempt: 1,
+          acceptedJournalOffset: 1n, fenceToken: new Uint8Array([1]),
+        });
+        const result = await execute();
+        recorded.set(request.stableKey, result);
+        return { result, receipt: {} };
+      },
+    };
+    const durableRun = async (answers: string[]) => {
+      const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'agent', {
+        storage: 'memory',
+        metadata: {
+          durable_activation_v1: 'true', project_id: 'project-1', component_name: 'agent',
+          worker_session_id: 'worker-session-1', run_authority: 'run-authority-1', lease_authority: 'lease-authority-1',
+          activation_definition_version: 'v1', activation_artifact_sha256: '00'.repeat(32), activation_definition_config: '["object",[]]',
+        },
+      });
+      ctx.setActivationClient(client as unknown as ActivationClient);
+      for (const [index, answer] of answers.entries()) await ctx.setUserResponse(index, answer);
+      await chargeCard(ctx, '10');
+      return deleteRecord.invoke(ctx, { recordId: 'r1' });
+    };
+
+    await expect(durableRun([])).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+    await expect(durableRun(['approve'])).rejects.toMatchObject({ name: 'WaitingForUserInputError' });
+    expect(charges).toEqual(['10']);
+    await expect(durableRun(['approve', 'approve'])).resolves.toBe('deleted r1');
+
+    expect(charges).toEqual(['10']);
+    expect(calls).toEqual(['r1']);
+  });
+
   it('refuses to run inside a step, whose replay would skip the pause', async () => {
     const { deleteRecord, calls } = probe();
     const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });

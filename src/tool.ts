@@ -145,7 +145,12 @@ export class Tool<TInput = any, TOutput = any> {
     options?: ToolInvokeOptions,
   ): Promise<TOutput> {
     if (this.confirmation) {
-      return this.runConfirmed(ctx, args, () => this.invokeApproved(ctx, args, stableKey, options)) as Promise<TOutput>;
+      return this.runConfirmed(
+        ctx,
+        args,
+        () => this.invokeApproved(ctx, args, stableKey, options),
+        this.usesDurableActivation(ctx),
+      ) as Promise<TOutput>;
     }
     return this.invokeApproved(ctx, args, stableKey, options);
   }
@@ -218,13 +223,15 @@ export class Tool<TInput = any, TOutput = any> {
    * answers.
    *
    * Returns `execute`'s result, or what the caller, usually an agent, gets
-   * instead when the call must not run.
+   * instead when the call must not run. `recordsResult` says whether
+   * `execute` runs through a tool activation, which records the result itself.
    */
   /** @internal */
   async runConfirmed<T>(
     ctx: Context,
     args: Record<string, any>,
     execute: () => Promise<T>,
+    recordsResult: boolean,
   ): Promise<T | string> {
     const waitForUser = (ctx as any)?.waitForUser;
     const step = (ctx as any)?.step;
@@ -277,10 +284,10 @@ export class Tool<TInput = any, TOutput = any> {
     if (approvedProposal !== proposal) {
       return `The call to '${this.name}' differs from the one the user approved, so it did not run.`;
     }
-    // A durable activation records the result itself. Otherwise checkpoint
-    // it, so a replay for a later pause returns it instead of running the
+    // A tool activation records the result itself. Otherwise checkpoint it,
+    // so a replay for a later pause returns it instead of running the
     // approved effect again.
-    if (this.usesDurableActivation(ctx)) return execute();
+    if (recordsResult) return execute();
     return step.call(ctx, 'confirmed', execute, { key });
   }
 
@@ -489,7 +496,9 @@ export function tool<TInput = any, TOutput = any>(
     // It still asks first when the tool needs confirmation.
     const run = () => traceTool(name, ctx, () => (toolInstance.handler as any)(ctx, ...args));
     if (toolInstance.confirmation) {
-      return toolInstance.runConfirmed(ctx, args.length > 0 ? { args } : {}, run) as Promise<TOutput>;
+      // A positional call runs the handler directly, never through a tool
+      // activation, so its result is always checkpointed.
+      return toolInstance.runConfirmed(ctx, args.length > 0 ? { args } : {}, run, false) as Promise<TOutput>;
     }
     return run();
   };
