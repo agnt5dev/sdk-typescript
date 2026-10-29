@@ -593,6 +593,17 @@ export interface WorkflowPaused extends BaseEvent {
   pauseData: Record<string, any>;
 }
 
+/** A question a paused run is waiting on, for the approvals view and Studio. */
+export interface ApprovalRequested extends BaseEvent {
+  eventType: 'approval.requested';
+  question: string;
+  inputType: string;
+  options: Array<{ id: string; label: string }>;
+  stepKey: string;
+  allowCustom: boolean;
+  skippable: boolean;
+}
+
 // ─── Workflow step lifecycle events ─────────────────────────────────
 
 export interface WorkflowStepStarted extends BaseEvent {
@@ -698,7 +709,7 @@ export function outputDelta(
 export type LifecycleEvent =
   | RunStarted | RunCompleted | RunFailed
   | FunctionStarted | FunctionCompleted | FunctionFailed
-  | WorkflowStarted | WorkflowCompleted | WorkflowFailed | WorkflowPaused
+  | WorkflowStarted | WorkflowCompleted | WorkflowFailed | WorkflowPaused | ApprovalRequested
   | WorkflowStepStarted | WorkflowStepCompleted | WorkflowStepFailed
   | LMStarted | LMCompleted | LMFailed
   | ToolStarted | ToolCompleted | ToolFailed
@@ -870,6 +881,34 @@ export function workflowPaused(
     componentType: 'workflow',
     reason: opts.reason,
     pauseData: opts.pauseData,
+  };
+}
+
+/**
+ * The question a `waitForUser` pause asks, with the same fields Python's
+ * `ApprovalRequested` journals, so every SDK's pauses read the same.
+ */
+export function approvalRequested(
+  correlationId: string,
+  parentCorrelationId: string,
+  opts: {
+    stepName: string;
+    question: string;
+    inputType?: string;
+    options?: Array<{ id: string; label: string }>;
+    allowCustom?: boolean;
+    skippable?: boolean;
+  },
+): ApprovalRequested {
+  return {
+    ...baseFields(opts.stepName, correlationId, parentCorrelationId),
+    eventType: 'approval.requested',
+    question: opts.question,
+    inputType: opts.inputType ?? 'text',
+    options: opts.options ?? [],
+    stepKey: opts.stepName,
+    allowCustom: opts.allowCustom ?? false,
+    skippable: opts.skippable ?? false,
   };
 }
 

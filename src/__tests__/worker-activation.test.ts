@@ -297,6 +297,52 @@ describe('managed worker durable activations', () => {
     expect(native.beginActivation).not.toHaveBeenCalled();
   });
 
+  it.each(['push', 'pull'])('journals the question as approval.requested before a %s pause', async (mode) => {
+    workflow('durable-workflow', async ctx => ctx.waitForUser('Publish the release notes?', {
+      inputType: 'approval',
+      options: [{ id: 'publish', label: 'Publish' }, { id: 'hold', label: 'Hold' }],
+    }));
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    const response = await dispatch(worker, {
+      ...activationMetadata(),
+      ...(mode === 'pull' ? { dispatch_mode: 'pull' } : {}),
+    });
+
+    expect(response.eventType).toBe('workflow.paused');
+    const events = lifecycleCheckpoints(native);
+    const requested = events.find(event => event.eventType === 'approval.requested');
+    expect(requested).toBeDefined();
+    expect(JSON.parse(requested!.eventData)).toMatchObject({
+      question: 'Publish the release notes?',
+      input_type: 'approval',
+      options: [{ id: 'publish', label: 'Publish' }, { id: 'hold', label: 'Hold' }],
+      step_key: 'wait_for_user_0',
+      allow_custom: false,
+      skippable: false,
+    });
+    const pausedAt = events.findIndex(event => event.eventType === 'workflow.paused');
+    if (pausedAt >= 0) expect(events.indexOf(requested!)).toBeLessThan(pausedAt);
+  });
+
+  it('does not ask again once the pause is answered', async () => {
+    workflow('durable-workflow', async ctx => ctx.waitForUser('Publish?'));
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    const response = await dispatch(worker, {
+      ...activationMetadata(),
+      user_response: 'yes',
+      pause_index: '0',
+    });
+
+    expect(response.eventType).toBe('run.completed');
+    expect(lifecycleCheckpoints(native).some(event => event.eventType === 'approval.requested')).toBe(false);
+  });
+
   it('keeps answers given before a durable sleep when the timer resumes', async () => {
     workflow('durable-workflow', async ctx => {
       const plan = await ctx.waitForUser('Approve the plan?');

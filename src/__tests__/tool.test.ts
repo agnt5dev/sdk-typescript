@@ -268,6 +268,18 @@ describe('Tool', () => {
   });
 });
 
+describe('ContextImpl waits', () => {
+  it('carries a wait timeout to the pause instead of refusing it', async () => {
+    const ctx = new ContextImpl('inv-1', 'run-timeout', 0, 'test', { storage: 'memory' });
+
+    await expect(ctx.waitForUser('Approve?', { timeoutMs: 60_000 })).rejects.toMatchObject({
+      name: 'WaitingForUserInputError',
+      timeoutMs: 60_000,
+    });
+    await expect(ctx.waitForUser('Approve?', { timeoutMs: -1 })).rejects.toThrow('timeoutMs must be a non-negative safe integer');
+  });
+});
+
 describe('Tool confirmation', () => {
   beforeEach(() => {
     ToolRegistry.clear();

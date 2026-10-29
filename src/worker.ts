@@ -38,7 +38,7 @@ import {
   generateCid,
   runStarted, runCompleted, runFailed,
   functionStarted, functionCompleted, functionFailed,
-  workflowStarted, workflowCompleted, workflowFailed, workflowPaused,
+  workflowStarted, workflowCompleted, workflowFailed, workflowPaused, approvalRequested,
   toolStarted, toolCompleted, toolFailed,
   outputDelta,
   logEvent,
@@ -817,6 +817,19 @@ class SimpleContext implements Context {
     }
     if (Object.keys(checkpointState).length > 0) {
       metadata.completed_steps = JSON.stringify(checkpointState);
+    }
+
+    // The approvals view and Studio read the question from approval.requested,
+    // as Python and Go journal it. Push and pull runs both emit it.
+    if (this._emitter && this._workflowCid) {
+      await this._emitter.emit(approvalRequested(generateCid(), this._workflowCid, {
+        stepName,
+        question,
+        inputType: options?.inputType,
+        options: options?.options,
+        allowCustom: options?.allowCustom,
+        skippable: options?.skippable,
+      }));
     }
 
     if (
