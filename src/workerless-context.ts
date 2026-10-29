@@ -1,4 +1,5 @@
 import { SuspensionRequestedError, WaitingForUserInputError } from './errors.js';
+import { approvalRequested, generateCid } from './events.js';
 import { runInWorkflowStep, assertWorkflowWaitBoundary, assertWorkflowStreamsClosed } from './step-scope.js';
 import type { HITLInputType, HITLOption } from './errors.js';
 import { emptyRuntimeContext } from './runtime-context.js';
@@ -189,6 +190,16 @@ export class WorkerlessContext implements Context {
     }
 
     const stepName = `wait_for_user_${pauseIndex}`;
+    // Returned with the suspension and journaled by the runtime, so the
+    // approvals view and Studio see the question as they do for Python.
+    await this.emit(approvalRequested(generateCid(), '', {
+      stepName,
+      question,
+      inputType: options?.inputType,
+      options: options?.options,
+      allowCustom: options?.allowCustom,
+      skippable: options?.skippable,
+    }));
     throw new WaitingForUserInputError({
       runId: this.runId,
       question,

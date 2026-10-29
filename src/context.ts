@@ -418,7 +418,9 @@ export class ContextImpl implements Context {
     },
   ): Promise<string | null> {
     if (this._activationClient || currentActivation()) assertWorkflowWaitBoundary(this);
-    if (options?.timeoutMs !== undefined) throw new ConfigurationError('Wait timeouts require a managed or workerless workflow');
+    if (options?.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0)) {
+      throw new RangeError('timeoutMs must be a non-negative safe integer');
+    }
     const pauseIndex = this._pauseIndex++;
     const responseKey = `user_response:${this.runId}:${pauseIndex}`;
     const stepName = `wait_for_user_${pauseIndex}`;
@@ -439,6 +441,8 @@ export class ContextImpl implements Context {
       allowCustom: options?.allowCustom,
       skippable: options?.skippable,
       stepName,
+      // The runtime fails the run with WAIT_TIMEOUT when nobody answers in time.
+      timeoutMs: options?.timeoutMs,
     });
   }
 

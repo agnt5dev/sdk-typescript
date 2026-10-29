@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Journal `approval.requested` when `waitForUser` pauses, as Python and Go do, on managed and workerless workers. TypeScript pauses were missing from the run's approvals, and Studio showed every approval as Approve/Reject whatever its options said. `ctx.waitForUser({ timeoutMs })` on a standalone context now carries the timeout to the pause instead of throwing.
 - Keep answers given before a durable sleep or a signal wait. When a run resumed from a timer or a signal, it kept only the answer delivered with its latest resume, so an approval given before `ctx.sleep` or `ctx.waitForSignal` was asked again and the run blocked until someone answered a second time. Every suspension now carries the answers to earlier pauses, on managed and workerless workers.
 - Ask before running a tool marked `confirmation: true`. The flag was sent to the platform but ignored at run time, so the tool ran without approval. The run now pauses with an approval question before the tool runs, and a rejected call returns a message to the agent instead of running. A context that can't pause raises `ConfigurationError`, as does a call inside a delegated agent under durable activation, or inside any `ctx.step`, which can't pause for approval yet. The tool and arguments the person is asked to approve are recorded with the pause, and if the model proposes a different call after resuming, nothing runs. An approved call's result is checkpointed, so resuming a later pause doesn't run it again.
 
