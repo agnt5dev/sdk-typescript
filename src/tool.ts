@@ -138,6 +138,9 @@ export class Tool<TInput = any, TOutput = any> {
     stableKey?: string,
     options?: ToolInvokeOptions,
   ): Promise<TOutput> {
+    if (this.confirmation && !(await this.confirm(ctx, args))) {
+      return this.rejectedResult() as TOutput;
+    }
     if (this.usesDurableActivation(ctx)) {
       const client = (ctx as ContextImpl).getActivationClient?.();
       if (!client) {
@@ -193,6 +196,40 @@ export class Tool<TInput = any, TOutput = any> {
     return this.invokeHandler(ctx, args, options?.span);
   }
 
+  /**
+   * Ask a person to approve this call before it runs. The question is asked
+   * before any durable result is used, so on replay it reads its recorded
+   * answer and the workflow's later pauses keep their own answers.
+   */
+  /** @internal */
+  async confirm(ctx: Context, args: Record<string, any>): Promise<boolean> {
+    const waitForUser = (ctx as any)?.waitForUser;
+    if (typeof waitForUser !== 'function') {
+      throw new ConfigurationError(
+        `Tool '${this.name}' requires confirmation, which pauses the run for a ` +
+        'person\'s approval. Call it from a workflow, or remove confirmation: true.'
+      );
+    }
+    let question = `Allow \`${this.name}\` to run?`;
+    if (args && Object.keys(args).length > 0) {
+      question += `\n\nArguments:\n${JSON.stringify(args, null, 2)}`;
+    }
+    const decision = await waitForUser.call(ctx, question, {
+      inputType: 'approval',
+      options: [
+        { id: 'approve', label: 'Approve' },
+        { id: 'reject', label: 'Reject' },
+      ],
+    });
+    // Older Studio versions answer approval pauses with "approved".
+    return typeof decision === 'string' && ['approve', 'approved'].includes(decision.trim().toLowerCase());
+  }
+
+  /** @internal What the caller, usually an agent, gets when the call is rejected. */
+  rejectedResult(): string {
+    return `The user rejected the call to '${this.name}', so it did not run.`;
+  }
+
   private invokeHandler(
     ctx: Context,
     args: Record<string, any>,
@@ -203,12 +240,6 @@ export class Tool<TInput = any, TOutput = any> {
   }
 
   private async runHandler(ctx: Context, args: Record<string, any>): Promise<TOutput> {
-    if (this.confirmation) {
-      ctx.logger.warn(
-        `Tool '${this.name}' requires confirmation; no approval handler is configured`
-      );
-    }
-
     ctx.logger.debug(`Invoking tool '${this.name}' with args: ${Object.keys(args).join(', ')}`);
 
     const injectedFault = consumeEvalToolFault(ctx, this.name);
@@ -401,6 +432,10 @@ export function tool<TInput = any, TOutput = any>(
     }
 
     // Otherwise, direct call (positional or no arguments), traced like invoke().
+    // It still asks first when the tool needs confirmation.
+    if (toolInstance.confirmation && !(await toolInstance.confirm(ctx, {}))) {
+      return toolInstance.rejectedResult() as TOutput;
+    }
     return traceTool(name, ctx, () => (toolInstance.handler as any)(ctx, ...args));
   };
 

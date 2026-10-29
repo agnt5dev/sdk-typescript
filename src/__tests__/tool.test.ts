@@ -266,3 +266,56 @@ describe('Tool', () => {
     });
   });
 });
+
+describe('Tool confirmation', () => {
+  beforeEach(() => {
+    ToolRegistry.clear();
+  });
+
+  function probe() {
+    const calls: string[] = [];
+    tool(
+      'delete_record',
+      { description: 'Delete a record', confirmation: true },
+      async (_ctx, args: { recordId: string }) => {
+        calls.push(args.recordId);
+        return `deleted ${args.recordId}`;
+      },
+    );
+    const deleteRecord = ToolRegistry.get('delete_record')!;
+    return { deleteRecord, calls };
+  }
+
+  it('pauses for approval before the tool runs', async () => {
+    const { deleteRecord, calls } = probe();
+    const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+
+    await expect(deleteRecord.invoke(ctx, { recordId: 'r1' })).rejects.toMatchObject({
+      name: 'WaitingForUserInputError',
+      inputType: 'approval',
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it.each(['approve', 'approved'])('runs once answered %s, and leaves later pauses their own answers', async (answer) => {
+    const { deleteRecord, calls } = probe();
+    const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await ctx.setUserResponse(0, answer);
+    await ctx.setUserResponse(1, 'next answer');
+
+    await expect(deleteRecord.invoke(ctx, { recordId: 'r1' })).resolves.toBe('deleted r1');
+    expect(calls).toEqual(['r1']);
+    await expect(ctx.waitForUser('Next?')).resolves.toBe('next answer');
+  });
+
+  it('does not run when rejected', async () => {
+    const { deleteRecord, calls } = probe();
+    const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await ctx.setUserResponse(0, 'reject');
+
+    const result = await deleteRecord.invoke(ctx, { recordId: 'r1' });
+
+    expect(calls).toEqual([]);
+    expect(result).toContain('rejected');
+  });
+});
