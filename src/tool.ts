@@ -25,6 +25,7 @@ import {
 } from './activation.js';
 import type { ActivationDecision } from './activation.js';
 import { normalizeStepInput } from './step-input.js';
+import { inWorkflowStep } from './step-scope.js';
 
 type EvalToolFaultSpec = {
   tool?: string;
@@ -218,10 +219,12 @@ export class Tool<TInput = any, TOutput = any> {
         'person\'s approval. Call it from a workflow, or remove confirmation: true.'
       );
     }
-    // Inside a durable activation, such as a delegated agent or a step, a pause
-    // would leave that activation open and the resumed run would wait on it
-    // forever. Refuse instead of running the tool without approval.
-    if (currentActivation()) {
+    // Inside a durable activation, such as a delegated agent, a pause would
+    // leave that activation open and the resumed run would wait on it forever.
+    // Inside a step, a later replay returns the step's cached result without
+    // asking again, so the pause count falls behind and later pauses read
+    // earlier answers. Refuse instead of running the tool without approval.
+    if (currentActivation() || inWorkflowStep()) {
       throw new ConfigurationError(
         `Tool '${this.name}' requires confirmation, but it was called inside a ` +
         'delegated agent or a step, which cannot pause for approval yet. Give the ' +

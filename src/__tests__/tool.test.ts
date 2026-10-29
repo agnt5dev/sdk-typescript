@@ -356,6 +356,20 @@ describe('Tool confirmation', () => {
     expect(calls).toEqual(['r1']);
   });
 
+  it('refuses to run inside a step, whose replay would skip the pause', async () => {
+    const { deleteRecord, calls } = probe();
+    const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
+    await ctx.setUserResponse(0, 'approve');
+
+    await expect(
+      ctx.step('cleanup', () => deleteRecord.invoke(ctx, { recordId: 'r1' })),
+    ).rejects.toMatchObject({
+      name: 'ConfigurationError',
+      message: expect.stringContaining('cannot pause for approval'),
+    });
+    expect(calls).toEqual([]);
+  });
+
   it('refuses to run inside a delegated agent or step, which cannot pause', async () => {
     const { deleteRecord, calls } = probe();
     const ctx = new ContextImpl('inv-1', 'run-confirm', 0, 'test', { storage: 'memory' });
