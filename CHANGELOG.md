@@ -5,11 +5,15 @@ All notable changes to the AGNT5 TypeScript SDK are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.18] - 2026-10-30
 
 ### Added
 
 - `client.signal(runId, name, payload)` delivers a signal to a run, for example one waiting in `ctx.waitForSignal`, and returns whether it resumed the run. `client.followEvents(runId)` follows an existing run's events: its history, then new events as they're written. It ends after the run's final event, and resumes with `Last-Event-ID` if the connection drops. Previously both meant writing the HTTP calls and stream parsing by hand.
+
+### Changed
+
+- Build on sdk-core 0.3.10, which lowers the default pull lease from 5 minutes to 60 seconds. A live worker renews at half the lease, so only a crashed worker's runs see the difference: another worker takes them after about a minute instead of five. Set `AGNT5_CLAIM_TIMEOUT_MS`, or `claimTimeoutMs` on the worker, to keep the old value.
 
 ### Fixed
 
@@ -18,6 +22,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Write `ctx.emit` events when they're emitted. An application event such as `{ eventType: 'crm.progress', data }` was batched with lifecycle events, and on a durable workflow nothing flushed that batch until the run finished. So a page following the run saw no progress until the end, and every such event got the same arrival timestamp. Application events are now written immediately with their own timestamp. Batched lifecycle events, including `workflow.started`, are written before each durable step, so they stay in order with the steps the runtime records.
 - Keep answers given before a durable sleep or a signal wait. When a run resumed from a timer or a signal, it kept only the answer delivered with its latest resume, so an approval given before `ctx.sleep` or `ctx.waitForSignal` was asked again and the run blocked until someone answered a second time. Every suspension now carries the answers to earlier pauses, on managed and workerless workers.
 - Ask before running a tool marked `confirmation: true`. The flag was sent to the platform but ignored at run time, so the tool ran without approval. The run now pauses with an approval question before the tool runs, and a rejected call returns a message to the agent instead of running. A context that can't pause raises `ConfigurationError`, as does a call inside a delegated agent under durable activation, or inside any `ctx.step`, which can't pause for approval yet. The tool and arguments the person is asked to approve are recorded with the pause, and if the model proposes a different call after resuming, nothing runs. An approved call's result is checkpointed, so resuming a later pause doesn't run it again.
+- Fail a pull run with `RESULT_REFUSED` when the runtime refuses its result, for example a pause record over the 1 MB journal record limit. Previously the worker resent the refused completion, gave up, and left the run `assigned`, so Studio kept showing an approval nobody could answer.
 
 ## [0.10.17] - 2026-10-27
 
