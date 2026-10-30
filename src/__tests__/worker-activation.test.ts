@@ -297,6 +297,57 @@ describe('managed worker durable activations', () => {
     expect(native.beginActivation).not.toHaveBeenCalled();
   });
 
+  it.each(['push', 'pull'])('writes ctx.emit events and workflow.started before the next step (%s)', async (mode) => {
+    workflow('durable-workflow', async ctx => {
+      await ctx.emit({ eventType: 'crm.progress', data: { done: 0, total: 1000 } });
+      await ctx.step('import_rows', async () => 'first 500');
+      await ctx.emit({ eventType: 'crm.progress', data: { done: 500, total: 1000 } });
+      await ctx.step('import_rows_2', async () => 'last 500');
+      return 'imported';
+    });
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    const response = await dispatch(worker, {
+      ...activationMetadata(),
+      ...(mode === 'pull' ? { dispatch_mode: 'pull' } : {}),
+    });
+    expect(response.eventType).toBe('run.completed');
+
+    // Every write, with when it happened relative to the activation calls.
+    const writes = [
+      ...native.emitCheckpoint.mock.calls.map((call, i) => ({
+        eventType: call[1] as string,
+        at: native.emitCheckpoint.mock.invocationCallOrder[i],
+        timestampNs: call[5] as number,
+      })),
+      ...native.emitCheckpointBatch.mock.calls.flatMap((call, i) =>
+        (call[0] as any[]).map(event => ({
+          eventType: event.eventType as string,
+          at: native.emitCheckpointBatch.mock.invocationCallOrder[i],
+          timestampNs: event.sourceTimestampNs as number,
+        }))),
+      ...native.queueEvent.mock.calls.map((call, i) => ({
+        eventType: call[1] as string,
+        at: native.queueEvent.mock.invocationCallOrder[i],
+        timestampNs: call[6] as number,
+      })),
+    ];
+    const begins = native.beginActivation.mock.invocationCallOrder;
+    const progress = writes.filter(write => write.eventType === 'crm.progress');
+    expect(progress).toHaveLength(2);
+    expect(progress[0].at).toBeLessThan(begins[0]);
+    expect(progress[1].at).toBeLessThan(begins[1]);
+    // Stamped when emitted, in order, not left for the runtime to stamp on arrival.
+    expect(Number.isFinite(progress[0].timestampNs)).toBe(true);
+    expect(progress[1].timestampNs).toBeGreaterThan(progress[0].timestampNs);
+
+    const started = writes.find(write => write.eventType === 'workflow.started');
+    expect(started).toBeDefined();
+    expect(started!.at).toBeLessThan(begins[0]);
+  });
+
   it.each(['push', 'pull'])('journals the question as approval.requested before a %s pause', async (mode) => {
     workflow('durable-workflow', async ctx => ctx.waitForUser('Publish the release notes?', {
       inputType: 'approval',
