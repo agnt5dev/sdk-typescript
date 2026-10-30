@@ -113,4 +113,24 @@ describe('Client.followEvents', () => {
     await expect(collect(client().followEvents('run-1', { maxReconnects: 1 }))).rejects.toThrow('ended before the run finished');
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+  it('closes the stream when the caller stops early', async () => {
+    let cancelled = false;
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(frame('run.queued', 1) + frame('workflow.started', 2)));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 200 })));
+
+    for await (const event of client().followEvents('run-1')) {
+      expect(event.eventType).toBe('run.queued');
+      break;
+    }
+
+    expect(cancelled).toBe(true);
+  });
 });
