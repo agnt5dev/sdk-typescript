@@ -1421,6 +1421,9 @@ async function* sseBlocks(body: ReadableStream<Uint8Array>): AsyncGenerator<SseB
       }
     }
   } finally {
+    // Cancel rather than only unlock: a caller that stops early would
+    // otherwise leave the response, and its connection, open.
+    await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

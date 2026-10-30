@@ -5,6 +5,12 @@ All notable changes to the AGNT5 TypeScript SDK are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Close the connection when a caller stops `client.followEvents` early, for example with `break` after the event it wanted. The reader was unlocked but the response wasn't cancelled, so a server relaying runs kept one gateway connection open for each follow it stopped.
+
 ## [0.10.18] - 2026-10-30
 
 ### Added
