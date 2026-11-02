@@ -214,6 +214,58 @@ describe('managed worker durable activations', () => {
     expect(native.failActivation).not.toHaveBeenCalled();
   });
 
+  it('holds the lease and completes the timer in process while a step is in flight', async () => {
+    let releaseStep!: () => void;
+    const held = new Promise<void>(resolve => { releaseStep = resolve; });
+    workflow('durable-workflow', async ctx => {
+      const step = ctx.step('slow', async () => {
+        await held;
+        return 'done';
+      });
+      await ctx.sleep(10, 'backoff');
+      releaseStep();
+      return step;
+    });
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    const response = await dispatch(worker, {
+      ...activationMetadata(),
+      durable_suspension_v1: 'true',
+    });
+
+    expect(response.workerSuspension).toBeUndefined();
+    expect(response.eventType).not.toBe('workflow.paused');
+    expect(native.completeActivation).toHaveBeenCalledTimes(2);
+    expect(native.failActivation).not.toHaveBeenCalled();
+  });
+
+  it('suspends for the remainder once in-flight steps finish', async () => {
+    workflow('durable-workflow', async ctx => {
+      const step = ctx.step('quick', async () => {
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return 'done';
+      });
+      await Promise.all([step, ctx.sleep(5_000, 'backoff')]);
+      return 'resumed';
+    });
+    const native = activationNative();
+    const worker = new Worker('durability-test', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+
+    const response = await dispatch(worker, {
+      ...activationMetadata(),
+      durable_suspension_v1: 'true',
+    });
+
+    expect(response.eventType).toBe('workflow.paused');
+    expect(response.workerSuspension.timerKey).toBe('sleep:backoff');
+    expect(response.workerSuspension.delayMs).toBeGreaterThan(0);
+    expect(response.workerSuspension.delayMs).toBeLessThan(5_000);
+    expect(native.completeActivation).toHaveBeenCalledTimes(1);
+  });
+
   it('completes only the matching deterministic timer resume', async () => {
     workflow('durable-workflow', async ctx => {
       await ctx.sleep(2_500, 'backoff');

@@ -1046,7 +1046,12 @@ export class LM {
     }
     const context = getCurrentContext()?.executionContext as DurableModelContext | undefined;
     if (context?.metadata?.durable_activation_v1 === 'true') {
-      return await this.streamDurable(request, context, callback);
+      const release = context.getActivationClient?.()?.track(context.runId);
+      try {
+        return await this.streamDurable(request, context, callback);
+      } finally {
+        release?.();
+      }
     }
     return await this.streamNative(request, callback);
   }

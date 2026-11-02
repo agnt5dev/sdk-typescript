@@ -7,8 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.10.19] - 2026-11-02
+
 ### Fixed
 
+- Let in-flight steps finish before a workflow suspends. A workflow that started steps concurrently and then reached a durable `ctx.sleep` suspended straight away, which released the run lease those steps were running under. They failed with `CONTENDED` or ran again after the resume. The timer now runs inside the worker while other steps are in flight, and only the time left once they finish goes back to the runtime. `ctx.waitForUser` and `ctx.waitForSignal` wait for them the same way before they suspend, so a step that never finishes holds the suspension back.
+- Don't record a permanent step failure when the worker itself aborted the step because its invocation ended. The resumed run runs that step again.
+- Treat a timer that the runtime replays as finished, instead of failing the run. A timer that completed inside the worker before a restart replays this way.
 - Close the connection when a caller stops `client.followEvents` early, for example with `break` after the event it wanted. The reader was unlocked but the response wasn't cancelled, so a server relaying runs kept one gateway connection open for each follow it stopped.
 
 ## [0.10.18] - 2026-10-30

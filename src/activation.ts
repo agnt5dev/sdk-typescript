@@ -498,8 +498,110 @@ export interface ActivationRunOptions<T> {
   failureEvidence?(error: unknown): ActivationEvidence[] | Promise<ActivationEvidence[]>;
 }
 
+/** A branch moving from one step to its next is briefly at zero in flight. */
+const SUSPEND_QUIET_MS = 200;
+/** Node treats a longer setTimeout as 1 ms, which would turn a long hold into a busy loop. */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
 export class ActivationClient {
-  constructor(private readonly transport: ActivationTransport) {}
+  private readonly inFlightByRun = new Map<string, number>();
+  private readonly settledWaiters = new Map<string, Set<() => void>>();
+
+  constructor(
+    private readonly transport: ActivationTransport,
+    private readonly invocationSignal?: AbortSignal,
+  ) {}
+
+  /**
+   * Count one activation a suspension of this run must not strand. Suspending
+   * releases the run lease, and a step running under a released lease can never
+   * finish, so durable waits read this count before they give up the lease.
+   * Returns the function that ends the count.
+   */
+  track(runId: string): () => void {
+    this.inFlightByRun.set(runId, this.inFlight(runId) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = this.inFlight(runId) - 1;
+      if (remaining > 0) {
+        this.inFlightByRun.set(runId, remaining);
+      } else {
+        this.inFlightByRun.delete(runId);
+      }
+      const waiters = this.settledWaiters.get(runId);
+      this.settledWaiters.delete(runId);
+      waiters?.forEach(wake => wake());
+    };
+  }
+
+  inFlight(runId: string): number {
+    return this.inFlightByRun.get(runId) ?? 0;
+  }
+
+  /**
+   * A step the worker itself aborted because its invocation ended did not fail:
+   * journaling that as a step failure would be a permanent outcome for work the
+   * resumed run should simply run again.
+   */
+  private failsAsAbandoned(): boolean {
+    return this.invocationSignal?.aborted ?? false;
+  }
+
+  private waitForSettled(runId: string, timeoutMs: number | undefined, signal?: AbortSignal): Promise<void> {
+    return new Promise<void>(resolve => {
+      const waiters = this.settledWaiters.get(runId) ?? new Set<() => void>();
+      this.settledWaiters.set(runId, waiters);
+      const finish = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        signal?.removeEventListener('abort', finish);
+        waiters.delete(finish);
+        if (waiters.size === 0 && this.settledWaiters.get(runId) === waiters) {
+          this.settledWaiters.delete(runId);
+        }
+        resolve();
+      };
+      const timer = timeoutMs === undefined ? undefined : setTimeout(finish, Math.min(timeoutMs, MAX_TIMEOUT_MS));
+      waiters.add(finish);
+      signal?.addEventListener('abort', finish, { once: true });
+    });
+  }
+
+  /**
+   * Hold the run lease while activations beyond `own` are in flight. Returns the
+   * milliseconds of `delayMs` left to suspend for: all of it if nothing was in
+   * flight, and zero if the delay ran out here.
+   */
+  async holdWhileInFlight(
+    runId: string,
+    own: number,
+    delayMs: number | undefined,
+    signal?: AbortSignal,
+  ): Promise<number> {
+    const deadline = delayMs === undefined ? undefined : Date.now() + delayMs;
+    const remaining = () => (deadline === undefined ? undefined : Math.max(0, deadline - Date.now()));
+    let waited = false;
+    while (true) {
+      signal?.throwIfAborted();
+      const left = remaining();
+      if (this.inFlight(runId) > own) {
+        if (left === 0) return 0;
+        waited = true;
+        await this.waitForSettled(runId, left, signal);
+        continue;
+      }
+      if (!waited) return delayMs ?? 0;
+      if (left === 0) return 0;
+      waited = false;
+      await new Promise(resolve => setTimeout(resolve, Math.min(SUSPEND_QUIET_MS, left ?? SUSPEND_QUIET_MS)));
+      if (this.inFlight(runId) > own) {
+        waited = true;
+        continue;
+      }
+      return remaining() ?? 0;
+    }
+  }
 
   async begin(request: BeginActivationRequest): Promise<ActivationDecision> {
     const expectedId = await activationId(
@@ -586,6 +688,19 @@ export class ActivationClient {
     execute: () => T | Promise<T>,
     options: ActivationRunOptions<T>,
   ): Promise<{ result: T; receipt: ActivationDecision | ActivationCompletionReceipt }> {
+    const release = this.track(request.runId);
+    try {
+      return await this.runAdmitted(request, execute, options);
+    } finally {
+      release();
+    }
+  }
+
+  private async runAdmitted<T>(
+    request: BeginActivationRequest,
+    execute: () => T | Promise<T>,
+    options: ActivationRunOptions<T>,
+  ): Promise<{ result: T; receipt: ActivationDecision | ActivationCompletionReceipt }> {
     while (true) {
     const decision = await this.begin(request);
     if (decision.kind === 'REPLAY') {
@@ -611,7 +726,7 @@ export class ActivationClient {
     try {
       result = await measureBusiness(request.runId, execute);
     } catch (error) {
-      if (isControlFlow(error)) throw error;
+      if (isControlFlow(error) || this.failsAsAbandoned()) throw error;
       const retryable = (options.failureRetryable ?? false) && (options.shouldRetry?.(error) ?? true) && decision.attempt < (options.maxAttempts ?? 1);
       const errorData = utf8(JSON.stringify({
         message: error instanceof Error ? error.message : String(error),
