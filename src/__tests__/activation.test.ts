@@ -377,6 +377,29 @@ describe('durable activation V1 contract', () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
+  it('caps a long hold at the longest timeout Node supports', async () => {
+    const client = new ActivationClient(new RecordingTransport({
+      kind: 'EXECUTE',
+      activationId: 'unused',
+      attempt: 1,
+      acceptedJournalOffset: 11n,
+      fenceToken: encoder.encode('fence-1'),
+    }));
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const release = client.track('run-1');
+      setTimeout(release, 20);
+      const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+      const remaining = await client.holdWhileInFlight('run-1', 0, thirtyDaysMs);
+
+      expect(remaining).toBeGreaterThan(thirtyDaysMs - 5_000);
+      const delays = setTimeoutSpy.mock.calls.map(call => call[1] ?? 0);
+      expect(Math.max(...delays)).toBeLessThanOrEqual(2 ** 31 - 1);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
   it('does not journal a step the worker aborted as a failure', async () => {
     const value = request();
     const id = await activationId(

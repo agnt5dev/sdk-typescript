@@ -500,6 +500,8 @@ export interface ActivationRunOptions<T> {
 
 /** A branch moving from one step to its next is briefly at zero in flight. */
 const SUSPEND_QUIET_MS = 200;
+/** Node treats a longer setTimeout as 1 ms, which would turn a long hold into a busy loop. */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 export class ActivationClient {
   private readonly inFlightByRun = new Map<string, number>();
@@ -560,7 +562,7 @@ export class ActivationClient {
         }
         resolve();
       };
-      const timer = timeoutMs === undefined ? undefined : setTimeout(finish, timeoutMs);
+      const timer = timeoutMs === undefined ? undefined : setTimeout(finish, Math.min(timeoutMs, MAX_TIMEOUT_MS));
       waiters.add(finish);
       signal?.addEventListener('abort', finish, { once: true });
     });
