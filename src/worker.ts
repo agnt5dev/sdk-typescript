@@ -413,29 +413,50 @@ class SimpleContext implements Context {
         return;
       }
 
-      const decision = await this._activationClient.begin(request);
-      if (decision.kind !== 'EXECUTE') throw activationDecisionError(decision);
+      const client = this._activationClient;
+      const release = client.track(this.runId);
+      try {
+        const decision = await client.begin(request);
+        // A timer that completed in process before a restart replays as finished.
+        if (decision.kind === 'REPLAY') {
+          this._stepCache.set(timerKey, null);
+          return;
+        }
+        if (decision.kind !== 'EXECUTE') throw activationDecisionError(decision);
 
-      const completedSteps = Object.fromEntries(this._stepCache);
-      const workflowState = Object.fromEntries(this.state);
-      // The timer resume carries only this continuation, so it must hold the
-      // answers to earlier pauses too, or the run asks them again after the sleep.
-      const continuation = new TextEncoder().encode(JSON.stringify({
-        completed_steps: completedSteps,
-        workflow_state: workflowState,
-        workflow_correlation_id: this._workflowCid,
-        ...(this._userResponses.size > 0 ? { step_events: this.answeredStepEvents() } : {}),
-      }));
-      throw new DurableSleepSuspensionError(
-        decision.activationId,
-        decision.attempt,
-        decision.fenceToken!,
-        timerKey,
-        request.inputDigest,
-        request.definitionDigest,
-        continuation,
-        durationMs,
-      );
+        // Suspending releases the lease other steps run under: they could never
+        // finish, and the resumed run would wait on them forever. So the timer
+        // runs here while they do, and only what is left then goes to the runtime.
+        const remainingMs = await client.holdWhileInFlight(this.runId, 1, durationMs, this._signal);
+        if (remainingMs === 0) {
+          await client.complete(request, decision, new TextEncoder().encode('null'), { latencyMs: durationMs });
+          this._stepCache.set(timerKey, null);
+          return;
+        }
+
+        const completedSteps = Object.fromEntries(this._stepCache);
+        const workflowState = Object.fromEntries(this.state);
+        // The timer resume carries only this continuation, so it must hold the
+        // answers to earlier pauses too, or the run asks them again after the sleep.
+        const continuation = new TextEncoder().encode(JSON.stringify({
+          completed_steps: completedSteps,
+          workflow_state: workflowState,
+          workflow_correlation_id: this._workflowCid,
+          ...(this._userResponses.size > 0 ? { step_events: this.answeredStepEvents() } : {}),
+        }));
+        throw new DurableSleepSuspensionError(
+          decision.activationId,
+          decision.attempt,
+          decision.fenceToken!,
+          timerKey,
+          request.inputDigest,
+          request.definitionDigest,
+          continuation,
+          remainingMs,
+        );
+      } finally {
+        release();
+      }
     }
     await new Promise<void>(resolve => setTimeout(resolve, durationMs));
   }
@@ -789,6 +810,10 @@ class SimpleContext implements Context {
     // status via apply_paused. Without this emission, the /run endpoint hangs
     // until the sync deadline. Mirrors sdk-python's wait_for_input which
     // emits Paused via ctx.emit() before raising WaitingForUserInputException.
+    // Pausing releases the run lease and a person may take days to answer, so
+    // let other steps finish first: under a released lease they never can.
+    await this._activationClient?.holdWhileInFlight(this.runId, 0, undefined, this._signal);
+
     const stepName = `wait_for_user_${pauseIndex}`;
     const metadata: Record<string, string> = {
       pause_reason: 'user_input_required',
@@ -885,6 +910,8 @@ class SimpleContext implements Context {
     const waitingStep = name || signalName;
     const key = `signal:${signalName}:${waitingStep}`;
     if (this._stepCache.has(key)) return this._stepCache.get(key) as T;
+    // A signal may never come; let other steps finish before releasing their lease.
+    await this._activationClient?.holdWhileInFlight(this.runId, 0, undefined, this._signal);
     const checkpointState = Object.fromEntries(this._stepCache);
     // Earlier answers ride along so the signal's resume doesn't ask them again.
     const stepEvents = this.answeredStepEvents();
@@ -1356,7 +1383,7 @@ export class Worker {
               new ActivationClient(new OrderedActivationTransport(
                 new NativeActivationTransport(this.nativeWorker),
                 () => emitter.flushLifecycle(),
-              )),
+              ), abortController.signal),
             );
           }
 
