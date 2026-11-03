@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.10.20] - 2026-11-03
+
+### Fixed
+
+- Build native workers on sdk-core 0.3.11, which batches compatible checkpoint writes within each run. Concurrent workflow functions wait for fewer persistence round trips while required pull-mode acknowledgments, event ordering, and flush, activation, and completion barriers remain enforced.
+- Preserve checkpoint failure details and stop push lease renewal after an uncertain checkpoint failure so the run can recover.
+
 ## [0.10.19] - 2026-11-02
 
 ### Fixed
