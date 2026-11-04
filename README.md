@@ -164,6 +164,35 @@ and a version check, matching Python's workflow state persistence. State
 writes are ordered within each workflow; independent workflows can proceed
 concurrently. Standalone in-process contexts retain their local state behavior.
 
+## Declared durable steps
+
+Declare workflow-local operations with `step`. Invoke them through `ctx.step`;
+only the workflow is registered for standalone invocation.
+
+```typescript
+import { step, workflow } from '@agnt5/sdk';
+
+const prepareSearch = step('prepare-search', async (ctx, input: { topic: string }) => {
+  return { query: input.topic.trim() };
+}, { retries: { maxAttempts: 3 }, timeoutMs: 5000 });
+
+const research = workflow('research', async ctx => {
+  return ctx.step(prepareSearch, { input: { topic: 'durable agents' }, key: 'query' });
+});
+```
+
+The handler starts after durable admission, and its result returns after
+completion is acknowledged. These two activation calls record the lifecycle;
+no extra function checkpoints are emitted. Each retry receives a fresh copy of
+the input and a zero-based `ctx.attempt`. Completed steps replay their committed
+result. External effects still need idempotency; the admitted handler can use
+`ctx.activation.idempotencyKey`.
+
+Return a JSON-serializable result; use `null` for an empty result.
+Use explicit keys for concurrent or repeated work. Declared steps require
+runtime activation support and fail explicitly without it. Existing `fn(...)`
+functions and string/callback `ctx.step(...)` calls retain their behavior.
+
 ## Event triggers
 
 Use `event(...)` or `webhook(...)` in a workflow's `triggers` declarations.

@@ -8,6 +8,8 @@
 
 // Core exports
 export { fn, FunctionBuilder, FunctionRegistry } from './function.js';
+export { step } from './step.js';
+export type { DeclaredStep, DeclaredStepOptions, StepContext } from './step.js';
 export { Worker, getRuntime, checkPlatformConnectivity } from './worker.js';
 export type { PlatformWorkerOptions } from './worker.js';
 export { ContextImpl } from './context.js';

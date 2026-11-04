@@ -1,3 +1,5 @@
+import { runDeclaredStep } from './step.js';
+import type { DeclaredStep } from './step.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { throwIfAborted } from './cancellation.js';
 import { resolveGatewayUrl } from './gateway-url.js';
@@ -953,16 +955,26 @@ class SimpleContext implements Context {
    * On the legacy path: runs fn(), caches result, emits checkpoints.
    * On replay: returns cached result without re-executing.
    */
+  step<I, O>(declaration: DeclaredStep<I, O>, options: StepOptions<I> & { input: I }): Promise<O>;
+  step<O>(declaration: DeclaredStep<void, O>, options?: StepOptions<void>): Promise<O>;
+  step<T, I extends {} | null>(stepName: string, fn: (input: I) => T | Promise<T>, options: StepOptions<I> & { input: I }): Promise<T>;
+  step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T>;
   async step<T, I = undefined>(
-    stepName: string,
-    fn: (input: I) => T | Promise<T>,
+    stepName: string | DeclaredStep<I, T>,
+    fn?: ((input: I) => T | Promise<T>) | StepOptions<I>,
     options?: StepOptions<I>,
   ): Promise<T> {
+    if (typeof stepName !== 'string') {
+      const ordinal = nextActivationOrdinal('step') ?? this._stepCounter++;
+      const { result, stableKey } = await runDeclaredStep(this, stepName, fn as StepOptions<I> | undefined, ordinal);
+      this._stepCache.set(stableKey, result);
+      return result;
+    }
     const ordinal = nextActivationOrdinal('step') ?? this._stepCounter++;
     const stepKey = stableStepKey(stepName, ordinal, options?.key);
     // The value the step hashes and its body receives, taken once, now.
     const input = normalizeStepInput(options?.input) as I;
-    const body = () => fn(input);
+    const body = () => (fn as (input: I) => T | Promise<T>)(input);
 
     if (this._activationClient) {
       const request = await stepActivationRequest({

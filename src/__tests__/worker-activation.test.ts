@@ -1,3 +1,4 @@
+import { step } from '../step.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActivationError, ActivationErrorCode } from '../errors.js';
 import { ActivationKind, activationId } from '../activation.js';
@@ -85,6 +86,26 @@ async function dispatch(worker: Worker, metadata = activationMetadata()) {
 }
 
 describe('managed worker durable activations', () => {
+  it('executes a declared step with two ACKs and no function checkpoints', async () => {
+    const prepare = step('prepare', async (ctx, input: { topic: string }) => {
+      expect(ctx.activation.activationId).toMatch(/^actv1_/);
+      expect(ctx.attempt).toBe(0);
+      return { query: input.topic.trim() };
+    });
+    workflow('durable-workflow', async ctx => ctx.step(prepare, {
+      input: { topic: ' research ' }, key: 'query',
+    }));
+    const native = activationNative();
+    const worker = new Worker('declared-steps', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+    const response = await dispatch(worker);
+    expect(response.eventType).toBe('run.completed');
+    expect(native.beginActivation).toHaveBeenCalledOnce();
+    expect(native.completeActivation).toHaveBeenCalledOnce();
+    expect(native.beginActivation.mock.calls[0][0].stableKey).toBe('step:prepare:query');
+    expect(lifecycleCheckpoints(native).filter(event => event.eventType.startsWith('function.'))).toEqual([]);
+  });
+
   beforeEach(() => {
     FunctionRegistry.clear();
     WorkflowRegistry.clear();

@@ -13,11 +13,22 @@ try {
   symlinkSync(root, join(fixture, 'node_modules', '@agnt5', 'sdk'), 'junction');
   writeFileSync(join(fixture, 'package.json'), '{"type":"module"}');
   writeFileSync(join(fixture, 'consumer.ts'), `
-import { fn } from '@agnt5/sdk';
+import { fn, step } from '@agnt5/sdk';
 import type { Context } from '@agnt5/sdk';
 const double = fn<{ n: number }, number>('double').run(async (_ctx, input) => input.n * 2);
 declare const ctx: Context;
 const value: number = await double(ctx, { n: 2 });
+const declared = step('declared-double', async (_ctx, input: { n: number }) => input.n * 2);
+const declaredValue: number = await ctx.step(declared, { input: { n: 2 }, key: 'two' });
+const noInput = step('ready', async () => true);
+const ready: boolean = await ctx.step(noInput);
+// @ts-expect-error A declared step with input requires it at the call site.
+await ctx.step(declared);
+// @ts-expect-error Declared step input must preserve its type.
+await ctx.step(declared, { input: { n: 'wrong' } });
+// @ts-expect-error Declared step output must preserve its type.
+const wrongStepOutput: string = await ctx.step(declared, { input: { n: 2 } });
+
 // @ts-expect-error A function cannot be assigned to an arbitrary object.
 const invalid: { anything: true } = double;
 // @ts-expect-error The function input must retain its declared type.

@@ -1,3 +1,5 @@
+import type { DeclaredStep } from './step.js';
+import { ActivationError, ActivationErrorCode } from './errors.js';
 /**
  * Platform-backed Context implementation using native State and Span bindings.
  */
@@ -113,6 +115,8 @@ export class PlatformContext implements Context {
   /**
    * Execute a step with checkpointing
    */
+  step<I, O>(declaration: DeclaredStep<I, O>, options: StepOptions<I> & { input: I }): Promise<O>;
+  step<O>(declaration: DeclaredStep<void, O>, options?: StepOptions<void>): Promise<O>;
   step<T, I extends {} | null>(
     stepName: string,
     fn: (input: I) => T | Promise<T>,
@@ -120,10 +124,14 @@ export class PlatformContext implements Context {
   ): Promise<T>;
   step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T>;
   async step<T, I = undefined>(
-    stepName: string,
-    fn: (input: I) => T | Promise<T>,
+    stepName: string | DeclaredStep<I, T>,
+    fn?: ((input: I) => T | Promise<T>) | StepOptions<I>,
     options?: StepOptions<I>,
   ): Promise<T> {
+    if (typeof stepName !== 'string') {
+      throw new ActivationError(ActivationErrorCode.DurabilityUnavailable,
+        'declared steps require runtime durable activation support');
+    }
     // The value the step hashes and its body receives, taken once, now.
     const input = normalizeStepInput(options?.input) as I;
     const checkpointKey = options?.key
@@ -143,7 +151,7 @@ export class PlatformContext implements Context {
       this.span.addEvent('step.started', { step: stepName });
 
       // Execute step
-      const result = await fn(input);
+      const result = await (fn as (input: I) => T | Promise<T>)(input);
 
       // Checkpoint result
       const json = JSON.stringify(result);

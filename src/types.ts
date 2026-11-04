@@ -1,3 +1,4 @@
+import type { DeclaredStep } from './step.js';
 import type { RuntimeContext } from './runtime-context.js';
 import type { Sandbox } from './sandbox.js';
 import type { HITLInputType, HITLOption } from './errors.js';
@@ -153,6 +154,9 @@ export interface Context {
    * The input can't be `undefined`: it would hash the same as `null` while
    * the body saw a different value, so pass `value ?? null`.
    */
+  /** Execute a declared step with one durable admission and completion. */
+  step<I, O>(declaration: DeclaredStep<I, O>, options: StepOptions<I> & { input: I }): Promise<O>;
+  step<O>(declaration: DeclaredStep<void, O>, options?: StepOptions<void>): Promise<O>;
   // Listed first: a step body's parameter types come from the first overload.
   step<T, I extends {} | null>(
     stepName: string,

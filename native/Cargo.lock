@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "agnt5-sdk-native"
-version = "0.10.20"
+version = "0.11.0"
 dependencies = [
  "agnt5-sdk-core",
  "flume",
