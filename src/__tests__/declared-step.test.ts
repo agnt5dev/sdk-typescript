@@ -3,7 +3,7 @@ import { step } from '../step.js';
 import { ContextImpl } from '../context.js';
 import { ActivationClient, ActivationKind, activationId, currentActivation } from '../activation.js';
 import { ActivationError, ActivationErrorCode } from '../errors.js';
-import { FunctionRegistry } from '../function.js';
+import { fn, FunctionRegistry } from '../function.js';
 
 function gate() {
   let resolve!: () => void;
@@ -202,8 +202,12 @@ describe('declared durable steps', () => {
     const pending = ctx.step(work).catch(error => error);
     await journal.entered.promise;
     controller.abort(new Error('cancelled'));
-    expect((await pending).message).toBe('cancelled');
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
     journal.release.resolve();
+    expect((await pending).message).toMatch(/cancelled/);
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(executions).toBe(phase === 'begin' ? 0 : 1);
     expect(ctx.checkpointSnapshot()).toEqual({});
@@ -220,7 +224,10 @@ describe('declared durable steps', () => {
 describe('declared step failure and nesting', () => {
   it('records a handler timeout as failure rather than completion', async () => {
     const journal = new Journal();
-    const work = step('timeout', async () => new Promise<number>(() => {}), { timeoutMs: 1 });
+    const work = step('timeout', async scope => {
+      await new Promise<void>(resolve => scope.signal.addEventListener('abort', () => resolve(), { once: true }));
+      return 1;
+    }, { timeoutMs: 1 });
     await expect(context(journal).step(work)).rejects.toMatchObject({ name: 'TimeoutError' });
     expect(phases(journal)).toEqual(['begin', 'fail']);
   });
@@ -262,5 +269,72 @@ describe('declared step failure and nesting', () => {
 
   it.each([0, -1, 1.5, NaN])('rejects invalid timeout %s', timeoutMs => {
     expect(() => step('bad', async () => 1, { timeoutMs })).toThrow(RangeError);
+  });
+});
+
+describe('declared step context and timeout regressions', () => {
+  it('allows nested functions to override the step attempt during retries', async () => {
+    const journal = new Journal();
+    const attempts: number[] = [];
+    const nested = fn('declared-nested-retry').retry({ maxAttempts: 2, initialIntervalMs: 0 }).run(async (scope, _input: null) => {
+      attempts.push(scope.attempt);
+      if (scope.attempt === 0) throw new Error('retry nested function');
+      return scope.attempt;
+    });
+    const parent = step('parent', async scope => nested(scope, null));
+    expect(await context(journal).step(parent)).toBe(1);
+    expect(attempts).toEqual([0, 1]);
+  });
+
+  it('exposes a non-retrying nested function attempt independently of its parent retry', async () => {
+    const journal = new Journal();
+    const nested = fn('declared-nested-attempt').run(async (scope, _input: null) => scope.attempt);
+    const parent = step('parent', async scope => {
+      if (scope.attempt === 0) throw new Error('retry parent');
+      expect(scope.attempt).toBe(1);
+      return nested(scope, null);
+    }, { retries: { maxAttempts: 2, initialIntervalMs: 0 } });
+    expect(await context(journal).step(parent)).toBe(0);
+  });
+
+  it('keeps a timed-out handler in flight and never overlaps its retry', async () => {
+    const journal = new Journal();
+    const client = new ActivationClient(journal);
+    const entered = gate(); const release = gate();
+    let active = 0; let peak = 0; let calls = 0;
+    const work = step('timeout-drain', async () => {
+      active++; calls++; peak = Math.max(active, peak); entered.resolve();
+      await release.promise;
+      active--;
+      return 'late';
+    }, { timeoutMs: 10, retries: { maxAttempts: 2, initialIntervalMs: 0 } });
+    let settled = false;
+    const run = context(journal, 'run-1', undefined, client).step(work).finally(() => { settled = true; });
+    try {
+      await entered.promise;
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(settled).toBe(false);
+      expect(calls).toBe(1); expect(client.inFlight('run-1')).toBe(1);
+      expect(phases(journal)).toEqual(['begin']);
+      release.resolve();
+      expect(await run).toBe('late');
+      expect(calls).toBe(2); expect(peak).toBe(1); expect(active).toBe(0);
+      expect(phases(journal)).toEqual(['begin', 'fail', 'begin', 'complete']);
+    } finally { release.resolve(); await run.catch(() => {}); }
+  });
+
+  it('keeps cancelled handler effects tracked until they settle', async () => {
+    const journal = new Journal(); const client = new ActivationClient(journal);
+    const controller = new AbortController(); const entered = gate(); const release = gate();
+    const work = step('cancel-drain', async () => { entered.resolve(); await release.promise; return 1; });
+    let settled = false;
+    const run = context(journal, 'run-1', controller.signal, client).step(work)
+      .catch(error => error).finally(() => { settled = true; });
+    await entered.promise; controller.abort();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(settled).toBe(false); expect(client.inFlight('run-1')).toBe(1);
+    release.resolve();
+    expect(await run).toMatchObject({ code: ActivationErrorCode.Cancelled });
+    expect(client.inFlight('run-1')).toBe(0); expect(phases(journal)).toEqual(['begin']);
   });
 });

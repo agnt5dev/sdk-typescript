@@ -7,7 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-## [0.11.0] - 2026-11-04
+## [0.11.1] - 2026-11-04
+
+### Fixed
+
+- Preserve the shared workflow state queue and final state persistence inside declared steps while retaining scoped signals and attempts. Allow nested functions to expose their own retry attempt.
+- Keep timed-out or cancelled handlers in flight until they settle before recording failure or retrying, and discard late success. Handler timeouts are cooperative.
+
+## [0.11.0] - 2026-11-04 (unpublished)
 
 ### Added
 
