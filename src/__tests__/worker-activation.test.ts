@@ -106,6 +106,34 @@ describe('managed worker durable activations', () => {
     expect(lifecycleCheckpoints(native).filter(event => event.eventType.startsWith('function.'))).toEqual([]);
   });
 
+  it('serializes parallel declared-step state writes and persists them on the workflow context', async () => {
+    let activeWrites = 0; let peakWrites = 0;
+    const persistWorkflowState = vi.fn(async () => {});
+    const native = activationNative({
+      persistWorkflowState,
+      emitCheckpoint: vi.fn(async (...args: any[]) => {
+        if (args[1] !== 'workflow.state.changed') return;
+        activeWrites++; peakWrites = Math.max(peakWrites, activeWrites);
+        await new Promise(resolve => setTimeout(resolve, 5));
+        activeWrites--;
+      }),
+    });
+    const write = step('write-state', async (scope, key: string) => {
+      await scope.set(key, 1);
+      await scope.set('removed-' + key, true);
+      await scope.delete('removed-' + key);
+      return scope.get(key);
+    });
+    workflow('durable-workflow', async ctx => Promise.all(['one', 'two'].map(key =>
+      ctx.step(write, { input: key, key }))));
+    const worker = new Worker('step-state', { serviceVersion: 'v1' });
+    (worker as any).nativeWorker = native;
+    expect((await dispatch(worker, { ...activationMetadata(), dispatch_mode: 'pull', pull_completion_lifecycle_v1: 'true' })).eventType).toBe('run.completed');
+    expect(peakWrites).toBe(1);
+    expect(persistWorkflowState).toHaveBeenCalledOnce();
+    expect(JSON.parse((persistWorkflowState.mock.calls[0] as any)[0].stateJson)).toEqual({ one: 1, two: 1 });
+  });
+
   beforeEach(() => {
     FunctionRegistry.clear();
     WorkflowRegistry.clear();

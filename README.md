@@ -412,3 +412,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues according to
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE).
+
+Declared-step timeouts abort the handler’s signal. Handlers should pass that signal to cancellable I/O. Failure, cancellation, and retries wait until the handler settles, so ignoring the signal delays settlement; late results are discarded.

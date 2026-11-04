@@ -18,7 +18,7 @@ export interface StepContext extends Context {
 export interface DeclaredStepOptions {
   retries?: RetryPolicy;
   backoff?: BackoffPolicy;
-  /** Timeout of each handler attempt, excluding admission/completion ACKs. */
+  /** Aborts each handler attempt; failure/retry waits for the handler to settle. */
   timeoutMs?: number;
 }
 
@@ -80,17 +80,24 @@ export async function runDeclaredStep<I, O>(
   const checkCancellation = () => {
     if (ctx.signal.aborted) throw new ActivationError(ActivationErrorCode.Cancelled, 'step invocation was cancelled');
   };
-  const { result } = await abortable(() => client.run<O>(request, async () => {
+  const { result } = await client.run<O>(request, async () => {
     checkCancellation();
     if (!admitted) throw new ActivationError(ActivationErrorCode.UnknownOutcome, 'step executed without admitted authority');
     const decision = admitted;
     return runWithActivation(decision, async () => {
       const timeout = new AbortController();
       const combined = combineSignals(ctx.signal, timeout.signal);
-      const scoped = Object.create(ctx) as StepContext;
-      Object.defineProperties(scoped, {
-        attempt: { value: decision.attempt - 1 }, signal: { value: combined.signal },
-      });
+      // Methods read the scoped signal/attempt, but mutable workflow state and
+      // its write queue must stay on the original context. Nested function
+      // contexts may override the attempt again without fixed descriptors.
+      const scoped = new Proxy(ctx, {
+        get(target, key, receiver) {
+          if (key === 'attempt') return decision.attempt - 1;
+          if (key === 'signal') return combined.signal;
+          return Reflect.get(target, key, receiver);
+        },
+        set(target, key, value) { return Reflect.set(target, key, value, target); },
+      }) as StepContext;
       let timer: ReturnType<typeof setTimeout> | undefined;
       if (policy.timeoutMs !== undefined) {
         timer = setTimeout(() => {
@@ -99,16 +106,20 @@ export async function runDeclaredStep<I, O>(
           timeout.abort(error);
         }, policy.timeoutMs);
       }
-      try {
-        const execute = () => runInWorkflowStep(() => runWithContext({ ...getCurrentContext(),
+      const execute = () => runInWorkflowStep(() => runWithContext({ ...getCurrentContext(),
           runId: ctx.runId, correlationId: decision.activationId, executionContext: scoped,
           getCorrelationId: () => decision.activationId,
         }, () => handler(scoped, normalizeStepInput(snapshot) as I)));
-        const value = await abortable(() => ctx.runWithCorrelation
-          ? ctx.runWithCorrelation(decision.activationId, execute) : execute(), combined.signal);
+      const execution = Promise.resolve().then(() => ctx.runWithCorrelation
+        ? ctx.runWithCorrelation(decision.activationId, execute) : execute());
+      try {
+        const value = await abortable(() => execution, combined.signal);
         checkCancellation();
         return value;
       } catch (error) {
+        // Abort cannot stop user promises. Keep the activation and its lease
+        // in flight until effects settle, then discard any late success.
+        await execution.catch(() => {});
         checkCancellation();
         throw error;
       } finally {
@@ -129,7 +140,7 @@ export async function runDeclaredStep<I, O>(
     failureRetryable: (policy.retries?.maxAttempts ?? 1) > 1,
     retryDelay: attempt => retrySleep(retryDelay(policy, attempt), ctx.signal),
     shouldRetry: () => !ctx.signal.aborted,
-  }), ctx.signal);
+  });
   throwIfAborted(ctx.signal);
   return { result, stableKey: request.stableKey };
 }
