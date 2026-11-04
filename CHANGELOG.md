@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-04
+
+### Added
+
+- Add workflow-local `step(name, handler, options)` declarations and `ctx.step(declaration, { input, key })`. Declared steps use acknowledged activation admission and completion without extra function checkpoints, support runtime-owned retries and handler timeouts, and require durable activation support. Existing functions and callback steps remain compatible.
+
 ## [0.10.20] - 2026-11-03
 
 ### Fixed

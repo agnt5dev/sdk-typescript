@@ -1,3 +1,5 @@
+import { runDeclaredStep } from './step.js';
+import type { DeclaredStep } from './step.js';
 import { assertWorkflowWaitBoundary, runInWorkflowStep } from './step-scope.js';
 import type { Context, Logger, StepOptions } from './types.js';
 import type { EventEmitter } from './event-emitter.js';
@@ -270,6 +272,8 @@ export class ContextImpl implements Context {
     return await this.storage.delete(key);
   }
 
+  step<I, O>(declaration: DeclaredStep<I, O>, options: StepOptions<I> & { input: I }): Promise<O>;
+  step<O>(declaration: DeclaredStep<void, O>, options?: StepOptions<void>): Promise<O>;
   step<T, I extends {} | null>(
     stepName: string,
     fn: (input: I) => T | Promise<T>,
@@ -277,14 +281,21 @@ export class ContextImpl implements Context {
   ): Promise<T>;
   step<T>(stepName: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T>;
   async step<T, I = undefined>(
-    stepName: string,
-    fn: (input: I) => T | Promise<T>,
+    stepName: string | DeclaredStep<I, T>,
+    fn?: ((input: I) => T | Promise<T>) | StepOptions<I>,
     options?: StepOptions<I>,
   ): Promise<T> {
+    if (typeof stepName !== 'string') {
+      const ordinal = nextActivationOrdinal('step') ?? this._activationStepCounter++;
+      const { result, stableKey } = await runDeclaredStep(this, stepName, fn as StepOptions<I> | undefined, ordinal);
+      await this.storage.setCheckpoint(stableKey, result);
+      this._checkpointSnapshot.set(stableKey, result);
+      return result;
+    }
     const ordinal = nextActivationOrdinal('step') ?? this._activationStepCounter++;
     // The value the step hashes and its body receives, taken once, now.
     const input = normalizeStepInput(options?.input) as I;
-    const body = () => fn(input);
+    const body = () => (fn as (input: I) => T | Promise<T>)(input);
     if (this._activationClient) {
       const request = await stepActivationRequest({
         metadata: this.metadata || {},
