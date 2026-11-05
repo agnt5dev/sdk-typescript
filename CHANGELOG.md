@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Reject a timeout or poll interval that isn't a non-negative number in `client.waitForResult()` and `waitForOutput()`. A JavaScript caller that passed an options object, such as `{ timeoutMs }`, got a `NaN` timeout, so the call polled a paused run forever. It now throws a `RangeError` straight away.
 - Accept a workflow's `Context` in `AskUserTool` and `RequestApprovalTool`. They required `ContextImpl`, which a workflow handler doesn't receive, so `new AskUserTool(ctx)` needed a cast. They now take any context with `waitForUser`. `ContextImpl.waitForSignal` and `PlatformContext.waitForSignal` also accept the `{ timeoutMs }` options argument that `Context` declares.
 - Don't report a pause as a failure. When an agent's tool paused the run, for example `AskUserTool` waiting for an answer, the agent emitted `agent.failed` with `WaitingForUserInputError`, so a healthy paused run showed a failed agent in its timeline. Pauses and other suspensions now unwind without it; real errors still emit `agent.failed`.
 - Keep each record's `metadata` in `client.getEvents()`. It was dropped, so a `workflow.paused` event carried its question and pause index but not its input type or options, and a caller couldn't show a `select`, `multiselect` or `approval` pause. `EventRecord` gains `metadata`, as `followEvents()` events already have.
