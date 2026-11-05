@@ -199,7 +199,7 @@ export class PlatformContext implements Context {
     throw new ConfigurationError('ctx.waitForUser is not supported in PlatformContext');
   }
 
-  async waitForSignal<T = unknown>(_signalName: string, _name?: string): Promise<T> {
+  async waitForSignal<T = unknown>(_signalName: string, _name?: string, _options?: { timeoutMs?: number }): Promise<T> {
     throw new ConfigurationError('ctx.waitForSignal requires a managed or workerless workflow');
   }
 

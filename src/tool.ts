@@ -534,10 +534,10 @@ export function tool<TInput = any, TOutput = any>(
  * ```
  */
 export class AskUserTool extends Tool<{ question: string }, string | null> {
-  constructor(context: ContextImpl) {
+  constructor(context: Pick<Context, 'waitForUser'>) {
     if (!context || typeof (context as any).waitForUser !== 'function') {
       throw new ConfigurationError(
-        'AskUserTool requires a ContextImpl with waitForUser. ' +
+        'AskUserTool requires a workflow context with waitForUser. ' +
         'This tool can only be used within workflows.'
       );
     }
@@ -579,10 +579,10 @@ export class AskUserTool extends Tool<{ question: string }, string | null> {
  * ```
  */
 export class RequestApprovalTool extends Tool<{ action: string; details?: string }, string | null> {
-  constructor(context: ContextImpl) {
+  constructor(context: Pick<Context, 'waitForUser'>) {
     if (!context || typeof (context as any).waitForUser !== 'function') {
       throw new ConfigurationError(
-        'RequestApprovalTool requires a ContextImpl with waitForUser. ' +
+        'RequestApprovalTool requires a workflow context with waitForUser. ' +
         'This tool can only be used within workflows.'
       );
     }
