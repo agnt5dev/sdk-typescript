@@ -15,6 +15,7 @@ import type {
   BeginActivationRequest,
 } from '../activation.js';
 import { ContextImpl } from '../context.js';
+import { WaitingForUserInputError } from '../errors.js';
 
 // Mock language model for testing
 class MockLanguageModel implements LanguageModel {
@@ -155,6 +156,49 @@ describe('Agent Streaming', () => {
     if (toolCompleted?.eventType === 'tool_call.completed') {
       expect(toolCompleted.toolName).toBe('calc_stream');
     }
+  });
+
+  it('does not report a pause as agent.failed', async () => {
+    const askUser = tool(
+      'ask_user_stream',
+      { description: 'Ask the user', inputSchema: { type: 'object', properties: {} } },
+      async () => {
+        throw new WaitingForUserInputError({ runId: 'run-1', question: 'Which colour?', pauseIndex: 0 });
+      },
+    );
+    const agent = new Agent({
+      name: 'asking-agent',
+      model: new MockLanguageModel([{ text: '', toolCalls: [{ name: 'ask_user_stream', arguments: '{}' }] }]),
+      instructions: 'Ask',
+      tools: [askUser],
+    });
+
+    const events: AgentEvent[] = [];
+    await expect((async () => {
+      for await (const event of agent.stream('Ask me')) {
+        if ('eventType' in event) events.push(event);
+      }
+    })()).rejects.toBeInstanceOf(WaitingForUserInputError);
+
+    expect(events.map(e => e.eventType)).toContain('agent.started');
+    expect(events.map(e => e.eventType)).not.toContain('agent.failed');
+  });
+
+  it('still reports a real failure as agent.failed', async () => {
+    const agent = new Agent({
+      name: 'failing-agent',
+      model: { generate: async () => { throw new Error('provider down'); } },
+      instructions: 'Fail',
+    });
+
+    const events: AgentEvent[] = [];
+    await expect((async () => {
+      for await (const event of agent.stream('Hi')) {
+        if ('eventType' in event) events.push(event);
+      }
+    })()).rejects.toThrow('provider down');
+
+    expect(events.map(e => e.eventType)).toContain('agent.failed');
   });
 
   it('should emit ToolCallFailed on tool error', async () => {

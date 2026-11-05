@@ -134,3 +134,49 @@ describe('Client.followEvents', () => {
     expect(cancelled).toBe(true);
   });
 });
+
+describe('Client.getEvents', () => {
+  it('keeps each record metadata, so a paused run can show its options', async () => {
+    const paused = {
+      event_type: 'workflow.paused',
+      sequence: 7,
+      correlation_id: 'wf-1',
+      data: { question: 'Publish?', pauseIndex: 4 },
+      metadata: {
+        input_type: 'approval',
+        options: '[{"id":"approve","label":"Publish"},{"id":"reject","label":"Don\'t publish"}]',
+        allow_custom: 'False',
+        skippable: 'False',
+        pause_index: '4',
+      },
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ items: [paused] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { events, runId } = await client().getEvents('run-1');
+
+    expect(runId).toBe('run-1');
+    expect(events).toHaveLength(1);
+    expect(events[0].eventType).toBe('workflow.paused');
+    expect(events[0].data).toEqual({ question: 'Publish?', pauseIndex: 4 });
+    expect(events[0].metadata.input_type).toBe('approval');
+    expect(JSON.parse(events[0].metadata.options)).toEqual([
+      { id: 'approve', label: 'Publish' },
+      { id: 'reject', label: "Don't publish" },
+    ]);
+    expect(events[0].metadata.pause_index).toBe('4');
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://gateway.test/v1/runs/run-1/events');
+  });
+
+  it('gives an empty metadata object when a record has none', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ items: [{ event_type: 'run.started', sequence: 1, data: {} }] }),
+      { status: 200 },
+    )));
+
+    const { events } = await client().getEvents('run-1');
+
+    expect(events[0].metadata).toEqual({});
+  });
+});

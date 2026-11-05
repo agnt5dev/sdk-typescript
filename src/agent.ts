@@ -26,6 +26,7 @@ import type {
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { withSpan } from './tracing.js';
+import { isControlFlow } from './control-flow.js';
 import { abortable, combineSignals, throwIfAborted } from './cancellation.js';
 import {
   ActivationError,
@@ -1864,7 +1865,9 @@ export class Agent {
 
       throw new MaxIterationsExceededError(this.name, this.maxIterations);
     } catch (error) {
-      if (!managed) yield agentFailed(this.name, agentCorrelationId, {
+      // A pause or suspension unwinds the agent to resume it later; it isn't
+      // a failure, so the run's timeline shouldn't show one.
+      if (!managed && !isControlFlow(error)) yield agentFailed(this.name, agentCorrelationId, {
         iterations: completedIterations,
         error: String(error),
       });

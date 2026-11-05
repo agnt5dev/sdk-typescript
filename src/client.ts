@@ -729,6 +729,13 @@ export class Client {
    * Wait for a run to complete and return the result.
    */
   async waitForResult<T = any>(runId: string, timeoutMs: number = 300000, pollIntervalMs: number = 1000): Promise<RunResponse<T>> {
+    // A value that isn't a number, such as an options object from JavaScript,
+    // would make the timeout check never pass and the loop poll forever.
+    for (const [name, value] of [['timeoutMs', timeoutMs], ['pollIntervalMs', pollIntervalMs]] as const) {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+        throw new RangeError(`waitForResult: ${name} must be a non-negative number of milliseconds`);
+      }
+    }
     const startTime = Date.now();
 
     while (true) {
@@ -1049,6 +1056,7 @@ export class Client {
     const events: EventRecord[] = rawItems.map((e: any) => ({
       eventType: e.event_type || e.eventType || '',
       data: e.data || e.output_data || {},
+      metadata: e.metadata ?? {},
       timestamp: e.timestamp || e.created_at,
       sequence: e.sequence ?? 0,
       correlationId: e.correlation_id || e.correlationId,
@@ -1380,6 +1388,12 @@ export class Client {
 export interface EventRecord {
   eventType: string;
   data: Record<string, any>;
+  /**
+   * The record's string metadata. For `workflow.paused`, this holds what a
+   * caller needs to show the question: `input_type`, `options` (JSON text),
+   * `allow_custom` and `skippable`.
+   */
+  metadata: Record<string, string>;
   timestamp?: string;
   sequence: number;
   correlationId?: string;
