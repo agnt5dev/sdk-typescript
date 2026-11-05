@@ -1049,6 +1049,7 @@ export class Client {
     const events: EventRecord[] = rawItems.map((e: any) => ({
       eventType: e.event_type || e.eventType || '',
       data: e.data || e.output_data || {},
+      metadata: e.metadata ?? {},
       timestamp: e.timestamp || e.created_at,
       sequence: e.sequence ?? 0,
       correlationId: e.correlation_id || e.correlationId,
@@ -1380,6 +1381,12 @@ export class Client {
 export interface EventRecord {
   eventType: string;
   data: Record<string, any>;
+  /**
+   * The record's string metadata. For `workflow.paused`, this holds what a
+   * caller needs to show the question: `input_type`, `options` (JSON text),
+   * `allow_custom` and `skippable`.
+   */
+  metadata: Record<string, string>;
   timestamp?: string;
   sequence: number;
   correlationId?: string;
