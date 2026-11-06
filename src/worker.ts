@@ -1,4 +1,5 @@
 import { runDeclaredStep } from './step.js';
+import { decodeUserResponse } from './hitl-response.js';
 import type { DeclaredStep } from './step.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { throwIfAborted } from './cancellation.js';
@@ -544,16 +545,7 @@ class SimpleContext implements Context {
     const pauseIndex = Number.parseInt(pauseIndexStr, 10);
     if (Number.isNaN(pauseIndex)) return;
 
-    // Wire-format decoding mirrors sdk-python's wait_for_user (workflow.py:1520):
-    // "__skipped__" → null, "__custom__:..." → strip prefix.
-    let decoded: string | null = userResponse;
-    if (userResponse === '__skipped__' || userResponse === '__skip__') {
-      decoded = null;
-    } else if (userResponse.startsWith('__custom__:')) {
-      decoded = userResponse.slice('__custom__:'.length);
-    }
-
-    this._userResponses.set(pauseIndex, decoded);
+    this._userResponses.set(pauseIndex, decodeUserResponse(userResponse));
   }
 
   setEmitter(emitter: EventEmitter): void {

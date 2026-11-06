@@ -13,6 +13,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - **Behavior change:** the agent throws `ToolCannotPauseError` when it starts, before its first model call, whether or not the model would have called the tool. An agent that holds such a tool but runs inside `ctx.step(...)` or as a delegated agent now fails on every run. Run it from the workflow body, or build it without the tool for that place.
 - Do not retry `ToolCannotPauseError`. A step or function with a retry policy, and a delegated agent, used to report it as retryable, so each attempt ran the model and the earlier tools again before failing the same way.
 - `AskUserTool` and `RequestApprovalTool` refuse to pause inside a step on every context, as confirmation tools already did. A replayed step skips its pause, so a later pause would read this one's answer.
+- `ctx.waitForUser` decodes typed text inside a multiselect answer: an entry `"__custom__:<text>"` in the JSON array becomes its text, so ticked options and typed text arrive together (`'["ai","__custom__:Rust"]'` returns `'["ai","Rust"]'`). Answers without such an entry are returned unchanged. Worker and workerless runs share one decoder.
 
 ## [0.11.2] - 2026-11-05
 
