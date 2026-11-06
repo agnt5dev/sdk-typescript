@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-05
+
+### Fixed
+
+- Build native workers on sdk-core 0.3.12 so ordinary SSE-only log delivery cannot delay activation or checkpoint persistence. Explicit streaming requests retain their ordered event prefix, including suffixed invocation IDs, and durable writes still require their acknowledgments.
+
 ## [0.11.1] - 2026-11-04
 
 ### Fixed
