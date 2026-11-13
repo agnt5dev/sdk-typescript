@@ -1556,10 +1556,6 @@ export class Agent {
       (ctx as any).sandbox = this.sandbox;
     }
 
-    // Before the first model call, so a tool that can never pause here fails
-    // every run the same way, with nothing spent and nothing done.
-    requireAgentCanPause(this.name, this.tools.values(), ctx);
-
     // Stash conversation on context for handoff history passing
     const messages: Message[] = history ? [...history] : [];
     messages.push(Message.user(userMessage));
@@ -1579,6 +1575,11 @@ export class Agent {
     let completedIterations = 0;
 
     try {
+      // Before the first model call, so a tool that can never pause here
+      // fails every run the same way, with nothing spent and nothing done.
+      // Inside the try so the agent's sandbox is still closed.
+      requireAgentCanPause(this.name, this.tools.values(), ctx);
+
       const beforeAgentResult = await this.runBeforeAgentCallback(ctx, userMessage, history);
       if (beforeAgentResult) {
         if (!managed) yield agentCompleted(this.name, agentCorrelationId, {

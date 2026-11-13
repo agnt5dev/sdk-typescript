@@ -101,6 +101,18 @@ describe('a tool that cannot pause where its agent runs', () => {
     expect(model.requests).toHaveLength(0);
   });
 
+  it('closes the agent\'s sandbox when it refuses to start', async () => {
+    const close = vi.fn(async () => {});
+    const model = new ToolCallingModel('record_publication', { title: 'Q3 report' });
+    const agent = new Agent({ name: 'publisher', model, instructions: 'Publish.', tools: [recordPublication()], sandbox: { close } as any });
+    const ctx = new ContextImpl('inv-1', 'run-pause', 0, 'test', { storage: 'memory' });
+
+    await expect(ctx.step('publish', () => agent.run('Publish it', ctx))).rejects.toBeInstanceOf(ToolCannotPauseError);
+
+    expect(close).toHaveBeenCalledOnce();
+    expect(model.requests).toHaveLength(0);
+  });
+
   it('fails the run when a tool finds it cannot pause only once called', async () => {
     // The check at the start can't see every case, so the loop still refuses.
     tool('escalate', { description: 'Escalate to a person' }, async () => {
