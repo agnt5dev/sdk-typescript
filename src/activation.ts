@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-import { ActivationError, ActivationErrorCode } from './errors.js';
+import { ActivationError, ActivationErrorCode, ToolCannotPauseError } from './errors.js';
 import { measureBusiness } from './core-metrics.js';
 import { isControlFlow } from './control-flow.js';
 import { currentDisplayParentCorrelationId, runWithDisplayParent } from './display-parent-context.js';
@@ -727,7 +727,11 @@ export class ActivationClient {
       result = await measureBusiness(request.runId, execute);
     } catch (error) {
       if (isControlFlow(error) || this.failsAsAbandoned()) throw error;
-      const retryable = (options.failureRetryable ?? false) && (options.shouldRetry?.(error) ?? true) && decision.attempt < (options.maxAttempts ?? 1);
+      // A tool that can't pause where it was called fails the same way on
+      // every attempt, and a retry would run the model and the earlier tools
+      // again to get there.
+      const failureRetryable = (options.failureRetryable ?? false) && !(error instanceof ToolCannotPauseError);
+      const retryable = failureRetryable && (options.shouldRetry?.(error) ?? true) && decision.attempt < (options.maxAttempts ?? 1);
       const errorData = utf8(JSON.stringify({
         message: error instanceof Error ? error.message : String(error),
         type: error instanceof Error ? error.constructor.name : typeof error,
@@ -735,7 +739,7 @@ export class ActivationClient {
       const receipt = await this.fail(request, decision, {
         errorCode: options.failureErrorCode ?? 'STEP_FAILED',
         errorData,
-        retryable: options.maxAttempts === undefined ? options.failureRetryable ?? false : retryable,
+        retryable: options.maxAttempts === undefined ? failureRetryable : retryable,
         externalOutcomeCertainty: options.failureExternalOutcomeCertainty ?? 'UNKNOWN',
         evidence: await options.failureEvidence?.(error) ?? [],
         latencyMs: options.latencyMs(),

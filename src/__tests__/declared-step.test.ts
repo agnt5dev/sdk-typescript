@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { step } from '../step.js';
 import { ContextImpl } from '../context.js';
 import { ActivationClient, ActivationKind, activationId, currentActivation } from '../activation.js';
-import { ActivationError, ActivationErrorCode } from '../errors.js';
+import { ActivationError, ActivationErrorCode, ToolCannotPauseError } from '../errors.js';
 import { fn, FunctionRegistry } from '../function.js';
 
 function gate() {
@@ -240,6 +240,31 @@ describe('declared step failure and nesting', () => {
     await expect(context(journal).step(work)).rejects.toMatchObject({ code: ActivationErrorCode.UnknownOutcome });
     expect(attempts).toBe(1);
     expect(phases(journal)).toEqual(['begin', 'fail']);
+  });
+
+  it('does not retry a tool that cannot pause, which fails the same way every attempt', async () => {
+    const journal = new Journal();
+    let attempts = 0;
+    const work = step('asks-a-person', async () => {
+      attempts++;
+      throw new ToolCannotPauseError('request_approval', 'cannot pause here');
+    }, { retries: { maxAttempts: 3, initialIntervalMs: 0 } });
+    await expect(context(journal).step(work)).rejects.toBeInstanceOf(ToolCannotPauseError);
+    expect(attempts).toBe(1);
+    expect(phases(journal)).toEqual(['begin', 'fail']);
+    expect(journal.calls.find(call => call.phase === 'fail')!.request.retryable).toBe(false);
+  });
+
+  it('does not retry a nested function whose tool cannot pause', async () => {
+    const journal = new Journal();
+    let attempts = 0;
+    const nested = fn('declared-nested-cannot-pause').retry({ maxAttempts: 3, initialIntervalMs: 0 }).run(async (_scope, _input: null) => {
+      attempts++;
+      throw new ToolCannotPauseError('request_approval', 'cannot pause here');
+    });
+    const parent = step('parent', async scope => nested(scope, null));
+    await expect(context(journal).step(parent)).rejects.toBeInstanceOf(ToolCannotPauseError);
+    expect(attempts).toBe(1);
   });
 
   it('keeps nested step identities under their admitted parent', async () => {
