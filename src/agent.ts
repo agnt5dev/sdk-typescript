@@ -33,6 +33,7 @@ import {
   MaxIterationsExceededError,
   HandoffDepthExceededError,
   ConfigurationError,
+  ToolCannotPauseError,
 } from './errors.js';
 import {
   ChildJoinPolicy,
@@ -1791,6 +1792,12 @@ export class Agent {
               // workflow — do NOT treat it as a tool failure or the LLM will
               // retry the tool in the next iteration.
               if (agentRuns.getStore()?.signal?.aborted || ['WaitingForUserInputError', 'SuspensionRequestedError', 'DurableSleepSuspensionError', 'MaxIterationsExceededError', 'HandoffDepthExceededError', 'ActivationError'].includes((error as any)?.name)) {
+                throw error;
+              }
+              // The tool had to pause for a person and could not. Fail the
+              // run: handed to the model as a tool error, the model carries
+              // on as if the person had been asked.
+              if (error instanceof ToolCannotPauseError) {
                 throw error;
               }
               if (!journaled) yield toolCallFailed(tcId, iterCorrelationId, {

@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Fail the run when an agent calls a tool that has to pause for a person where the run cannot pause. A `confirmation: true` tool, `AskUserTool` or `RequestApprovalTool` called by an agent inside `ctx.step(...)` or a delegated agent used to hand its configuration error to the model as an ordinary tool result, so the model carried on and the run completed with the approval or question silently skipped. The agent now throws `ToolCannotPauseError`, a `ConfigurationError` that names the tool and says to run the agent from the workflow body. A tool's own errors still go back to the model as before.
+- `AskUserTool` and `RequestApprovalTool` refuse to pause inside a step on every context, as confirmation tools already did. A replayed step skips its pause, so a later pause would read this one's answer.
+
 ## [0.11.2] - 2026-11-05
 
 ### Fixed

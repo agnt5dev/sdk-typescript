@@ -13,7 +13,7 @@ import type {
   RecoveryPolicy,
 } from './types.js';
 import type { ContextImpl } from './context.js';
-import { ActivationError, ActivationErrorCode, ConfigurationError } from './errors.js';
+import { ActivationError, ActivationErrorCode, ConfigurationError, ToolCannotPauseError } from './errors.js';
 import { withSpan } from './tracing.js';
 import {
   ActivationKind,
@@ -236,7 +236,8 @@ export class Tool<TInput = any, TOutput = any> {
     const waitForUser = (ctx as any)?.waitForUser;
     const step = (ctx as any)?.step;
     if (typeof waitForUser !== 'function' || typeof step !== 'function') {
-      throw new ConfigurationError(
+      throw new ToolCannotPauseError(
+        this.name,
         `Tool '${this.name}' requires confirmation, which pauses the run for a ` +
         'person\'s approval. Call it from a workflow, or remove confirmation: true.'
       );
@@ -247,10 +248,12 @@ export class Tool<TInput = any, TOutput = any> {
     // asking again, so the pause count falls behind and later pauses read
     // earlier answers. Refuse instead of running the tool without approval.
     if (currentActivation() || inWorkflowStep()) {
-      throw new ConfigurationError(
+      throw new ToolCannotPauseError(
+        this.name,
         `Tool '${this.name}' requires confirmation, but it was called inside a ` +
-        'delegated agent or a step, which cannot pause for approval yet. Give the ' +
-        'tool to the top-level agent, or call it between workflow steps.'
+        'delegated agent or a step, which cannot pause for approval yet. Run the ' +
+        'agent that uses this tool, or call the tool, from the workflow body ' +
+        'between steps, and give the tool to the top-level agent.'
       );
     }
     let question = `Allow \`${this.name}\` to run?`;
@@ -519,6 +522,23 @@ export function tool<TInput = any, TOutput = any>(
 // ─── Built-in Human-in-the-Loop Tools ────────────────────────────────
 
 /**
+ * Refuse a built-in tool's pause where the run cannot pause. The wait itself
+ * refuses too, but with an error an agent hands to the model like any other
+ * tool error; this one names the tool and fails the run.
+ */
+function requirePauseBoundary(toolName: string, className: string): void {
+  if (currentActivation() || inWorkflowStep()) {
+    throw new ToolCannotPauseError(
+      toolName,
+      `${className} pauses the run for a person, but it was called inside a ` +
+      'delegated agent or a step, which cannot pause yet. Run the agent that ' +
+      'uses this tool from the workflow body between steps, and give the tool ' +
+      'to the top-level agent.'
+    );
+  }
+}
+
+/**
  * Built-in tool that agents can use to request text input from users.
  *
  * Pauses workflow execution and waits for the user to provide a text response.
@@ -547,6 +567,7 @@ export class AskUserTool extends Tool<{ question: string }, string | null> {
       'Ask the user a question and wait for their text response',
       async (_ctx: Context, args: any) => {
         const question = typeof args === 'string' ? args : args.question;
+        requirePauseBoundary('ask_user', 'AskUserTool');
         return wfContext.waitForUser(question, { inputType: 'text' });
       },
       {
@@ -596,6 +617,7 @@ export class RequestApprovalTool extends Tool<{ action: string; details?: string
           question += `\n\nDetails:\n${args.details}`;
         }
         question += '\n\nDo you approve?';
+        requirePauseBoundary('request_approval', 'RequestApprovalTool');
         return wfContext.waitForUser(question, {
           inputType: 'approval',
           options: [
