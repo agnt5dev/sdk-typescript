@@ -6,7 +6,7 @@ import { rejectsSamplingParams } from './providers/model-caps.js';
  */
 
 import type { Context, ToolSchema } from './types.js';
-import { Tool } from './tool.js';
+import { Tool, requireAgentCanPause } from './tool.js';
 import { ContextImpl } from './context.js';
 import { LM, normalizePromptCache, validateModelForProvider } from './lm.js';
 import type { Sandbox } from './sandbox.js';
@@ -1555,6 +1555,10 @@ export class Agent {
     if (this.sandbox) {
       (ctx as any).sandbox = this.sandbox;
     }
+
+    // Before the first model call, so a tool that can never pause here fails
+    // every run the same way, with nothing spent and nothing done.
+    requireAgentCanPause(this.name, this.tools.values(), ctx);
 
     // Stash conversation on context for handoff history passing
     const messages: Message[] = history ? [...history] : [];

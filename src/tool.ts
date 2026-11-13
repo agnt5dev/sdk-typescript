@@ -104,6 +104,12 @@ export class Tool<TInput = any, TOutput = any> {
   readonly outputSchema?: JSONSchema;
   readonly recoveryPolicy: ActivationRecoveryPolicy;
   readonly durable: boolean;
+  /**
+   * Whether calling this tool pauses the run to ask a person, as the built-in
+   * `AskUserTool` and `RequestApprovalTool` do.
+   * @internal
+   */
+  waitsForUser = false;
 
   constructor(
     name: string,
@@ -522,6 +528,44 @@ export function tool<TInput = any, TOutput = any>(
 // ─── Built-in Human-in-the-Loop Tools ────────────────────────────────
 
 /**
+ * Fail an agent before it starts if a tool it holds could never pause here.
+ *
+ * Whether a run can pause depends on where the agent runs, not on which tool
+ * the model picks. Checking only when the tool is called would let the same
+ * mistake pass every run in which the model happens not to call it, and fail
+ * the others part-way, after earlier tools have already had their effects.
+ *
+ * @internal
+ */
+export function requireAgentCanPause(agentName: string, tools: Iterable<Tool>, ctx: Context | undefined): void {
+  for (const candidate of tools) {
+    if (!candidate.confirmation && !candidate.waitsForUser) continue;
+    // A built-in tool pauses in the workflow context it was made with; a
+    // confirmation tool pauses in the context the agent was run with.
+    const inWorkflow = candidate.waitsForUser ||
+      (typeof (ctx as any)?.waitForUser === 'function' && typeof (ctx as any)?.step === 'function');
+    if (!inWorkflow) {
+      throw new ToolCannotPauseError(
+        candidate.name,
+        `Agent '${agentName}' has the tool '${candidate.name}', which pauses the ` +
+        'run for a person, but the agent is running outside a workflow, where a ' +
+        'run cannot pause. Run the agent from a workflow, or take the tool away ' +
+        'from this agent.'
+      );
+    }
+    if (currentActivation() || inWorkflowStep()) {
+      throw new ToolCannotPauseError(
+        candidate.name,
+        `Agent '${agentName}' has the tool '${candidate.name}', which pauses the ` +
+        'run for a person, but the agent is running inside a delegated agent or ' +
+        'a step, which cannot pause yet. Run the agent from the workflow body ' +
+        'between steps, or take the tool away from this agent.'
+      );
+    }
+  }
+}
+
+/**
  * Refuse a built-in tool's pause where the run cannot pause. The wait itself
  * refuses too, but with an error an agent hands to the model like any other
  * tool error; this one names the tool and fails the run.
@@ -581,6 +625,7 @@ export class AskUserTool extends Tool<{ question: string }, string | null> {
         durable: false,
       },
     );
+    this.waitsForUser = true;
   }
 }
 
@@ -638,5 +683,6 @@ export class RequestApprovalTool extends Tool<{ action: string; details?: string
         durable: false,
       },
     );
+    this.waitsForUser = true;
   }
 }

@@ -49,7 +49,7 @@ async function dispatch(componentType: 'workflow' | 'tool', componentName: strin
   }));
 }
 
-describe('a tool that cannot pause where an agent called it', () => {
+describe('a tool that cannot pause where its agent runs', () => {
   let published: string[];
 
   beforeEach(() => {
@@ -80,9 +80,40 @@ describe('a tool that cannot pause where an agent called it', () => {
     const result = await dispatch('workflow', 'publish');
 
     expect(result).toMatchObject({ eventType: 'run.failed', errorType: 'ConfigurationError' });
-    expect(result.error).toContain("Tool 'record_publication' requires confirmation");
+    expect(result.error).toContain("has the tool 'record_publication'");
     expect(result.error).toContain('from the workflow body');
     expect(published).toEqual([]);
+    // Refused before the model was asked anything.
+    expect(model.requests).toHaveLength(0);
+  });
+
+  it('fails the run even when the model would not have called the tool', async () => {
+    // Otherwise the mistake passes every run in which the model skips the tool.
+    tool('lookup', { description: 'Look something up' }, async () => 'found');
+    const model = new ToolCallingModel('lookup', {});
+    const agent = new Agent({ name: 'publisher', model, instructions: 'Publish.', tools: [ToolRegistry.get('lookup')!, recordPublication()] });
+    workflow('research', async ctx => ctx.step('research', async () => (await agent.run('Look it up', ctx)).output));
+
+    const result = await dispatch('workflow', 'research');
+
+    expect(result).toMatchObject({ eventType: 'run.failed', errorType: 'ConfigurationError' });
+    expect(result.error).toContain("has the tool 'record_publication'");
+    expect(model.requests).toHaveLength(0);
+  });
+
+  it('fails the run when a tool finds it cannot pause only once called', async () => {
+    // The check at the start can't see every case, so the loop still refuses.
+    tool('escalate', { description: 'Escalate to a person' }, async () => {
+      throw new ToolCannotPauseError('escalate', 'escalate cannot pause here');
+    });
+    const model = new ToolCallingModel('escalate', {});
+    const agent = new Agent({ name: 'responder', model, instructions: 'Escalate.', tools: [ToolRegistry.get('escalate')!] });
+    workflow('respond', async ctx => (await agent.run('Escalate', ctx)).output);
+
+    const result = await dispatch('workflow', 'respond');
+
+    expect(result).toMatchObject({ eventType: 'run.failed', errorType: 'ConfigurationError' });
+    expect(result.error).toContain('escalate cannot pause here');
     // The model was asked once and never shown the failure as a tool result.
     expect(model.requests).toHaveLength(1);
   });
@@ -101,9 +132,9 @@ describe('a tool that cannot pause where an agent called it', () => {
     const result = await dispatch('workflow', 'intake');
 
     expect(result).toMatchObject({ eventType: 'run.failed', errorType: 'ConfigurationError' });
-    expect(result.error).toContain(`${className} pauses the run for a person`);
+    expect(result.error).toContain(`has the tool '${toolName}'`);
     expect(result.error).toContain('from the workflow body');
-    expect(model.requests).toHaveLength(1);
+    expect(model.requests).toHaveLength(0);
   });
 
   it('raises an error that is still a ConfigurationError', async () => {
@@ -118,7 +149,7 @@ describe('a tool that cannot pause where an agent called it', () => {
     expect(failure).toBeInstanceOf(ConfigurationError);
     expect(failure).toMatchObject({ name: 'ConfigurationError', code: 'TOOL_CANNOT_PAUSE', toolName: 'record_publication' });
     expect(published).toEqual([]);
-    expect(model.requests).toHaveLength(1);
+    expect(model.requests).toHaveLength(0);
   });
 
   it('still hands an ordinary tool error back to the model', async () => {
