@@ -13,17 +13,22 @@ The **Context** (`ctx`) is the execution environment provided to all AGNT5 compo
 
 ## Core Orchestration APIs
 
-### `ctx.task()` - Execute a Function
+### `ctx.step()` - Run a Step
 
-Call a function and wait for the result (workflows only):
+`ctx.step()` is the one way to run durable work from a workflow. Give the step a name and the work to run; the result is saved, so a restarted workflow does not run it again:
 
 ```typescript
 import { Context } from '@agnt5/sdk';
 
-const result = await ctx.task({
-  serviceName: 'analytics',
-  handlerName: 'process_data',
-  input: { dataset: 'users' }
+const result = await ctx.step('processData', () => processData(ctx, { dataset: 'users' }));
+```
+
+The work can be any operation, not only a function:
+
+```typescript
+// If function crashes, won't re-execute this step
+const data = await ctx.step('load_data', async () => {
+  return await expensiveDatabaseQuery();
 });
 ```
 
@@ -34,9 +39,9 @@ Run multiple tasks in parallel (workflows only):
 ```typescript
 // Returns array of results in order
 const results = await ctx.parallel([
-  ctx.task({ serviceName: 'service1', handlerName: 'handler1' }),
-  ctx.task({ serviceName: 'service2', handlerName: 'handler2' }),
-  ctx.task({ serviceName: 'service3', handlerName: 'handler3' })
+  ctx.step('handler1', () => handler1(ctx)),
+  ctx.step('handler2', () => handler2(ctx)),
+  ctx.step('handler3', () => handler3(ctx))
 ]);
 ```
 
@@ -46,8 +51,8 @@ Like `parallel()` but with object keys (workflows only):
 
 ```typescript
 const results = await ctx.gather({
-  db: ctx.task({ serviceName: 'analytics', handlerName: 'analyze_db' }),
-  api: ctx.task({ serviceName: 'analytics', handlerName: 'analyze_api' })
+  db: ctx.step('analyzeDb', () => analyzeDb(ctx)),
+  api: ctx.step('analyzeApi', () => analyzeApi(ctx))
 });
 // Access: results.db, results.api
 ```
@@ -60,17 +65,6 @@ Spawn a child function without waiting:
 const handle = ctx.spawn(myFunction, arg1, arg2, { key: 'unique-id' });
 // Continue doing other work...
 const result = await handle.result();
-```
-
-### `ctx.step()` - Checkpointing
-
-Checkpoint expensive operations (functions only):
-
-```typescript
-// If function crashes, won't re-execute this step
-const data = await ctx.step('load_data', async () => {
-  return await expensiveDatabaseQuery();
-});
 ```
 
 ## State Management (Entities)
@@ -425,8 +419,8 @@ reaches the run.
 
 ```typescript
 const results = await ctx.gather({
-  task1: ctx.task({ serviceName: 'svc', handlerName: 'task1' }),
-  task2: ctx.task({ serviceName: 'svc', handlerName: 'task2' })
+  task1: ctx.step('task1', () => task1(ctx)),
+  task2: ctx.step('task2', () => task2(ctx))
 });
 
 if (results.task1 && results.task2) {
@@ -527,7 +521,6 @@ export interface Context {
   run<T>(name: string, fn: () => Promise<T>): Promise<T>;
 
   // Orchestration
-  task<T>(options: TaskOptions): Promise<T>;
   parallel<T>(tasks: Promise<T>[]): Promise<T[]>;
   gather<T extends Record<string, Promise<any>>>(
     tasks: T
@@ -566,12 +559,6 @@ export interface Context {
 
   // Human-in-the-loop
   readonly human: HumanClient;
-}
-
-export interface TaskOptions {
-  serviceName: string;
-  handlerName: string;
-  input?: unknown;
 }
 
 export interface SignalOptions {

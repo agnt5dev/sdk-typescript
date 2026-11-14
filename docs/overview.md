@@ -209,12 +209,12 @@ import { workflow, Context } from '@agnt5/sdk';
 @workflow()
 async function orderFulfillment(ctx: Context, orderId: string): Promise<OrderResult> {
   // Sequential steps
-  const payment = await ctx.task(processPayment, orderId);
+  const payment = await ctx.step('processPayment', () => processPayment(ctx, orderId));
 
   // Parallel execution
   const [shipping, notification] = await ctx.parallel(
-    ctx.task(scheduleShipping, orderId),
-    ctx.task(sendConfirmation, orderId)
+    ctx.step('scheduleShipping', () => scheduleShipping(ctx, orderId)),
+    ctx.step('sendConfirmation', () => sendConfirmation(ctx, orderId))
   );
 
   // Wait for external signal
