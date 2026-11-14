@@ -656,6 +656,61 @@ describe('Client', () => {
     }
   });
 
+  it('waitForResult rejects a timeout that is not a number instead of polling forever', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      run_id: 'run-paused', status: 'paused', status_code: 202,
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test', apiKey: 'agnt5_sk_test' });
+
+      // An options object from JavaScript code: the timeout would be NaN.
+      await expect(client.waitForResult('run-paused', { timeoutMs: 10 } as any)).rejects.toThrow(
+        'timeoutMs must be a non-negative number',
+      );
+      await expect(client.waitForResult('run-paused', 1000, Number.NaN)).rejects.toThrow(
+        'pollIntervalMs must be a non-negative number',
+      );
+      await expect(client.waitForOutput('run-paused', -1)).rejects.toBeInstanceOf(RangeError);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('waitForResult accepts Infinity as a timeout and waits until the run finishes', async () => {
+    let polls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      polls += 1;
+      return new Response(JSON.stringify({
+        run_id: 'run-slow', status: polls < 3 ? 'paused' : 'completed', status_code: 200, output: 'done',
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test', apiKey: 'agnt5_sk_test' });
+
+      const result = await client.waitForResult('run-slow', Infinity, 1);
+
+      expect(result.status).toBe('completed');
+      await expect(client.waitForResult('run-slow', 1000, Infinity)).rejects.toBeInstanceOf(RangeError);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('waitForResult still times out on a run that stays paused', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      run_id: 'run-paused', status: 'paused', status_code: 202,
+    }), { status: 200, headers: { 'content-type': 'application/json' } })));
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test', apiKey: 'agnt5_sk_test' });
+
+      await expect(client.waitForResult('run-paused', 30, 5)).rejects.toThrow('Timeout waiting for run to complete');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('cancelBatch uses the shared DELETE route and forwards the reason', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       batch_id: 'batch-1',
