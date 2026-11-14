@@ -678,6 +678,26 @@ describe('Client', () => {
     }
   });
 
+  it('waitForResult accepts Infinity as a timeout and waits until the run finishes', async () => {
+    let polls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      polls += 1;
+      return new Response(JSON.stringify({
+        run_id: 'run-slow', status: polls < 3 ? 'paused' : 'completed', status_code: 200, output: 'done',
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+    try {
+      const client = new Client({ gatewayUrl: 'http://gateway.test', apiKey: 'agnt5_sk_test' });
+
+      const result = await client.waitForResult('run-slow', Infinity, 1);
+
+      expect(result.status).toBe('completed');
+      await expect(client.waitForResult('run-slow', 1000, Infinity)).rejects.toBeInstanceOf(RangeError);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('waitForResult still times out on a run that stays paused', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       run_id: 'run-paused', status: 'paused', status_code: 202,
