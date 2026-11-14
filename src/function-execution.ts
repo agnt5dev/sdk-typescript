@@ -1,7 +1,7 @@
 import { ActivationKind, ActivationRecoveryPolicy, activationRequestFromContext, runWithActivation } from './activation.js';
 import type { ActivationClient, ActivationDecision } from './activation.js';
 import { abortable, throwIfAborted } from './cancellation.js';
-import { ActivationError, ActivationErrorCode } from './errors.js';
+import { ActivationError, ActivationErrorCode, ToolCannotPauseError } from './errors.js';
 import type { Context, FunctionOptions } from './types.js';
 import { isControlFlow } from './control-flow.js';
 import { encodeActivationOutput, decodeActivationOutput } from './activation-output.js';
@@ -67,7 +67,8 @@ export async function executeFunction<T>(ctx: Context, name: string, input: unkn
     throwIfAborted(ctx.signal);
     try { return await execute(attemptContext(ctx, attempt - 1), input); }
     catch (error) {
-      if (attempt >= maxAttempts || !canRetry() || ctx.signal?.aborted || isControlFlow(error)) throw error;
+      // A tool that can't pause here fails the same way on every attempt.
+      if (attempt >= maxAttempts || !canRetry() || ctx.signal?.aborted || isControlFlow(error) || error instanceof ToolCannotPauseError) throw error;
       await retrySleep(retryDelay(options, attempt), ctx.signal);
     }
   }

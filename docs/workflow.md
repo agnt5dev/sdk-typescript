@@ -62,25 +62,13 @@ interface OrderResult {
 
 const processOrder = workflow(async (ctx: WorkflowContext, input: OrderInput): Promise<OrderResult> => {
   // Validate order
-  const order = await ctx.task({
-    serviceName: 'orders',
-    handlerName: 'validate',
-    input: { orderId: input.orderId }
-  });
+  const order = await ctx.step('validate', () => validate(ctx, { orderId: input.orderId }));
 
   // Process payment
-  const payment = await ctx.task({
-    serviceName: 'payments',
-    handlerName: 'charge',
-    input: { amount: order.total }
-  });
+  const payment = await ctx.step('charge', () => charge(ctx, { amount: order.total }));
 
   // Fulfill order
-  await ctx.task({
-    serviceName: 'fulfillment',
-    handlerName: 'ship',
-    input: { orderId: input.orderId }
-  });
+  await ctx.step('ship', () => ship(ctx, { orderId: input.orderId }));
 
   return { status: 'completed' };
 });
@@ -88,7 +76,7 @@ const processOrder = workflow(async (ctx: WorkflowContext, input: OrderInput): P
 
 **Key Components:**
 - `workflow()`: Function to register workflow
-- `ctx.task()`: Execute a function (see [Context API](context.md#ctxtask---execute-a-function))
+- `ctx.step()`: Run a function as a durable step (see [Context API](context.md#ctxstep---run-a-step))
 - `await`: Sequential execution (waits for completion)
 - Regular TypeScript: Use if/else, loops, variables
 
@@ -96,7 +84,7 @@ const processOrder = workflow(async (ctx: WorkflowContext, input: OrderInput): P
 
 Workflows use Context APIs for orchestration. For complete API documentation, see [Context API](context.md).
 
-- `ctx.task()` - Execute a function
+- `ctx.step()` - Run a function as a durable step
 - `ctx.parallel()` - Run tasks concurrently
 - `ctx.gather()` - Parallel with named results
 - `ctx.signal()` - Wait for external events
@@ -118,24 +106,16 @@ interface ResearchResult {
 
 const aiResearch = workflow(async (ctx: WorkflowContext, input: ResearchInput): Promise<ResearchResult> => {
   // Initialize research
-  await ctx.task({
-    serviceName: 'research',
-    handlerName: 'start_research',
-    input: { topic: input.topic }
-  });
+  await ctx.step('startResearch', () => startResearch(ctx, { topic: input.topic }));
 
   // Search in parallel
   const [papers, web] = await ctx.parallel(
-    ctx.task({ serviceName: 'research', handlerName: 'search_academic' }),
-    ctx.task({ serviceName: 'research', handlerName: 'search_web' })
+    ctx.step('searchAcademic', () => searchAcademic(ctx)),
+    ctx.step('searchWeb', () => searchWeb(ctx))
   );
 
   // Synthesize results
-  const summary = await ctx.task({
-    serviceName: 'research',
-    handlerName: 'synthesize',
-    input: { papers, web }
-  });
+  const summary = await ctx.step('synthesize', () => synthesize(ctx, { papers, web }));
 
   // Wait for human review
   const approved = await ctx.signal.wait('research_approved', {
@@ -144,11 +124,7 @@ const aiResearch = workflow(async (ctx: WorkflowContext, input: ResearchInput): 
 
   if (approved?.approved) {
     // Publish results
-    const result = await ctx.task({
-      serviceName: 'research',
-      handlerName: 'publish',
-      input: { summary }
-    });
+    const result = await ctx.step('publish', () => publish(ctx, { summary }));
     return { status: 'published', result };
   } else {
     return { status: 'cancelled' };
@@ -169,23 +145,11 @@ interface PipelineInput {
 
 const dataPipeline = workflow(async (ctx: WorkflowContext, input: PipelineInput) => {
   // Each step runs after the previous completes
-  const data = await ctx.task({
-    serviceName: 'etl',
-    handlerName: 'extract',
-    input: { dataset: input.dataset }
-  });
+  const data = await ctx.step('extract', () => extract(ctx, { dataset: input.dataset }));
 
-  const transformed = await ctx.task({
-    serviceName: 'etl',
-    handlerName: 'transform',
-    input: { data }
-  });
+  const transformed = await ctx.step('transform', () => transform(ctx, { data }));
 
-  const result = await ctx.task({
-    serviceName: 'etl',
-    handlerName: 'load',
-    input: { data: transformed }
-  });
+  const result = await ctx.step('load', () => load(ctx, { data: transformed }));
 
   return result;
 });
@@ -202,25 +166,17 @@ interface AnalysisInput {
 
 const multiSourceAnalysis = workflow(async (ctx: WorkflowContext, input: AnalysisInput) => {
   // Initialize
-  await ctx.task({
-    serviceName: 'analytics',
-    handlerName: 'setup',
-    input: { query: input.query }
-  });
+  await ctx.step('setup', () => setup(ctx, { query: input.query }));
 
   // Analyze multiple sources in parallel
   const results = await ctx.gather({
-    db: ctx.task({ serviceName: 'analytics', handlerName: 'analyze_db' }),
-    logs: ctx.task({ serviceName: 'analytics', handlerName: 'analyze_logs' }),
-    api: ctx.task({ serviceName: 'analytics', handlerName: 'analyze_api' })
+    db: ctx.step('analyzeDb', () => analyzeDb(ctx)),
+    logs: ctx.step('analyzeLogs', () => analyzeLogs(ctx)),
+    api: ctx.step('analyzeApi', () => analyzeApi(ctx))
   });
 
   // Aggregate results
-  const final = await ctx.task({
-    serviceName: 'analytics',
-    handlerName: 'combine',
-    input: results
-  });
+  const final = await ctx.step('combine', () => combine(ctx, results));
 
   return final;
 });
@@ -243,33 +199,17 @@ interface DeploymentResult {
 
 const conditionalDeployment = workflow(async (ctx: WorkflowContext, input: DeploymentInput): Promise<DeploymentResult> => {
   // Build and test
-  const build = await ctx.task({
-    serviceName: 'ci',
-    handlerName: 'build',
-    input: { version: input.version }
-  });
+  const build = await ctx.step('build', () => build(ctx, { version: input.version }));
 
-  const tests = await ctx.task({
-    serviceName: 'ci',
-    handlerName: 'test',
-    input: { buildId: build.id }
-  });
+  const tests = await ctx.step('test', () => test(ctx, { buildId: build.id }));
 
   if (tests.passed) {
     // Deploy to production
-    const result = await ctx.task({
-      serviceName: 'ci',
-      handlerName: 'deploy',
-      input: { buildId: build.id }
-    });
+    const result = await ctx.step('deploy', () => deploy(ctx, { buildId: build.id }));
     return { status: 'deployed', result };
   } else {
     // Rollback
-    await ctx.task({
-      serviceName: 'ci',
-      handlerName: 'rollback',
-      input: { buildId: build.id }
-    });
+    await ctx.step('rollback', () => rollback(ctx, { buildId: build.id }));
     return { status: 'failed', reason: 'tests failed' };
   }
 });
@@ -289,11 +229,7 @@ const processWithRetry = workflow(async (ctx: WorkflowContext, input: JobInput) 
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      const result = await ctx.task({
-        serviceName: 'jobs',
-        handlerName: 'process',
-        input: { jobId: input.jobId }
-      });
+      const result = await ctx.step('process', () => process(ctx, { jobId: input.jobId }));
       return result;
     } catch (e) {
       if (attempt < maxRetries - 1) {
@@ -328,17 +264,9 @@ interface ApprovalResult {
 
 const deployWithApproval = workflow(async (ctx: WorkflowContext, input: ApprovalInput): Promise<ApprovalResult> => {
   // Build and test
-  const build = await ctx.task({
-    serviceName: 'ci',
-    handlerName: 'build',
-    input: { version: input.version }
-  });
+  const build = await ctx.step('build', () => build(ctx, { version: input.version }));
 
-  const tests = await ctx.task({
-    serviceName: 'ci',
-    handlerName: 'test',
-    input: { buildId: build.id }
-  });
+  const tests = await ctx.step('test', () => test(ctx, { buildId: build.id }));
 
   if (!tests.passed) {
     return { status: 'failed', reason: 'tests failed' };
@@ -351,11 +279,7 @@ const deployWithApproval = workflow(async (ctx: WorkflowContext, input: Approval
   });
 
   if (approval.approved) {
-    const result = await ctx.task({
-      serviceName: 'ci',
-      handlerName: 'deploy',
-      input: { buildId: build.id }
-    });
+    const result = await ctx.step('deploy', () => deploy(ctx, { buildId: build.id }));
     return { status: 'deployed', result };
   } else {
     return { status: 'cancelled', reason: 'no approval' };
@@ -372,28 +296,16 @@ Workflows orchestrate - complex logic belongs in functions:
 ```typescript
 // ✓ Good - workflow orchestrates
 const processData = workflow(async (ctx: WorkflowContext, input: { dataId: string }) => {
-  const data = await ctx.task({
-    serviceName: 'etl',
-    handlerName: 'extract',
-    input: { id: input.dataId }
-  });
+  const data = await ctx.step('extract', () => extract(ctx, { id: input.dataId }));
 
-  const result = await ctx.task({
-    serviceName: 'etl',
-    handlerName: 'transform',
-    input: { data }
-  });
+  const result = await ctx.step('transform', () => transform(ctx, { data }));
 
   return result;
 });
 
 // ✗ Avoid - complex logic in workflow
 const processData = workflow(async (ctx: WorkflowContext, input: { dataId: string }) => {
-  const data = await ctx.task({
-    serviceName: 'etl',
-    handlerName: 'extract',
-    input: { id: input.dataId }
-  });
+  const data = await ctx.step('extract', () => extract(ctx, { id: input.dataId }));
 
   // Don't do heavy computation here
   const transformed = data.map(x => complexCalculation(x));
@@ -408,9 +320,9 @@ Run independent tasks concurrently:
 ```typescript
 // These tasks don't depend on each other - run in parallel
 const results = await ctx.parallel(
-  ctx.task({ serviceName: 'service1', handlerName: 'analyze_data' }),
-  ctx.task({ serviceName: 'service2', handlerName: 'fetch_metadata' }),
-  ctx.task({ serviceName: 'service3', handlerName: 'validate_schema' })
+  ctx.step('analyzeData', () => analyzeData(ctx)),
+  ctx.step('fetchMetadata', () => fetchMetadata(ctx)),
+  ctx.step('validateSchema', () => validateSchema(ctx))
 );
 ```
 
@@ -421,19 +333,11 @@ Use try/catch for error handling:
 ```typescript
 const safeProcessing = workflow(async (ctx: WorkflowContext, input: { jobId: string }) => {
   try {
-    const result = await ctx.task({
-      serviceName: 'jobs',
-      handlerName: 'process',
-      input: { jobId: input.jobId }
-    });
+    const result = await ctx.step('process', () => process(ctx, { jobId: input.jobId }));
     return { status: 'success', result };
   } catch (e) {
     // Log error and return gracefully
-    await ctx.task({
-      serviceName: 'logs',
-      handlerName: 'log_error',
-      input: { error: e instanceof Error ? e.message : String(e) }
-    });
+    await ctx.step('logError', () => logError(ctx, { error: e instanceof Error ? e.message : String(e) }));
     return {
       status: 'error',
       message: e instanceof Error ? e.message : String(e)
@@ -449,25 +353,13 @@ Use return values to pass data:
 ```typescript
 const dataFlow = workflow(async (ctx: WorkflowContext, inputData: Record<string, any>) => {
   // Step 1 produces data
-  const step1Result = await ctx.task({
-    serviceName: 'svc',
-    handlerName: 'step1',
-    input: inputData
-  });
+  const step1Result = await ctx.step('step1', () => step1(ctx, inputData));
 
   // Step 2 uses step1's output
-  const step2Result = await ctx.task({
-    serviceName: 'svc',
-    handlerName: 'step2',
-    input: step1Result
-  });
+  const step2Result = await ctx.step('step2', () => step2(ctx, step1Result));
 
   // Step 3 uses step2's output
-  const final = await ctx.task({
-    serviceName: 'svc',
-    handlerName: 'step3',
-    input: step2Result
-  });
+  const final = await ctx.step('step3', () => step3(ctx, step2Result));
 
   return final;
 });

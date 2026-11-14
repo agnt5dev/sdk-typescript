@@ -27,6 +27,7 @@ export type { BatchConfig, BatchItemInput, BatchItemResult, BatchItemError, Batc
 export {
   AGNT5Error,
   ConfigurationError,
+  ToolCannotPauseError,
   ExecutionError,
   RetryError,
   SagaCompensationError,

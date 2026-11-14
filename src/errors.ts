@@ -27,6 +27,27 @@ export class ConfigurationError extends AGNT5Error {
 }
 
 /**
+ * A tool that pauses the run for a person was called where the run can't
+ * pause: inside a workflow step, inside a delegated agent, or outside any
+ * workflow. Thrown by `confirmation: true` tools, `AskUserTool` and
+ * `RequestApprovalTool`.
+ *
+ * It has its own class so an agent can tell it from a tool's ordinary errors.
+ * Those go back to the model; this one fails the run, because the model would
+ * otherwise carry on as if the person had been asked. `name` stays
+ * `ConfigurationError` so code that matches on the name keeps working.
+ */
+export class ToolCannotPauseError extends ConfigurationError {
+  public readonly code = 'TOOL_CANNOT_PAUSE';
+  public readonly toolName: string;
+
+  constructor(toolName: string, message: string) {
+    super(message);
+    this.toolName = toolName;
+  }
+}
+
+/**
  * Execution errors (runtime errors during component execution)
  */
 export class ExecutionError extends AGNT5Error {

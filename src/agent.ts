@@ -6,7 +6,7 @@ import { rejectsSamplingParams } from './providers/model-caps.js';
  */
 
 import type { Context, ToolSchema } from './types.js';
-import { Tool } from './tool.js';
+import { Tool, requireAgentCanPause } from './tool.js';
 import { ContextImpl } from './context.js';
 import { LM, normalizePromptCache, validateModelForProvider } from './lm.js';
 import type { Sandbox } from './sandbox.js';
@@ -33,6 +33,7 @@ import {
   MaxIterationsExceededError,
   HandoffDepthExceededError,
   ConfigurationError,
+  ToolCannotPauseError,
 } from './errors.js';
 import {
   ChildJoinPolicy,
@@ -1574,6 +1575,11 @@ export class Agent {
     let completedIterations = 0;
 
     try {
+      // Before the first model call, so a tool that can never pause here
+      // fails every run the same way, with nothing spent and nothing done.
+      // Inside the try so the agent's sandbox is still closed.
+      requireAgentCanPause(this.name, this.tools.values(), ctx);
+
       const beforeAgentResult = await this.runBeforeAgentCallback(ctx, userMessage, history);
       if (beforeAgentResult) {
         if (!managed) yield agentCompleted(this.name, agentCorrelationId, {
@@ -1791,6 +1797,12 @@ export class Agent {
               // workflow — do NOT treat it as a tool failure or the LLM will
               // retry the tool in the next iteration.
               if (agentRuns.getStore()?.signal?.aborted || ['WaitingForUserInputError', 'SuspensionRequestedError', 'DurableSleepSuspensionError', 'MaxIterationsExceededError', 'HandoffDepthExceededError', 'ActivationError'].includes((error as any)?.name)) {
+                throw error;
+              }
+              // The tool had to pause for a person and could not. Fail the
+              // run: handed to the model as a tool error, the model carries
+              // on as if the person had been asked.
+              if (error instanceof ToolCannotPauseError) {
                 throw error;
               }
               if (!journaled) yield toolCallFailed(tcId, iterCorrelationId, {
