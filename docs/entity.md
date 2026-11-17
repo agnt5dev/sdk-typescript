@@ -156,7 +156,7 @@ async function generateSummary(findings: Finding[]): Promise<string> {
 ### Conversational AI Agent
 
 ```typescript
-import { entity, Context } from '@agnt5/sdk';
+import { entity, Context, LM } from '@agnt5/sdk';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -169,9 +169,9 @@ ChatAgent.write('send_message', async (ctx: Context, message: string): Promise<{
   let history = await ctx.get<ChatMessage[]>('history', []);
   history.push({ role: 'user', content: message });
 
-  const response = await ctx.llm.generate({
-    prompt: history,
-    model: 'gpt-4'
+  const response = await LM.openai().generate({
+    model: 'openai/gpt-6-luna',
+    messages: history
   });
   history.push({ role: 'assistant', content: response.text });
 

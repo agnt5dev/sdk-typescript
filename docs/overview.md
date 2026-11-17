@@ -362,7 +362,7 @@ await session.addMessage('user', 'Hello!');
 - Durable event persistence
 - Durable state projections
 - Orchestration APIs (`task`, `parallel`, `gather`, `spawn`)
-- LLM integration (`ctx.llm`)
+- LLM integration (`LM`)
 - Signals and timers
 - Workflow component
 - Tool component (built on durable Functions)

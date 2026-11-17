@@ -32,7 +32,7 @@ const lm = LM.openai();
 
 // Generate response
 const response = await lm.generate({
-  model: 'gpt-4',
+  model: 'openai/gpt-6-luna',
   messages: [
     { role: 'user', content: 'What is TypeScript?' }
   ]
@@ -49,7 +49,7 @@ import { LM } from '@agnt5/sdk';
 const lm = LM.openai();
 
 await lm.stream({
-  model: 'gpt-4',
+  model: 'openai/gpt-6-luna',
   messages: [
     { role: 'user', content: 'Tell me a story' }
   ]
@@ -86,6 +86,7 @@ const lm = LM.openai();
 const agent = new Agent({
   name: 'assistant',
   model: lm,
+  modelName: 'openai/gpt-6-luna',
   instructions: 'You are a helpful assistant.',
   tools: [weatherTool]
 });
@@ -102,20 +103,23 @@ import { LM, jsonSchemaFormat } from '@agnt5/sdk';
 
 const lm = LM.openai();
 
-// Define schema
+// Define schema. OpenAI's strict mode, the default, needs every property
+// in `required` and `additionalProperties: false`; allow null for a value
+// that may be missing.
 const schema = jsonSchemaFormat('person', {
   type: 'object',
   properties: {
     name: { type: 'string' },
     age: { type: 'number' },
-    email: { type: 'string' }
+    email: { anyOf: [{ type: 'string' }, { type: 'null' }] }
   },
-  required: ['name', 'age']
+  required: ['name', 'age', 'email'],
+  additionalProperties: false
 });
 
 // Force JSON output
 const response = await lm.generate({
-  model: 'gpt-4',
+  model: 'openai/gpt-6-luna',
   messages: [{
     role: 'user',
     content: 'Extract: John Doe, 30, john@example.com'
@@ -125,9 +129,13 @@ const response = await lm.generate({
   }
 });
 
-const person = JSON.parse(response.text);
+const person = response.structuredOutput as { name: string; age: number; email: string | null };
 console.log(person.name);  // "John Doe"
 ```
+
+See [Structured Output](./lm.md#structured-output-json-schema) for what strict mode accepts.
+
+Every model name starts with its provider: `openai/gpt-6-luna`, not `gpt-6-luna`. The SDK rejects a bare name with "Model must include provider prefix".
 
 ## Supported Providers
 
@@ -139,7 +147,7 @@ const lm = LM.openai({
 });
 ```
 
-**Models:** `gpt-4`, `gpt-4-turbo`, `o1-preview`, `o3-mini`
+**Models:** `openai/gpt-6-luna`, `openai/gpt-6.1-sol`, `openai/gpt-4.1-mini`
 
 ### Anthropic (Claude)
 
@@ -149,7 +157,7 @@ const lm = LM.anthropic({
 });
 ```
 
-**Models:** `claude-3-5-sonnet-20241022`, `claude-3-opus-20240229`
+**Models:** `anthropic/claude-sonnet-5`, `anthropic/claude-opus-5-5`, `anthropic/claude-haiku-4-5`
 
 ### Groq (Fast!)
 
@@ -159,7 +167,7 @@ const lm = LM.groq({
 });
 ```
 
-**Models:** `mixtral-8x7b-32768`, `llama2-70b-4096`
+**Models:** `groq/llama-3.3-70b-versatile`, `groq/llama-3.1-8b-instant`, `groq/openai/gpt-oss-120b`
 
 ### Azure OpenAI
 
@@ -169,6 +177,8 @@ const lm = LM.azure({
   endpoint: 'https://your-resource.openai.azure.com'
 });
 ```
+
+**Models:** `azure/` + your deployment name, such as `azure/your-deployment`
 
 ### AWS Bedrock
 
@@ -180,7 +190,9 @@ const lm = LM.bedrock({
 });
 ```
 
-### OpenRouter (100+ Models)
+**Models:** `bedrock/` + the Bedrock model ID, such as `bedrock/us.anthropic.claude-sonnet-5`
+
+### OpenRouter (Hundreds of Models)
 
 ```typescript
 const lm = LM.openrouter({
@@ -188,11 +200,13 @@ const lm = LM.openrouter({
 });
 ```
 
+**Models:** OpenRouter's model IDs, such as `anthropic/claude-sonnet-5`
+
 ## Configuration Options
 
 ```typescript
 const response = await lm.generate({
-  model: 'gpt-4',
+  model: 'openai/gpt-4.1-mini',  // reasoning models such as gpt-6-luna ignore temperature and topP
   messages: [/* ... */],
   config: {
     temperature: 0.7,        // Randomness (0.0 - 2.0)
@@ -207,7 +221,9 @@ const response = await lm.generate({
 ### Conversation with Context
 
 ```typescript
-const conversation = [
+import type { LMMessage } from '@agnt5/sdk';
+
+const conversation: LMMessage[] = [
   { role: 'system', content: 'You are a helpful assistant.' },
   { role: 'user', content: 'My name is Alice' },
   { role: 'assistant', content: 'Nice to meet you, Alice!' },
@@ -215,7 +231,7 @@ const conversation = [
 ];
 
 const response = await lm.generate({
-  model: 'gpt-4',
+  model: 'openai/gpt-6-luna',
   messages: conversation
 });
 ```
@@ -227,7 +243,7 @@ import { executeWithRetry } from '@agnt5/sdk';
 
 const response = await executeWithRetry(async () => {
   return await lm.generate({
-    model: 'gpt-4',
+    model: 'openai/gpt-6-luna',
     messages: [/* ... */]
   });
 }, {
@@ -240,17 +256,18 @@ const response = await executeWithRetry(async () => {
 
 ```typescript
 async function generateWithFallback(prompt: string) {
+  // Each provider needs its own model name.
   const providers = [
-    () => LM.openai(),
-    () => LM.anthropic(),
-    () => LM.groq()
+    { createLM: () => LM.openai(), model: 'openai/gpt-6-luna' },
+    { createLM: () => LM.anthropic(), model: 'anthropic/claude-sonnet-5' },
+    { createLM: () => LM.groq(), model: 'groq/llama-3.3-70b-versatile' }
   ];
 
-  for (const createLM of providers) {
+  for (const { createLM, model } of providers) {
     try {
       const lm = createLM();
       return await lm.generate({
-        model: 'gpt-4',
+        model,
         messages: [{ role: 'user', content: prompt }]
       });
     } catch (error) {
@@ -271,13 +288,13 @@ async function generateWithFallback(prompt: string) {
 
 ## Troubleshooting
 
-### "Could not find native LM bindings"
+### "Model must include provider prefix"
 
-**Solution:** Build the native module:
+**Solution:** Start the model name with its provider: `'openai/gpt-6-luna'`, not `'gpt-6-luna'`.
 
-```bash
-npm run build
-```
+### "Invalid schema for response_format"
+
+**Solution:** OpenAI's strict mode rejected the schema. See [Structured Output](./lm.md#structured-output-json-schema).
 
 ### "Invalid API key"
 

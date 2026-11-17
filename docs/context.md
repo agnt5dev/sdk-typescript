@@ -164,103 +164,70 @@ if (result.decision === 'approved') {
 
 ## AI Integration
 
-### `ctx.llm.generate()` - Generate Text or Structured Data
+`Context` has no model client of its own. Create an `LM` and call it in the handler; see the [LM guide](./lm.md) for providers and options.
 
-Generate text or structured responses from language models:
-
-```typescript
-// Simple text generation
-const response = await ctx.llm.generate({
-  prompt: 'Explain quantum computing in simple terms',
-  model: 'gpt-4o-mini'
-});
-console.log(response.text);
-
-// Chat-style conversation
-const response = await ctx.llm.generate({
-  prompt: [
-    { role: 'system', content: 'You are a helpful assistant' },
-    { role: 'user', content: 'Explain quantum computing' }
-  ],
-  model: 'gpt-4'
-});
-
-// Structured JSON output
-const response = await ctx.llm.generate({
-  prompt: 'Extract key information from this text: ...',
-  responseFormat: 'json',
-  model: 'gpt-4o-mini'
-});
-console.log(response.object);  // Parsed JSON object
-
-// JSON Schema-constrained responses
-interface UserProfile {
-  name: string;
-  age: number;
-}
-
-const response = await ctx.llm.generate<UserProfile>({
-  prompt: 'Create a user profile',
-  schema: {
-    type: 'object',
-    properties: {
-      name: { type: 'string' },
-      age: { type: 'integer' }
-    },
-    required: ['name', 'age']
-  },
-  model: 'gpt-4o-mini'
-});
-```
-
-### `ctx.llm.stream()` - Stream Generated Text
-
-Stream responses for real-time output:
+### Generate text or structured data
 
 ```typescript
-// Stream text generation
-const stream = await ctx.llm.stream({
-  prompt: 'Write a long story about AI',
-  model: 'gpt-4o'
-});
+import { fn, LM, jsonSchemaFormat } from '@agnt5/sdk';
+import type { Context } from '@agnt5/sdk';
 
-for await (const chunk of stream) {
-  process.stdout.write(chunk.text);
-}
+const lm = LM.openai();
 
-// Stream with chat messages
-const stream = await ctx.llm.stream({
-  prompt: [
-    { role: 'system', content: 'You are a storyteller' },
-    { role: 'user', content: 'Tell me a story' }
-  ],
-  model: 'gpt-4o'
-});
+export const explain = fn('explain').run(async (ctx: Context, topic: string) => {
+  // Simple text generation
+  const answer = await lm.generate({
+    model: 'openai/gpt-6-luna',
+    messages: [{ role: 'user', content: `Explain ${topic} in simple terms` }]
+  });
 
-for await (const chunk of stream) {
-  if (chunk.text) {
-    process.stdout.write(chunk.text);
-  }
-}
-```
+  // With a system prompt
+  const chat = await lm.generate({
+    model: 'openai/gpt-6-luna',
+    systemPrompt: 'You are a helpful assistant',
+    messages: [{ role: 'user', content: `Explain ${topic}` }]
+  });
 
-### `ctx.tools.register()` - Register Tool
-
-Register a tool for LLM use:
-
-```typescript
-const searchTool = ctx.tools.register({
-  name: 'web_search',
-  handler: performSearch,
-  description: 'Search the web for information',
-  schema: {
-    type: 'object',
-    properties: {
-      query: { type: 'string' }
+  // JSON Schema-constrained output. Strict mode, the default, needs every
+  // property in `required` and `additionalProperties: false`.
+  const profile = await lm.generate({
+    model: 'openai/gpt-6-luna',
+    messages: [{ role: 'user', content: 'Create a user profile' }],
+    config: {
+      responseFormat: jsonSchemaFormat('user_profile', {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          age: { type: 'integer' }
+        },
+        required: ['name', 'age'],
+        additionalProperties: false
+      })
     }
+  });
+  const user = profile.structuredOutput as { name: string; age: number };
+
+  return { answer: answer.text, chat: chat.text, user };
+});
+```
+
+### Stream generated text
+
+```typescript
+await lm.stream({
+  model: 'openai/gpt-6-luna',
+  systemPrompt: 'You are a storyteller',
+  messages: [{ role: 'user', content: 'Tell me a story' }]
+}, (chunk) => {
+  if (chunk.chunkType === 'delta' && chunk.content) {
+    process.stdout.write(chunk.content);
   }
 });
 ```
+
+### Tools
+
+Define tools with `tool()` and give them to an `Agent`. The agent calls the model, runs the tools it asks for, and repeats until it has an answer. See [Tools](./tool.md) and [Agents](./agent.md), and [LLM with Tool Execution](#llm-with-tool-execution) below.
 
 ## Memory & State
 
@@ -442,30 +409,28 @@ if (needsApproval) {
 ### LLM with Tool Execution
 
 ```typescript
-// Register tools
-const searchTool = ctx.tools.register({
-  name: 'search',
-  handler: searchHandler
-});
-const calcTool = ctx.tools.register({
-  name: 'calculator',
-  handler: calcHandler
-});
+import { Agent, LM, tool } from '@agnt5/sdk';
 
-// Generate with tools
-const response = await ctx.llm.generate({
-  prompt: 'What is 25 * 4 and what are the latest news on AI?',
-  tools: [searchTool, calcTool],
-  model: 'gpt-4o'
-});
-
-// Execute tool calls if needed
-if (response.toolCalls) {
-  for (const toolCall of response.toolCalls) {
-    const handler = ctx.tools.handler(toolCall.name);
-    const result = await handler(toolCall.arguments);
+const calculator = tool('calculator', {
+  description: 'Multiply two numbers',
+  inputSchema: {
+    type: 'object',
+    properties: { a: { type: 'number' }, b: { type: 'number' } },
+    required: ['a', 'b']
   }
-}
+}, async (ctx, args) => args.a * args.b);
+
+const assistant = new Agent({
+  name: 'assistant',
+  model: LM.openai(),
+  modelName: 'openai/gpt-6-luna',
+  instructions: 'Use the calculator for arithmetic.',
+  tools: [calculator]
+});
+
+// The agent runs the tool calls the model asks for, then answers.
+const result = await assistant.run('What is 25 * 4?');
+console.log(result.output);
 ```
 
 ### Checkpointed Multi-Step Process
