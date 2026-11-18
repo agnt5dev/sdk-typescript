@@ -545,7 +545,7 @@ class SimpleContext implements Context {
     const pauseIndex = Number.parseInt(pauseIndexStr, 10);
     if (Number.isNaN(pauseIndex)) return;
 
-    this._userResponses.set(pauseIndex, decodeUserResponse(userResponse));
+    this._userResponses.set(pauseIndex, decodeUserResponse(userResponse, metadata.input_type));
   }
 
   setEmitter(emitter: EventEmitter): void {

@@ -286,7 +286,7 @@ export class WorkerlessContext implements Context {
     if (userResponse !== undefined) {
       const pauseIndex = Number.parseInt(metadata.pause_index ?? '0', 10);
       if (!Number.isNaN(pauseIndex)) {
-        this.userResponses.set(pauseIndex, decodeUserResponse(userResponse));
+        this.userResponses.set(pauseIndex, decodeUserResponse(userResponse, metadata.input_type));
       }
     }
 
