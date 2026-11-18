@@ -24,6 +24,7 @@ import {
 import { Agent, AgentRegistry, Message } from './agent.js';
 import type { AgentResult } from './agent.js';
 import { ChatBot } from './chat.js';
+import { defaultBotTokenSource } from './chat-credentials.js';
 import { runWithContext, getCurrentContext } from './async-context.js';
 import { emptyRuntimeContext, runtimeContextFromMetadata } from './runtime-context.js';
 import type { RuntimeContext } from './runtime-context.js';
@@ -1575,7 +1576,14 @@ export class Worker {
                 const source = inputData.source as string;
                 const headers = (inputData.headers || {}) as Record<string, string>;
                 const body = Buffer.from(inputData.body || '', 'utf-8');
-                const botToken = inputData.bot_token as string | undefined;
+                // The envelope names the integration but carries no bot token,
+                // since run input is stored with the run's history: a hosted
+                // worker fetches it with its workload identity, and otherwise
+                // the ChatBot's configured token is used. An older gateway's
+                // `bot_token` is still honored.
+                const botToken =
+                  (inputData.bot_token as string | undefined) ||
+                  (await defaultBotTokenSource().get(inputData.integration_id as string | undefined));
 
                 console.log(`💬 Inbound chat event: source=${source}, bot=${message.componentName}`);
 
