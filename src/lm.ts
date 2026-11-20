@@ -703,7 +703,7 @@ export class LM {
    * ```typescript
    * const lm = LM.openai({ apiKey: process.env.OPENAI_API_KEY });
    * const response = await lm.generate({
-   *   model: 'openai/gpt-4',
+   *   model: 'openai/gpt-6-luna',
    *   messages: [{ role: 'user', content: 'Hello!' }]
    * });
    * ```
@@ -719,7 +719,7 @@ export class LM {
    * ```typescript
    * const lm = LM.anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
    * const response = await lm.generate({
-   *   model: 'anthropic/claude-3-5-sonnet-20241022',
+   *   model: 'anthropic/claude-sonnet-5',
    *   messages: [{ role: 'user', content: 'Hello!' }]
    * });
    * ```
@@ -771,7 +771,7 @@ export class LM {
    * ```typescript
    * const lm = LM.groq({ apiKey: process.env.GROQ_API_KEY });
    * const response = await lm.generate({
-   *   model: 'mixtral-8x7b-32768',
+   *   model: 'groq/llama-3.3-70b-versatile',
    *   messages: [{ role: 'user', content: 'Hello!' }]
    * });
    * ```
@@ -792,7 +792,7 @@ export class LM {
    * ```typescript
    * const lm = LM.openrouter({ apiKey: process.env.OPENROUTER_API_KEY });
    * const response = await lm.generate({
-   *   model: 'anthropic/claude-3-opus',
+   *   model: 'anthropic/claude-sonnet-5',
    *   messages: [{ role: 'user', content: 'Hello!' }]
    * });
    * ```
@@ -857,7 +857,7 @@ export class LM {
    * @example
    * ```typescript
    * const response = await lm.generate({
-   *   model: 'openai/gpt-4',
+   *   model: 'openai/gpt-6-luna',
    *   messages: [
    *     { role: 'system', content: 'You are a helpful assistant.' },
    *     { role: 'user', content: 'What is 2+2?' }
@@ -1014,7 +1014,7 @@ export class LM {
    * @example
    * ```typescript
    * await lm.stream({
-   *   model: 'openai/gpt-4',
+   *   model: 'openai/gpt-6-luna',
    *   messages: [{ role: 'user', content: 'Tell me a story' }]
    * }, (chunk) => {
    *   if (chunk.chunkType === 'delta' && chunk.content) {

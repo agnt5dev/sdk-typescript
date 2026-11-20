@@ -169,19 +169,17 @@ export const fetchWeather = fn('fetch-weather').run(
 
 #### Using LLM Clients
 
-Functions can leverage language models through the context:
+Functions call language models with `LM`:
 
 ```typescript
-import { fn, Context } from '@agnt5/sdk';
+import { fn, Context, LM } from '@agnt5/sdk';
 
 export const analyzeSentiment = fn('analyze-sentiment').run(
   async (ctx: Context, text: string): Promise<string> => {
-    const response = await ctx.llm.generate({
-      prompt: [
-        { role: 'system', content: 'You are a sentiment analysis expert.' },
-        { role: 'user', content: `Analyze the sentiment: ${text}` },
-      ],
-      model: 'gpt-4',
+    const response = await LM.openai().generate({
+      model: 'openai/gpt-6-luna',
+      systemPrompt: 'You are a sentiment analysis expert.',
+      messages: [{ role: 'user', content: `Analyze the sentiment: ${text}` }],
     });
 
     return response.text;

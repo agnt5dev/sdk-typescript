@@ -17,12 +17,14 @@ The AGNT5 SDK provides a unified interface to multiple LLM providers through the
 
 | Provider | Models | Strengths |
 |----------|--------|-----------|
-| **OpenAI** | GPT-4, GPT-4 Turbo, o1, o3 | Best overall quality, reasoning models |
-| **Anthropic** | Claude 3.5 Sonnet, Claude 3 Opus | Long context, analysis |
-| **Azure OpenAI** | GPT-4, GPT-3.5 | Enterprise deployment |
-| **AWS Bedrock** | Claude, Llama, etc. | AWS integration |
-| **Groq** | Mixtral, Llama | Fast inference |
-| **OpenRouter** | 100+ models | Model aggregation |
+| **OpenAI** | GPT-6 (gpt-6-luna, gpt-6.1-sol), GPT-4.1 | Best overall quality, reasoning models |
+| **Anthropic** | Claude Opus 5.5, Sonnet 5, Haiku 4.5 | Long context, analysis |
+| **Azure OpenAI** | Your OpenAI deployments | Enterprise deployment |
+| **AWS Bedrock** | Claude, Llama and other Bedrock models | AWS integration |
+| **Groq** | Llama 3.3, gpt-oss | Fast inference |
+| **OpenRouter** | Hundreds of models | Model aggregation |
+
+The SDK also has `LM.google()`, `LM.mistral()`, `LM.xai()`, `LM.deepseek()`, `LM.together()`, `LM.fireworks()`, `LM.ollama()` and more; see the [API reference](#lm-class).
 
 ## Quick Start
 
@@ -42,7 +44,7 @@ const lm = LM.openai({ apiKey: process.env.OPENAI_API_KEY });
 
 // Generate completion
 const response = await lm.generate({
-  model: 'gpt-4',
+  model: 'openai/gpt-6-luna',
   messages: [
     { role: 'user', content: 'What is 2+2?' }
   ]
@@ -50,6 +52,14 @@ const response = await lm.generate({
 
 console.log(response.text); // "4"
 console.log(response.usage); // Token usage statistics
+```
+
+### Model Names
+
+Every model name starts with its provider, the same one as the `LM` you call it on: `openai/gpt-6-luna` with `LM.openai()`, `anthropic/claude-sonnet-5` with `LM.anthropic()`. A bare name such as `'gpt-4'` is rejected before any request is sent:
+
+```text
+Model must include provider prefix (e.g., 'openai/gpt-4')
 ```
 
 ## Provider Configuration
@@ -65,7 +75,7 @@ const lm = LM.openai({
 
 // Use with models
 const response = await lm.generate({
-  model: 'gpt-4',                // or 'gpt-4-turbo', 'o1-preview', 'o3-mini'
+  model: 'openai/gpt-6-luna',    // or 'openai/gpt-6.1-sol', 'openai/gpt-4.1-mini'
   messages: [/* ... */]
 });
 ```
@@ -84,7 +94,7 @@ const lm = LM.anthropic({
 
 // Use with Claude models
 const response = await lm.generate({
-  model: 'claude-3-5-sonnet-20241022',
+  model: 'anthropic/claude-sonnet-5',  // or 'anthropic/claude-opus-5-5', 'anthropic/claude-haiku-4-5'
   messages: [/* ... */]
 });
 ```
@@ -103,7 +113,7 @@ const lm = LM.azure({
 
 // Use with your deployment
 const response = await lm.generate({
-  model: 'gpt-4',  // Your deployment name
+  model: 'azure/your-deployment',  // 'azure/' + your deployment name
   messages: [/* ... */]
 });
 ```
@@ -121,9 +131,9 @@ const lm = LM.bedrock({
   sessionToken: 'token'                             // Optional: for temporary credentials
 });
 
-// Use with Bedrock models
+// Use with Bedrock models: 'bedrock/' + the Bedrock model ID
 const response = await lm.generate({
-  model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+  model: 'bedrock/us.anthropic.claude-sonnet-5',
   messages: [/* ... */]
 });
 ```
@@ -144,7 +154,7 @@ const lm = LM.groq({
 
 // Use with Groq models (ultra-fast inference)
 const response = await lm.generate({
-  model: 'mixtral-8x7b-32768',   // or 'llama2-70b-4096'
+  model: 'groq/llama-3.3-70b-versatile',  // or 'groq/openai/gpt-oss-120b'
   messages: [/* ... */]
 });
 ```
@@ -160,9 +170,9 @@ const lm = LM.openrouter({
   baseUrl: 'https://...'         // Optional: for custom endpoints
 });
 
-// Use with any model on OpenRouter
+// Use with any model on OpenRouter, by its OpenRouter ID
 const response = await lm.generate({
-  model: 'anthropic/claude-3-opus',  // 100+ models available
+  model: 'anthropic/claude-sonnet-5',
   messages: [/* ... */]
 });
 ```
@@ -176,7 +186,7 @@ const response = await lm.generate({
 
 ```typescript
 const response = await lm.generate({
-  model: 'gpt-4',
+  model: 'openai/gpt-4.1-mini',
   messages: [
     { role: 'system', content: 'You are a helpful assistant.' },
     { role: 'user', content: 'Hello!' }
@@ -189,11 +199,13 @@ const response = await lm.generate({
 });
 ```
 
+Reasoning models such as `openai/gpt-6-luna` don't take `temperature` or `topP`; the SDK leaves them out of the request and logs a warning.
+
 ### Streaming Responses
 
 ```typescript
 await lm.stream({
-  model: 'gpt-4',
+  model: 'openai/gpt-6-luna',
   messages: [{ role: 'user', content: 'Tell me a story' }]
 }, (chunk) => {
   if (chunk.chunkType === 'delta') {
@@ -211,7 +223,8 @@ await lm.stream({
 ```typescript
 import { createTool } from '@agnt5/sdk';
 
-// Define a tool
+// Define a tool. createTool() uses OpenAI's strict mode, so the schema
+// follows the same rules as structured output (see below).
 const weatherTool = createTool(
   'get_weather',
   'Get current weather for a location',
@@ -219,15 +232,16 @@ const weatherTool = createTool(
     type: 'object',
     properties: {
       location: { type: 'string', description: 'City name' },
-      units: { type: 'string', enum: ['celsius', 'fahrenheit'] }
+      units: { anyOf: [{ type: 'string', enum: ['celsius', 'fahrenheit'] }, { type: 'null' }] }
     },
-    required: ['location']
+    required: ['location', 'units'],
+    additionalProperties: false
   }
 );
 
 // Use with LLM
 const response = await lm.generate({
-  model: 'gpt-4',
+  model: 'openai/gpt-6-luna',
   messages: [{ role: 'user', content: 'What\'s the weather in Paris?' }],
   tools: [weatherTool],
   toolChoice: { choiceType: 'auto' }
@@ -254,14 +268,15 @@ const schema = jsonSchemaFormat('person', {
   properties: {
     name: { type: 'string' },
     age: { type: 'number' },
-    email: { type: 'string', format: 'email' }
+    email: { anyOf: [{ type: 'string', format: 'email' }, { type: 'null' }] }  // null when the text has none
   },
-  required: ['name', 'age']
+  required: ['name', 'age', 'email'],
+  additionalProperties: false
 });
 
 // Force structured output
 const response = await lm.generate({
-  model: 'gpt-4',
+  model: 'openai/gpt-6-luna',
   messages: [{
     role: 'user',
     content: 'Extract person info: John Doe, 30 years old, john@example.com'
@@ -271,53 +286,43 @@ const response = await lm.generate({
   }
 });
 
-// Parse JSON response
-const person = JSON.parse(response.text);
+// The parsed JSON
+const person = response.structuredOutput as { name: string; age: number; email: string | null };
 console.log(person.name);  // "John Doe"
 console.log(person.age);   // 30
 ```
 
+`jsonSchemaFormat()` asks for OpenAI's strict mode by default, which only accepts a schema that:
+
+- sets `additionalProperties: false` on every object, nested ones included;
+- lists every property in `required`. For a value the model may leave out, allow `null` with `anyOf`, as `email` does above.
+
+Strict mode rejects any other schema with a 400 (`Invalid schema for response_format`). To send a schema without strict mode, pass `false` as the third argument: `jsonSchemaFormat('person', schema, false)`.
+
 ## Advanced Features
 
-### Reasoning Models (o1, o3)
+### Reasoning Models
 
 ```typescript
 const response = await lm.generate({
-  model: 'o1-preview',
+  model: 'openai/gpt-6.1-sol',
   messages: [{ role: 'user', content: 'Solve this complex problem...' }],
   config: {
-    reasoningEffort: 'high'  // 'minimal' | 'medium' | 'high'
-  }
-});
-
-// Access reasoning tokens
-console.log('Reasoning tokens:', response.usage?.promptTokens);
-```
-
-### Multimodal Output
-
-```typescript
-const response = await lm.generate({
-  model: 'gpt-4',
-  messages: [{ role: 'user', content: 'Describe this in audio' }],
-  config: {
-    modalities: ['text', 'audio']  // Enable audio output
+    reasoningEffort: 'high'  // 'none' | 'minimal' | 'low' | 'medium' | 'high'
   }
 });
 ```
+
+Models accept different subsets of these levels. For example, `gpt-6.1-sol` rejects `'none'` and `gpt-6-luna` rejects `'minimal'`.
 
 ### Built-in Tools (OpenAI)
 
 ```typescript
 const response = await lm.generate({
-  model: 'gpt-4',
+  model: 'openai/gpt-6-luna',
   messages: [{ role: 'user', content: 'Search for Python tutorials' }],
   config: {
-    builtInTools: [
-      'web_search',        // Web search ($25-50 per 1000 queries)
-      'code_interpreter',  // Python code execution (included)
-      'file_search'        // Document search ($2.50 per 1000 queries)
-    ]
+    builtInTools: ['web_search']  // OpenAI runs the search and the model uses the results
   }
 });
 ```
@@ -334,7 +339,7 @@ const messages = [
   userMessage('Can you show me an example?')
 ];
 
-const response = await lm.generate({ model: 'gpt-4', messages });
+const response = await lm.generate({ model: 'openai/gpt-6-luna', messages });
 ```
 
 ## Error Handling
@@ -342,7 +347,7 @@ const response = await lm.generate({ model: 'gpt-4', messages });
 ```typescript
 try {
   const response = await lm.generate({
-    model: 'gpt-4',
+    model: 'openai/gpt-6-luna',
     messages: [/* ... */]
   });
 } catch (error) {
@@ -372,7 +377,7 @@ const lm = LM.openai({ apiKey: 'sk-...' });
 
 ```typescript
 const response = await lm.generate({
-  model: 'gpt-4',
+  model: 'openai/gpt-6-luna',
   messages: longConversation,
   config: {
     maxOutputTokens: 2000  // Prevent runaway costs
@@ -392,7 +397,7 @@ import { executeWithRetry } from '@agnt5/sdk';
 
 const response = await executeWithRetry(async () => {
   return await lm.generate({
-    model: 'gpt-4',
+    model: 'openai/gpt-6-luna',
     messages: [/* ... */]
   });
 }, {
@@ -428,9 +433,9 @@ const lm = LM.openai();
 const agent = new Agent({
   name: 'assistant',
   model: lm,
+  modelName: 'openai/gpt-6-luna',  // without it, the agent uses openai/gpt-4o-mini
   instructions: 'You are a helpful assistant.',
-  tools: [/* your tools */],
-  temperature: 0.7
+  tools: [/* your tools */]
 });
 
 // Run agent
@@ -444,16 +449,14 @@ console.log(result.output);
 
 ```typescript
 // Fast, cheap tasks
-const lm = LM.groq();  // Fastest inference
-const response = await lm.generate({
-  model: 'mixtral-8x7b-32768',
+const quick = await LM.groq().generate({  // Fastest inference
+  model: 'groq/llama-3.1-8b-instant',
   messages: [/* ... */]
 });
 
 // Complex reasoning tasks
-const lm = LM.openai();
-const response = await lm.generate({
-  model: 'o1-preview',  // Best reasoning
+const careful = await LM.openai().generate({
+  model: 'openai/gpt-6.1-sol',  // Best reasoning
   messages: [/* ... */]
 });
 ```
@@ -462,7 +465,7 @@ const response = await lm.generate({
 
 ```typescript
 const response = await lm.generate({
-  model: 'gpt-4',
+  model: 'openai/gpt-4.1-mini',  // reasoning models don't take temperature
   messages: [/* ... */],
   config: {
     temperature: 0.0  // Most deterministic
@@ -474,15 +477,15 @@ const response = await lm.generate({
 
 ```typescript
 // ✅ Use system prompt for instructions
-const response = await lm.generate({
-  model: 'gpt-4',
+const good = await lm.generate({
+  model: 'openai/gpt-6-luna',
   systemPrompt: 'Always respond in JSON format.',  // Reusable across requests
   messages: [{ role: 'user', content: 'Get user data' }]
 });
 
 // ❌ Repeat instructions in every message
-const response = await lm.generate({
-  model: 'gpt-4',
+const bad = await lm.generate({
+  model: 'openai/gpt-6-luna',
   messages: [{
     role: 'user',
     content: 'Always respond in JSON format. Get user data'  // Wastes tokens
@@ -500,7 +503,7 @@ import { LM, userMessage } from '@agnt5/sdk';
 const lm = LM.openai();
 
 const response = await lm.generate({
-  model: 'gpt-4',
+  model: 'openai/gpt-6-luna',
   messages: [userMessage('What is TypeScript?')]
 });
 
@@ -519,7 +522,7 @@ const conversation = [
 ];
 
 const response = await lm.generate({
-  model: 'claude-3-5-sonnet-20241022',
+  model: 'anthropic/claude-sonnet-5',
   messages: conversation
 });
 
@@ -534,7 +537,7 @@ const lm = LM.openai();
 console.log('Generating code...\n');
 
 await lm.stream({
-  model: 'gpt-4',
+  model: 'openai/gpt-6-luna',
   systemPrompt: 'You are an expert TypeScript developer.',
   messages: [{
     role: 'user',
@@ -560,14 +563,15 @@ const extractionSchema = jsonSchemaFormat('contact', {
   type: 'object',
   properties: {
     name: { type: 'string' },
-    email: { type: 'string' },
-    phone: { type: 'string' }
+    email: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    phone: { anyOf: [{ type: 'string' }, { type: 'null' }] }
   },
-  required: ['name']
+  required: ['name', 'email', 'phone'],
+  additionalProperties: false
 });
 
 const response = await lm.generate({
-  model: 'gpt-4',
+  model: 'openai/gpt-6-luna',
   messages: [{
     role: 'user',
     content: 'Extract contact info: John Smith, john@example.com, 555-1234'
@@ -577,25 +581,26 @@ const response = await lm.generate({
   }
 });
 
-const contact = JSON.parse(response.text);
-console.log(contact);
+console.log(response.structuredOutput);
+// { name: 'John Smith', email: 'john@example.com', phone: '555-1234' }
 ```
 
 ### Example 5: Multi-Provider Fallback
 
 ```typescript
 async function generateWithFallback(prompt: string) {
+  // Each provider needs its own model name.
   const providers = [
-    () => LM.openai(),
-    () => LM.anthropic(),
-    () => LM.groq()
+    { createLM: () => LM.openai(), model: 'openai/gpt-6-luna' },
+    { createLM: () => LM.anthropic(), model: 'anthropic/claude-sonnet-5' },
+    { createLM: () => LM.groq(), model: 'groq/llama-3.3-70b-versatile' }
   ];
 
-  for (const createProvider of providers) {
+  for (const { createLM, model } of providers) {
     try {
-      const lm = createProvider();
+      const lm = createLM();
       return await lm.generate({
-        model: 'gpt-4',
+        model,
         messages: [{ role: 'user', content: prompt }]
       });
     } catch (error) {
@@ -622,6 +627,8 @@ const response = await generateWithFallback('Hello!');
 - `LM.bedrock(config: BedrockConfig): LM`
 - `LM.groq(config?: GroqConfig): LM`
 - `LM.openrouter(config?: OpenRouterConfig): LM`
+- `LM.google()`, `LM.mistral()`, `LM.xai()`, `LM.deepseek()`, `LM.together()`, `LM.fireworks()`, `LM.baseten()`, `LM.lepton()`, `LM.moonshot()`, `LM.huggingface()`, `LM.ollama()`
+- `LM.openaiChat(config?: OpenAiChatConfig): LM`, for other OpenAI-compatible APIs (models are `openai_chat/<model>`)
 
 #### Instance Methods
 
@@ -630,11 +637,13 @@ const response = await generateWithFallback('Hello!');
 
 ### Types
 
+The most used fields; the SDK's type definitions have the rest.
+
 ```typescript
 interface GenerateRequest {
-  model: string;
+  model: string;                 // 'provider/model', e.g. 'openai/gpt-6-luna'
   systemPrompt?: string;
-  messages: Message[];
+  messages?: Message[];
   tools?: ToolDefinition[];
   toolChoice?: ToolChoiceOption;
   userId?: string;
@@ -646,6 +655,7 @@ interface GenerateResponse {
   model: string;
   created?: number;
   text: string;
+  structuredOutput?: unknown;    // the parsed JSON, with a responseFormat
   usage?: TokenUsage;
   finishReason?: string;
   toolCalls?: ToolCall[];
@@ -662,21 +672,20 @@ interface GenerationConfig {
   topP?: number;
   maxOutputTokens?: number;
   responseFormat?: ResponseFormatOption;
-  reasoningEffort?: 'minimal' | 'medium' | 'high';
-  modalities?: ('text' | 'audio' | 'image')[];
-  builtInTools?: ('web_search' | 'code_interpreter' | 'file_search')[];
+  reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high';
+  builtInTools?: ('web_search' | 'code_interpreter' | 'file_search' | 'web_fetch')[];
 }
 ```
 
 ## Troubleshooting
 
-### "Could not find native LM bindings"
+### "Model must include provider prefix"
 
-**Solution:** Make sure the native module is built:
+**Solution:** Start the model name with its provider, matching the `LM` you call: `'openai/gpt-6-luna'`, not `'gpt-6-luna'`. See [Model Names](#model-names).
 
-```bash
-npm run build:napi
-```
+### "Invalid schema for response_format"
+
+**Solution:** OpenAI's strict mode rejected the schema. Set `additionalProperties: false` on every object and list every property in `required`, or pass `false` as `jsonSchemaFormat()`'s third argument. See [Structured Output](#structured-output-json-schema).
 
 ### "Invalid API key"
 
