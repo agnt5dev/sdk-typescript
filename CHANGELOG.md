@@ -7,8 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-20
+
+### Security
+
+- Build native workers on sdk-core 0.3.13. Workers that AGNT5 runs now send a runtime workload token on every worker call, as self-hosted workers already do: when `AGNT5_WORKLOAD_BROKER_URL` and `AGNT5_WORKLOAD_TOKEN_FILE` are both set and `AGNT5_API_KEY_FILE` is not, the worker trades the pod's identity token at the broker for an `agnt5-runtime` token and refreshes it before it expires. Self-hosted workers and local development are unchanged.
+
 ### Fixed
 
+- Structured output and tools marked `strict` work with OpenAI, through sdk-core 0.3.13. Strict mode, the default for JSON schema formats, used to fail with a 400 for most schemas; the schema is now rewritten into the form OpenAI's strict mode accepts. Other OpenAI-compatible providers get the schema as given.
+- Self-hosted workers get durable steps and sleeps without `AGNT5_ACTIVATION_ARTIFACT_SHA256`, through sdk-core 0.3.13. The worker derives the identity from the deployment ID instead of falling back to legacy checkpoints, where a sleep restarts after a crash.
 - Fail the run when an agent calls a tool that has to pause for a person where the run cannot pause. A `confirmation: true` tool, `AskUserTool` or `RequestApprovalTool` called by an agent inside `ctx.step(...)` or a delegated agent used to hand its configuration error to the model as an ordinary tool result, so the model carried on and the run completed with the approval or question silently skipped. The agent now throws `ToolCannotPauseError`, a `ConfigurationError` that names the tool and says to run the agent from the workflow body. A tool's own errors still go back to the model as before.
 - **Behavior change:** the agent throws `ToolCannotPauseError` when it starts, before its first model call, whether or not the model would have called the tool. An agent that holds such a tool but runs inside `ctx.step(...)` or as a delegated agent now fails on every run. Run it from the workflow body, or build it without the tool for that place.
 - Do not retry `ToolCannotPauseError`. A step or function with a retry policy, and a delegated agent, used to report it as retryable, so each attempt ran the model and the earlier tools again before failing the same way.
