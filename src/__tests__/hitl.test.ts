@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { ContextImpl } from '../context.js';
 import { WaitingForUserInputError, isWaitingForUserInput } from '../errors.js';
+import { AskUserTool, RequestApprovalTool } from '../tool.js';
+import type { Context } from '../types.js';
 
 describe('Human-in-the-Loop', () => {
   it('should throw WaitingForUserInputError on first waitForUser call', async () => {
@@ -113,5 +115,48 @@ describe('Human-in-the-Loop', () => {
 
     expect(err.prompt).toBe('Choose one');
     expect(err.choices).toEqual(['Option A', 'Option B']);
+  });
+});
+
+describe('HITL tools accept the public Context type', () => {
+  it('builds AskUserTool and RequestApprovalTool from a Context, with no cast', async () => {
+    const ctx: Context = new ContextImpl('inv-tools', 'run-tools', 0, 'test', { storage: 'memory' });
+
+    const ask = new AskUserTool(ctx);
+    const approve = new RequestApprovalTool(ctx);
+
+    await expect(ask.invoke(ctx, { question: 'Which colour?' })).rejects.toMatchObject({
+      name: 'WaitingForUserInputError',
+      question: 'Which colour?',
+    });
+    await expect(approve.invoke(ctx, { action: 'Deploy' })).rejects.toMatchObject({
+      name: 'WaitingForUserInputError',
+      inputType: 'approval',
+    });
+  });
+
+  it('calls waitForUser on whatever context it was given', async () => {
+    const asked: string[] = [];
+    const ctx = new ContextImpl('inv-fake', 'run-fake', 0, 'test', { storage: 'memory' });
+    const tool = new AskUserTool({
+      waitForUser: async (question: string) => {
+        asked.push(question);
+        return 'blue';
+      },
+    });
+
+    await expect(tool.invoke(ctx, { question: 'Which colour?' })).resolves.toBe('blue');
+    expect(asked).toEqual(['Which colour?']);
+  });
+
+  it('rejects a context without waitForUser', () => {
+    expect(() => new AskUserTool({} as Context)).toThrow('requires a workflow context with waitForUser');
+  });
+
+  it('ContextImpl.waitForSignal takes the same options as Context', async () => {
+    const ctx = new ContextImpl('inv-sig', 'run-sig', 0, 'test', { storage: 'memory' });
+    await expect(ctx.waitForSignal('review_done', undefined, { timeoutMs: 1000 })).rejects.toThrow(
+      'requires a managed or workerless workflow',
+    );
   });
 });

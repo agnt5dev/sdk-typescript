@@ -465,7 +465,7 @@ export class ContextImpl implements Context {
     await this.storage.setCheckpoint(responseKey, response);
   }
 
-  async waitForSignal<T = unknown>(_signalName: string, _name?: string): Promise<T> {
+  async waitForSignal<T = unknown>(_signalName: string, _name?: string, _options?: { timeoutMs?: number }): Promise<T> {
     throw new ConfigurationError('ctx.waitForSignal requires a managed or workerless workflow');
   }
 
