@@ -1,3 +1,4 @@
+import { decodeUserResponse } from './hitl-response.js';
 import type { DeclaredStep } from './step.js';
 import { ActivationError, ActivationErrorCode } from './errors.js';
 import { SuspensionRequestedError, WaitingForUserInputError } from './errors.js';
@@ -285,7 +286,7 @@ export class WorkerlessContext implements Context {
     if (userResponse !== undefined) {
       const pauseIndex = Number.parseInt(metadata.pause_index ?? '0', 10);
       if (!Number.isNaN(pauseIndex)) {
-        this.userResponses.set(pauseIndex, decodeUserResponse(userResponse));
+        this.userResponses.set(pauseIndex, decodeUserResponse(userResponse, metadata.input_type));
       }
     }
 
@@ -362,16 +363,6 @@ function validateSleepDuration(durationMs: number): void {
   if (!Number.isSafeInteger(durationMs) || durationMs < 0) {
     throw new Error('sleep durationMs must be a non-negative safe integer');
   }
-}
-
-function decodeUserResponse(userResponse: string): string | null {
-  if (userResponse === '__skipped__' || userResponse === '__skip__') {
-    return null;
-  }
-  if (userResponse.startsWith('__custom__:')) {
-    return userResponse.slice('__custom__:'.length);
-  }
-  return userResponse;
 }
 
 function decodeSignalPayload(signalPayload: string): unknown {
