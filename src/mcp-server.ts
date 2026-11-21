@@ -11,6 +11,7 @@ import {
   MCPServerRegistry,
   MCPView,
   checkToolOptions,
+  checkToolScopes,
   firstLine,
   loadView,
   objectSchema,
@@ -378,6 +379,7 @@ export class MCPServer {
     const { options } = spec;
     const view = this.resolveView(options.view);
     const annotations = checkToolOptions(name, options);
+    const scopes = checkToolScopes(name, options.scopes);
     if (this.publishedTools.has(name)) {
       throw new Error(`MCP server ${JSON.stringify(this.id)} already has a tool named ${JSON.stringify(name)}`);
     }
@@ -396,6 +398,7 @@ export class MCPServer {
       visibility: options.visibility ? [...options.visibility] : undefined,
       annotations,
       view,
+      scopes,
       target: spec.target,
     });
   }

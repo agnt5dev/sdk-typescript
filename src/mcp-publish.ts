@@ -120,6 +120,12 @@ export interface MCPToolOptions {
    * Default: {@link MCP_RUN_VIEW}.
    */
   view?: MCPToolView;
+  /**
+   * Scopes a caller's token must all hold, such as `['cms:publish']`. The
+   * hosted server leaves the tool out of their tool list and refuses their
+   * calls with 403. Service keys reach every tool.
+   */
+  scopes?: string[];
 }
 
 export type MCPComponentType = 'function' | 'workflow' | 'agent';
@@ -140,6 +146,8 @@ export interface MCPToolDefinition {
    * `views`, or absent for the default (the run card).
    */
   view?: string;
+  /** Scopes a caller's token must hold; absent when the tool needs none. */
+  scopes?: string[];
 }
 
 /** A view in a published definition, its bundle included. */
@@ -184,6 +192,7 @@ export interface PublishedTool {
   annotations: MCPToolAnnotations;
   /** `null` when the run card is off; a view name for one of the server's own. */
   view?: string | null;
+  scopes?: string[];
   /** The component itself (for agents, so the worker can serve it). Not published. */
   target?: unknown;
 }
@@ -204,6 +213,9 @@ export function toolDefinition(tool: PublishedTool): MCPToolDefinition {
   if (tool.outputSchema) definition.output_schema = tool.outputSchema;
   if (tool.view === null) definition.view = NO_VIEW;
   else if (tool.view !== undefined && tool.view !== MCP_RUN_VIEW) definition.view = tool.view;
+  // Sent only when set: control planes without per-tool scopes refuse
+  // unknown fields.
+  if (tool.scopes?.length) definition.scopes = [...tool.scopes];
   return definition;
 }
 
@@ -315,6 +327,41 @@ export function loadView(server: string, name: string, source: MCPViewSource): M
   }
   const sha256 = createHash('sha256').update(data).digest('hex');
   return new MCPView(name, sha256, data.length, server, html);
+}
+
+/** The most scopes one tool may require. */
+export const MCP_MAX_TOOL_SCOPES = 10;
+/** An OAuth scope token (RFC 6749 section 3.3): printable ASCII without spaces, '"' or a backslash. */
+const SCOPE = /^[\x21\x23-\x5B\x5D-\x7E]{1,128}$/;
+/** AGNT5's own scope, which every token for a server already carries. */
+const CALL_SCOPE = 'mcp:call';
+
+/**
+ * Validate a tool's `scopes` where the developer wrote them. Returns the
+ * scopes to publish, or undefined when the tool requires none.
+ */
+export function checkToolScopes(name: string, scopes: unknown): string[] | undefined {
+  if (scopes === undefined || scopes === null) return undefined;
+  if (!Array.isArray(scopes)) {
+    throw new Error(`scopes for MCP tool ${JSON.stringify(name)} must be a list of scope names, such as ['cms:publish']`);
+  }
+  if (scopes.length > MCP_MAX_TOOL_SCOPES) {
+    throw new Error(`MCP tool ${JSON.stringify(name)} requires ${scopes.length} scopes; the limit is ${MCP_MAX_TOOL_SCOPES}`);
+  }
+  for (const scope of scopes) {
+    if (typeof scope !== 'string' || !SCOPE.test(scope)) {
+      throw new Error(
+        `scope ${JSON.stringify(scope)} of MCP tool ${JSON.stringify(name)} must be 1 to 128 printable ASCII characters, without spaces, '"' or '\\'`,
+      );
+    }
+    if (scope === CALL_SCOPE) {
+      throw new Error(`MCP tool ${JSON.stringify(name)} needn't require '${CALL_SCOPE}': every token for the server carries it`);
+    }
+  }
+  if (new Set(scopes).size !== scopes.length) {
+    throw new Error(`MCP tool ${JSON.stringify(name)} lists a scope twice: ${JSON.stringify(scopes)}`);
+  }
+  return scopes.length > 0 ? [...scopes] : undefined;
 }
 
 /**
