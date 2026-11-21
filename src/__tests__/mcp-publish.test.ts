@@ -257,6 +257,38 @@ describe('MCPServer publishing', () => {
     expect(() => server.addWorkflow('lookup', triage)).toThrow(/already has a tool/);
   });
 
+  it('publishes scopes only for tools that set them', () => {
+    const { lookupOrder, triage, agent } = defineComponents();
+    const server = new MCPServer('cms');
+    server.addFunction('list_articles', lookupOrder, { scopes: ['cms:read'] });
+    server.addWorkflow('publish_article', triage, { scopes: ['cms:publish', 'cms:write'] });
+    server.addAgent('editor', agent, { scopes: ['cms:write'] });
+    server.addFunction('lookup_order', lookupOrder, { scopes: [] });
+    const tools = Object.fromEntries(server.definition().tools.map(tool => [tool.name, tool]));
+    expect(tools.list_articles.scopes).toEqual(['cms:read']);
+    expect(tools.publish_article.scopes).toEqual(['cms:publish', 'cms:write']);
+    expect(tools.editor.scopes).toEqual(['cms:write']);
+    // Control planes without per-tool scopes refuse unknown fields.
+    expect('scopes' in tools.lookup_order).toBe(false);
+  });
+
+  it('checks scopes where they are written', () => {
+    const { lookupOrder } = defineComponents();
+    const server = new MCPServer('cms');
+    const add = (scopes: unknown) => () => server.addFunction('a', lookupOrder, { scopes: scopes as string[] });
+    expect(add('cms:read')).toThrow(/must be a list/);
+    expect(add(['cms read'])).toThrow(/printable ASCII/);
+    expect(add(['cms"read'])).toThrow(/printable ASCII/);
+    expect(add(['cms:lés'])).toThrow(/printable ASCII/);
+    expect(add([''])).toThrow(/printable ASCII/);
+    expect(add(['x'.repeat(129)])).toThrow(/printable ASCII/);
+    expect(add([7])).toThrow(/printable ASCII/);
+    expect(add(['mcp:call'])).toThrow(/every token for the server carries it/);
+    expect(add(['cms:read', 'cms:read'])).toThrow(/twice/);
+    expect(add(Array.from({ length: 11 }, (_, i) => `s${i}`))).toThrow(/the limit is 10/);
+    expect(server.published).toBe(false);
+  });
+
   it('turns the run card off with view: null', () => {
     const { lookupOrder, triage, agent } = defineComponents();
     const server = new MCPServer('support');
